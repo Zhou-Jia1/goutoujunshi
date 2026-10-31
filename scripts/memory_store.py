@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -179,9 +180,7 @@ def validate_delta(raw: dict[str, Any]) -> dict[str, Any]:
     source_ref = validate_text(
         "source_ref", raw.get("source_ref", ""), MAX_SOURCE_CHARS, required=False
     )
-    occurred_at = validate_text(
-        "occurred_at", raw.get("occurred_at", ""), 64, required=False
-    )
+    occurred_at = validate_occurred_at(raw.get("occurred_at", ""))
     if scope == "user" and source_type != "user_explicit":
         raise MemoryErrorWithCode(
             "SOURCE_NOT_ELIGIBLE", "用户稳定档案只接受用户明确陈述"
@@ -214,6 +213,33 @@ def validate_delta(raw: dict[str, Any]) -> dict[str, Any]:
         "occurred_at": occurred_at or None,
         "confidence": confidence,
     }
+
+
+def validate_occurred_at(value: Any) -> str:
+    """Accept empty values or ISO calendar dates/date-times; preserve input text."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise MemoryErrorWithCode("INVALID_DATE", "occurred_at 必须是 ISO 8601 日期或日期时间")
+    value = value.strip()
+    if not value:
+        return ""
+    # Restrict separators as fromisoformat also accepts arbitrary single characters.
+    pattern = (r"\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}"
+               r"(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?")
+    try:
+        if len(value) > 64 or re.fullmatch(pattern, value, flags=re.ASCII) is None:
+            raise ValueError("invalid ISO calendar format")
+        offset = re.search(r"[+-](\d{2}):?(\d{2})$", value)
+        if offset and (int(offset[1]) > 23 or int(offset[2]) > 59):
+            raise ValueError("invalid UTC offset")
+        if len(value) == 10:
+            date.fromisoformat(value)
+        else:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise MemoryErrorWithCode("INVALID_DATE", "occurred_at 必须是有效的 ISO 8601 日期或日期时间") from exc
+    return value
 
 
 def prune_operation_history(conn: sqlite3.Connection) -> None:
@@ -343,10 +369,9 @@ def command_apply(args: argparse.Namespace) -> None:
     delta = load_delta(args)
     timestamp = now_iso()
     with connect() as conn:
-        require_enabled(conn)
         conn.execute("BEGIN IMMEDIATE")
+        require_enabled(conn)
         before: list[dict[str, Any]] = []
-        was_update = False
         if delta["scope"] == "event":
             existing_rows = conn.execute(
                 "SELECT * FROM memories WHERE scope = 'event' AND subject_id = ? "
@@ -367,10 +392,10 @@ def command_apply(args: argparse.Namespace) -> None:
             ).fetchone()
             if existing:
                 before.append(row_dict(existing))
+        duplicate_count = max(0, len(before) - 1)
         if existing:
             memory_id = existing["id"]
             created_at = existing["created_at"]
-            was_update = True
         else:
             memory_id = uuid.uuid4().hex
             created_at = timestamp
@@ -402,7 +427,16 @@ def command_apply(args: argparse.Namespace) -> None:
             """,
             row,
         )
-        before.extend(prune_rows(conn, delta))
+        removed = prune_rows(conn, delta)
+        # A freshly inserted/updated row can itself be pruned. Record the true
+        # pre-operation image once, and only rows actually present after pruning.
+        before_by_id = {item["id"]: item for item in before}
+        for item in removed:
+            if item["id"] != memory_id:
+                before_by_id.setdefault(item["id"], item)
+        before = list(before_by_id.values())
+        persisted = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        after = [row_dict(persisted)] if persisted else []
         op_id = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO operations(op_id, created_at, action, before_json, after_json) "
@@ -411,7 +445,7 @@ def command_apply(args: argparse.Namespace) -> None:
                 op_id,
                 timestamp,
                 json.dumps(before, ensure_ascii=False),
-                json.dumps([row], ensure_ascii=False),
+                json.dumps(after, ensure_ascii=False),
             ),
         )
         prune_operation_history(conn)
@@ -421,7 +455,7 @@ def command_apply(args: argparse.Namespace) -> None:
             "ok": True,
             "op_id": op_id,
             "memory": row,
-            "pruned": len(before) - (1 if was_update else 0),
+            "pruned": len(removed) + duplicate_count,
         }
     )
 
@@ -444,26 +478,51 @@ def restore_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
 
 def command_undo(args: argparse.Namespace) -> None:
     with connect() as conn:
+        # Serialize selection, conflict checks and restoration with other writers.
+        conn.execute("BEGIN IMMEDIATE")
         if args.op_id:
             operation = conn.execute(
-                "SELECT * FROM operations WHERE op_id = ?", (args.op_id,)
+                "SELECT rowid AS sequence, * FROM operations WHERE op_id = ?", (args.op_id,)
             ).fetchone()
         else:
             operation = conn.execute(
-                "SELECT * FROM operations ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                "SELECT rowid AS sequence, * FROM operations ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
         if not operation:
             raise MemoryErrorWithCode("NOTHING_TO_UNDO", "没有可撤销的记忆更新")
         before = json.loads(operation["before_json"])
         after = json.loads(operation["after_json"])
         affected_ids = {row["id"] for row in before + after}
-        conn.execute("BEGIN IMMEDIATE")
+        affected_keys = {memory_key(row) for row in before + after}
+        later_operations = conn.execute(
+            "SELECT before_json, after_json FROM operations WHERE rowid > ?",
+            (operation["sequence"],),
+        ).fetchall()
+        for later in later_operations:
+            touched = json.loads(later["before_json"]) + json.loads(later["after_json"])
+            if any(row["id"] in affected_ids or memory_key(row) in affected_keys for row in touched):
+                raise MemoryErrorWithCode("UNDO_CONFLICT", "相关记忆已有后续更新，不能撤销这条操作")
+        # History alone cannot detect deleted/changed rows or a pruned record
+        # recreated under a different ID. Check the complete related after-image.
+        current = {
+            row["id"]: row_dict(row)
+            for row in conn.execute("SELECT * FROM memories")
+            if row["id"] in affected_ids or memory_key(row) in affected_keys
+        }
+        if current != {row["id"]: row for row in after}:
+            raise MemoryErrorWithCode("UNDO_CONFLICT", "相关记忆与操作快照不一致，不能撤销这条操作")
         for memory_id in affected_ids:
             conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         restore_rows(conn, before)
         conn.execute("DELETE FROM operations WHERE op_id = ?", (operation["op_id"],))
         conn.commit()
     emit({"ok": True, "undone_op_id": operation["op_id"]})
+
+
+def memory_key(row: Any) -> tuple[Any, ...]:
+    """Logical identity also catches a deleted record recreated with a new ID."""
+    key = (row["scope"], row["subject_id"], row["field"])
+    return key + (row["occurred_at"],) if row["scope"] == "event" else key
 
 
 def list_memories(conn: sqlite3.Connection, subject_id: str | None) -> list[dict[str, Any]]:
