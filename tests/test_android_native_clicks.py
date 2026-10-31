@@ -1,12 +1,13 @@
 """Regression for native clicks clipped by scrolling and Android system bars."""
 import sys
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from smoke_android_m1 import APP, Device
-from smoke_android_import import click_ready
+from smoke_android_import import CONTACT, click_ready, remove_contact, wait_contacts_view
 
 
 class FakeDevice(Device):
@@ -29,6 +30,56 @@ def button(bounds, text="联系人"):
 
 
 class NativeClickTests(unittest.TestCase):
+    def test_cleanup_window_gap_only_waits_while_owned_activity_is_resumed(self):
+        class GapDevice:
+            def __init__(self, resumed): self.resumed, self.reads = resumed, 0
+            def tree(self):
+                self.reads += 1
+                if self.reads == 1: raise AssertionError("Debug app must remain in foreground")
+                return ET.fromstring(f'<hierarchy><node package="{APP}" text="联系人"/>'
+                    f'<node package="{APP}" text="联系人"/><node package="{APP}" text="还没有联系人"/></hierarchy>')
+            def call(self, *args): return "topResumedActivity=" + self.resumed
+        owned = GapDevice(APP + "/com.shengjidaguai.goutoujunshi.MainActivity")
+        self.assertIn("还没有联系人", wait_contacts_view(owned))
+        foreign = GapDevice("com.android.launcher3/.Launcher")
+        with self.assertRaisesRegex(AssertionError, "remain in foreground"):
+            wait_contacts_view(foreign)
+        self.assertEqual(1, foreign.reads)
+
+    def test_cleanup_never_deletes_when_contact_actions_are_ambiguous(self):
+        class AmbiguousDevice:
+            def start(self, restart=False): pass
+            def tree(self):
+                return ET.fromstring('<hierarchy>' + ''.join(f'<node package="{APP}" text="{label}"/>'
+                    for label in ("联系人", "联系人", CONTACT, "删除联系人", "删除联系人")) + '</hierarchy>')
+        clicks = []
+        with patch("smoke_android_import.click_ready", side_effect=lambda _, text: clicks.append(text)):
+            with self.assertRaisesRegex(AssertionError, "safe cleanup"):
+                remove_contact(AmbiguousDevice())
+        self.assertEqual(["联系人"], clicks)
+
+    def test_cleanup_waits_for_contact_screen_before_unique_deletion(self):
+        def frame(*labels):
+            return ET.fromstring('<hierarchy>' + ''.join(
+                f'<node package="{APP}" text="{label}"/>' for label in labels) + '</hierarchy>')
+        class TransitionDevice:
+            def __init__(self):
+                self.frames = [frame("军师", "联系人", CONTACT),
+                    frame("联系人", "联系人", CONTACT, "删除联系人")]
+                self.starts = 0
+            def start(self, restart=False): self.starts += 1
+            def tree(self):
+                return self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
+        device = TransitionDevice()
+        clicks = []
+        def click(_, text):
+            clicks.append(text)
+            if text == "删除这些记录": device.frames = [frame("联系人", "联系人", "还没有联系人")]
+        with patch("smoke_android_import.click_ready", side_effect=click):
+            remove_contact(device)
+        self.assertEqual(1, device.starts)
+        self.assertEqual(["联系人", "删除联系人", "删除这些记录", "军师"], clicks)
+
     def test_diagnostic_never_emits_unknown_user_text_or_description(self):
         root = ET.fromstring(f'<hierarchy><node package="{APP}" text="synthetic_private_body" '
             'content-desc="synthetic_private_alias" bounds="[0,0][10,10]"/>'
