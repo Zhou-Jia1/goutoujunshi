@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goutoujunshi.local/evals/case-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "relationType", "goal", "chat", "userText", "must", "must_not", "tags"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z]+-[0-9]{2}$"},
+    "relationType": {"enum": ["BOSS", "COLLEAGUE", "SUBORDINATE", "CLIENT", "CRUSH", "PARTNER", "EX", "PARENT", "IN_LAW", "RELATIVE", "CHILD", "SIBLING", "FRIEND", "ACQUAINTANCE", "GROUP", "MEDIATION"]},
+    "goal": {"enum": ["REPLY", "REPORT", "ASK_HELP", "DECLINE", "APOLOGIZE", "CLARIFY", "COMFORT", "ADVANCE", "INVITE", "BOUNDARY", "ICEBREAK", "REPAIR", "MEDIATE", "CLOSE"]},
+    "chat": {
+      "type": "array", "minItems": 1,
+      "items": {"type": "object", "additionalProperties": false, "required": ["id", "speaker", "text"],
+        "properties": {"id": {"type": "string", "minLength": 1}, "speaker": {"enum": ["ME", "THEM", "OTHER"]}, "text": {"type": "string", "minLength": 1}}}
+    },
+    "userText": {"type": "string", "minLength": 1},
+    "styleSamples": {"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 5},
+    "must": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "must_not": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "tags": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "expectedSafety": {"enum": ["NONE", "CAUTION", "CRISIS"]}
+  }
+}
