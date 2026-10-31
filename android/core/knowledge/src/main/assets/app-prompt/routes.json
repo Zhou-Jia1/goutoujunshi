@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "status": "负责人待审稿",
+  "relationTypes": {
+    "BOSS": "work",
+    "COLLEAGUE": "work",
+    "SUBORDINATE": "work",
+    "CLIENT": "work",
+    "CRUSH": "intimate",
+    "PARTNER": "intimate",
+    "EX": "intimate",
+    "PARENT": "family",
+    "IN_LAW": "family",
+    "RELATIVE": "family",
+    "CHILD": "family",
+    "SIBLING": "family",
+    "FRIEND": "social",
+    "ACQUAINTANCE": "social",
+    "GROUP": "social",
+    "MEDIATION": "mediation"
+  },
+  "goals": [
+    "REPLY",
+    "REPORT",
+    "ASK_HELP",
+    "DECLINE",
+    "APOLOGIZE",
+    "CLARIFY",
+    "COMFORT",
+    "ADVANCE",
+    "INVITE",
+    "BOUNDARY",
+    "ICEBREAK",
+    "REPAIR",
+    "MEDIATE",
+    "CLOSE"
+  ],
+  "defaults": {
+    "work": [
+      "references/knowledge/21-职场沟通与向上管理.md",
+      "references/practical/职场高频场景：请示汇报、请假、推进与拒绝.md"
+    ],
+    "intimate": [
+      "references/knowledge/02-亲密关系心理学总论.md",
+      "references/practical/实战话术编排器：从一句回复到后续分支.md"
+    ],
+    "family": [
+      "references/knowledge/22-家庭沟通与代际关系.md",
+      "references/practical/家人沟通：关心、催促、分歧与边界.md"
+    ],
+    "social": [
+      "references/practical/巧妙接话技巧：让沟通更流畅的实用指南.md",
+      "references/practical/有效拓展人脉：从建立到维护的实用指南.md"
+    ],
+    "mediation": [
+      "references/knowledge/23-冲突调解与第三方斡旋.md",
+      "references/practical/夹在中间：第三方调解实用指南.md"
+    ]
+  },
+  "goalRules": {
+    "REPLY": [
+      "references/practical/实战话术编排器：从一句回复到后续分支.md"
+    ],
+    "REPORT": [
+      "references/practical/提升表达逻辑性：从混乱到清晰的实用指南.md"
+    ],
+    "ASK_HELP": [
+      "references/practical/托人办事的高效话术指南.md"
+    ],
+    "DECLINE": [
+      "references/practical/高情商拒绝他人：体面护边界的实用指南.md"
+    ],
+    "APOLOGIZE": [
+      "references/knowledge/07-沟通冲突与修复.md"
+    ],
+    "CLARIFY": [
+      "references/practical/提升表达逻辑性：从混乱到清晰的实用指南.md"
+    ],
+    "COMFORT": [
+      "references/practical/为他人提供情绪价值：温暖且有效的回应指南.md"
+    ],
+    "ADVANCE": [
+      "references/practical/巧妙接话技巧：让沟通更流畅的实用指南.md"
+    ],
+    "INVITE": [
+      "references/practical/实战话术编排器：从一句回复到后续分支.md"
+    ],
+    "BOUNDARY": [
+      "references/practical/高情商拒绝他人：体面护边界的实用指南.md"
+    ],
+    "ICEBREAK": [
+      "references/practical/化解尴尬：轻松救场的实用指南.md"
+    ],
+    "REPAIR": [
+      "references/knowledge/07-沟通冲突与修复.md"
+    ],
+    "MEDIATE": [
+      "references/knowledge/23-冲突调解与第三方斡旋.md"
+    ],
+    "CLOSE": [
+      "references/practical/实战话术编排器：从一句回复到后续分支.md"
+    ]
+  },
+  "keywordRules": [
+    {
+      "keywords": [
+        "证据等级",
+        "知识争议",
+        "研究来源",
+        "要求来源",
+        "参考来源",
+        "科学依据",
+        "证据分级",
+        "延伸阅读",
+        "核心书单"
+      ],
+      "references": [
+        "references/knowledge/01-证据分级与内容边界.md",
+        "references/knowledge/19-核心书单与论文索引.md"
+      ],
+      "priority": 100
+    },
+    {
+      "keywords": [
+        "冷读误用",
+        "PUA",
+        "推拉",
+        "贬低",
+        "服从测试",
+        "煤气灯",
+        "操控",
+        "假未来"
+      ],
+      "references": [
+        "references/knowledge/05-PUA操控与伦理替代.md",
+        "references/knowledge/20-经典社交体系的机制、证据与风险边界.md"
+      ],
+      "priority": 95
+    },
+    {
+      "keywords": [
+        "ChatLab",
+        "聊天文件",
+        "关系趋势",
+        "K线",
+        "说话人映射"
+      ],
+      "references": [
+        "references/practical/ChatLab聊天记录分析适配.md"
+      ],
+      "priority": 90
+    },
+    {
+      "keywords": [
+        "长期记忆",
+        "跨任务档案",
+        "关系档案",
+        "记忆同意",
+        "自动更新",
+        "撤销",
+        "删除记忆",
+        "暂停记忆"
+      ],
+      "references": [
+        "references/practical/长期记忆与关系档案.md"
+      ],
+      "priority": 90
+    },
+    {
+      "keywords": [
+        "同意",
+        "性与亲密",
+        "亲密边界",
+        "撤回同意",
+        "性边界"
+      ],
+      "references": [
+        "references/knowledge/08-同意边界性与亲密.md"
+      ],
+      "priority": 85
+    },
+    {
+      "keywords": [
+        "MBTI"
+      ],
+      "references": [
+        "references/knowledge/04-MBTI人格与匹配.md"
+      ],
+      "priority": 80
+    },
+    {
+      "keywords": [
+        "依恋",
+        "焦虑",
+        "情绪调节"
+      ],
+      "references": [
+        "references/knowledge/03-依恋理论与情绪调节.md"
+      ],
+      "priority": 80
+    },
+    {
+      "keywords": [
+        "冲突修复",
+        "冲突",
+        "争执",
+        "吵架"
+      ],
+      "references": [
+        "references/knowledge/07-沟通冲突与修复.md"
+      ],
+      "priority": 80
+    },
+    {
+      "keywords": [
+        "边界",
+        "拒绝"
+      ],
+      "references": [
+        "references/practical/高情商拒绝他人：体面护边界的实用指南.md"
+      ],
+      "priority": 80
+    },
+    {
+      "keywords": [
+        "Blueprint",
+        "自然流",
+        "Mystery",
+        "冷读",
+        "内在状态",
+        "结构化互动"
+      ],
+      "references": [
+        "references/knowledge/20-经典社交体系的机制、证据与风险边界.md",
+        "references/practical/自然流、内在状态与结构化互动：伦理能力转译.md"
+      ],
+      "priority": 75
+    },
+    {
+      "keywords": [
+        "聊天截图",
+        "网聊",
+        "媒介误读",
+        "隐私",
+        "诈骗",
+        "在线约会"
+      ],
+      "references": [
+        "references/knowledge/09-在线约会与数字关系.md"
+      ],
+      "priority": 75
+    },
+    {
+      "keywords": [
+        "投入失衡",
+        "降级",
+        "退出",
+        "互惠判断"
+      ],
+      "references": [
+        "references/practical/关系投入失衡：互惠判断、降级投入与退出决策.md"
+      ],
+      "priority": 75
+    },
+    {
+      "keywords": [
+        "婚姻家庭",
+        "婚姻",
+        "家庭生命周期"
+      ],
+      "references": [
+        "references/knowledge/11-婚姻家庭与生命周期.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "金钱家务育儿",
+        "家务",
+        "育儿",
+        "双方家庭",
+        "共同财务"
+      ],
+      "references": [
+        "references/knowledge/12-金钱家务育儿与双方家庭.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "分手背叛",
+        "分手",
+        "背叛",
+        "复合",
+        "出轨"
+      ],
+      "references": [
+        "references/knowledge/15-分手背叛与关系修复.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "领导",
+        "上级",
+        "同事",
+        "下属",
+        "客户",
+        "向上管理",
+        "职场",
+        "书面留痕"
+      ],
+      "references": [
+        "references/knowledge/21-职场沟通与向上管理.md",
+        "references/practical/职场高频场景：请示汇报、请假、推进与拒绝.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "父母",
+        "姻亲",
+        "亲戚",
+        "子女",
+        "兄弟姐妹",
+        "代际",
+        "催婚",
+        "催生",
+        "家庭沟通"
+      ],
+      "references": [
+        "references/knowledge/22-家庭沟通与代际关系.md",
+        "references/practical/家人沟通：关心、催促、分歧与边界.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "第三方",
+        "调解",
+        "夹在中间",
+        "斡旋"
+      ],
+      "references": [
+        "references/knowledge/23-冲突调解与第三方斡旋.md",
+        "references/practical/夹在中间：第三方调解实用指南.md"
+      ],
+      "priority": 70
+    },
+    {
+      "keywords": [
+        "个人风格",
+        "风格画像",
+        "像我",
+        "像自己",
+        "口吻",
+        "表达习惯"
+      ],
+      "references": [
+        "references/practical/个人风格画像：保留个性的表达升级.md"
+      ],
+      "priority": 65
+    },
+    {
+      "keywords": [
+        "主动表达",
+        "第一次见面",
+        "自然接触"
+      ],
+      "references": [
+        "references/practical/主动表达、第一次见面与自然接触.md"
+      ],
+      "priority": 60
+    },
+    {
+      "keywords": [
+        "松弛感",
+        "现场取材",
+        "轻松调情",
+        "社交校准"
+      ],
+      "references": [
+        "references/practical/场景感、松弛感与社交校准：从接话到关系推进.md"
+      ],
+      "priority": 60
+    },
+    {
+      "keywords": [
+        "一句话回复",
+        "开场",
+        "邀约",
+        "演练"
+      ],
+      "references": [
+        "references/practical/实战话术编排器：从一句回复到后续分支.md"
+      ],
+      "priority": 60
+    },
+    {
+      "keywords": [
+        "其他实用主题",
+        "实用导读",
+        "实用指南"
+      ],
+      "references": [
+        "references/practical/00-导读与使用分级.md"
+      ],
+      "priority": 50
+    }
+  ],
+  "safetyKeywords": [
+    "家暴",
+    "他打我",
+    "她打我",
+    "跟踪",
+    "胁迫",
+    "强迫",
+    "下药",
+    "偷拍",
+    "威胁",
+    "勒索",
+    "自伤",
+    "自杀",
+    "轻生",
+    "不想活",
+    "伤人",
+    "杀了",
+    "生命危险",
+    "限制自由",
+    "财务控制",
+    "人身危险",
+    "法律",
+    "危机"
+  ],
+  "safetyReferences": [
+    "references/knowledge/17-中国法律安全与危机转介.md"
+  ]
+}
