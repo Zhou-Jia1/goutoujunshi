@@ -9,7 +9,7 @@ from smoke_android_m1 import APP, Device
 from smoke_android_import import click_ready
 
 
-class FakeDevice:
+class FakeDevice(Device):
     bounds = staticmethod(Device.bounds)
     action = Device.action
 
@@ -29,6 +29,11 @@ def button(bounds, text="联系人"):
 
 
 class NativeClickTests(unittest.TestCase):
+    def test_shared_click_clips_send_control_to_scroll_viewport(self):
+        device = FakeDevice(f'<node scrollable="true" bounds="[0,80][320,560]">{button("[40,548][280,612]", "发送")}</node>')
+        device.click("发送")
+        self.assertEqual([("shell", "input", "tap", 160, 554)], device.calls)
+
     def test_navigation_click_stays_above_android_home_bar(self):
         device = FakeDevice(button("[112,576][208,640]") +
             f'<node package="{APP}" resource-id="android:id/navigationBarBackground" bounds="[0,592][320,640]"/>')
