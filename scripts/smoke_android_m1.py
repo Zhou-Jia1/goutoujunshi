@@ -91,8 +91,8 @@ class Device:
         require(area is not None, "No scroll area in debug app")
         left, top, right, bottom = self.bounds(area)
         x = (left + right) // 2
-        high, low = int(top + (bottom - top) * .2), int(top + (bottom - top) * .8)
-        self.call("shell", "input", "swipe", x, low if upward else high, x, high if upward else low, 250)
+        high, low = int(top + (bottom - top) * .3), int(top + (bottom - top) * .7)
+        self.call("shell", "input", "swipe", x, low if upward else high, x, high if upward else low, 800)
 
     def visible_bounds(self, root, node):
         parents = {child: parent for parent in root.iter() for child in parent}
@@ -133,8 +133,9 @@ class Device:
 
     def click(self, text, scroll=False):
         observed_public = set()
+        previous = None
         for upward in ([True, False] if scroll else [True]):
-            for _ in range(10 if scroll else 1):
+            for _ in range(10 if scroll else 8):
                 root = self.tree()
                 for row in self.redacted_controls(root):
                     observed_public.update(value for value in row[:2] if value != "<redacted>")
@@ -142,8 +143,13 @@ class Device:
                 if node is not None:
                     left, top, right, bottom = self.visible_bounds(root, node)
                     if right > left and bottom > top:
-                        self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
-                        return
+                        position = (left, top, right, bottom)
+                        if position == previous:
+                            self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
+                            return
+                        previous = position
+                        continue
+                previous = None
                 if scroll:
                     self.swipe(root, upward)
         print("Redacted action state:", self.redacted_controls(root), flush=True)
