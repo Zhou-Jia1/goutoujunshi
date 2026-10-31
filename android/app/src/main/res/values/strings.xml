@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">狗头军师</string>
+    <string name="nav_counsel">军师</string>
+    <string name="nav_contacts">联系人</string>
+    <string name="nav_me">我的</string>
+    <string name="bootstrap_message">今天遇到什么事了？说说看。</string>
+    <string name="bootstrap_contacts">联系人功能正在接入</string>
+    <string name="bootstrap_settings">模型与隐私设置正在接入</string>
+</resources>

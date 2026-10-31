@@ -4,5 +4,15 @@
 __pycache__/
 *.pyc
 
+# Android local configuration, generated output and secrets.
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+*.jks
+*.keystore
+keystore.properties
+.env
+
 # The raw research workspace is intentionally not part of the distributable skill.
 /恋爱知识库/
