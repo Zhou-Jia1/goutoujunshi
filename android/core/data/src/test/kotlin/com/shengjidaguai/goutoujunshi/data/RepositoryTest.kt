@@ -1,0 +1,342 @@
+package com.shengjidaguai.goutoujunshi.data
+
+import androidx.room.Room
+import com.shengjidaguai.goutoujunshi.domain.*
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
+import java.io.File
+import java.nio.file.Files
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+
+/** Deliberately unencrypted relational tests; native SQLCipher is tested on a device separately. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [28])
+class RepositoryTest {
+    private lateinit var db: JunshiDatabase
+    private lateinit var session: DataSession
+    @Before fun setup() = runBlocking {
+        db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), JunshiDatabase::class.java).build()
+        session = DataSession(db, 1)
+        ContactRepository(session).save(Contact("a", "虚构甲"))
+        ContactRepository(session).save(Contact("b", "虚构乙"))
+    }
+    @After fun close() { db.close() }
+
+    @Test fun draftAndConversationAdvanceTogetherAndRejectStaleOrWrongOwner() = runBlocking {
+        val repo = ConversationRepository(session)
+        val initial = Conversation("formal", "a", false)
+        repo.save(initial)
+        repo.saveDraft("a", "formal", "原草稿")
+        val next = initial.copy(revision = 1)
+        repo.updateDraft("a", 0, next, "更新草稿", expectedContactRevision = 0)
+        assertEquals(next, repo.list("a").single())
+        assertEquals("更新草稿", repo.draft("a", "formal"))
+        for (write in listOf<suspend () -> Unit>(
+            { repo.updateDraft("a", 0, next, "过期草稿", expectedContactRevision = 0) },
+            { repo.updateDraft("b", 1, next.copy(contactId = "b", revision = 2), "串线草稿", expectedContactRevision = 0) },
+            { repo.updateDraft("a", 1, next.copy(revision = 2), "旧授权来源", expectedContactRevision = 99) },
+        )) {
+            var rejected = false
+            try { write() } catch (_: IllegalArgumentException) { rejected = true }
+            catch (_: IllegalStateException) { rejected = true }
+            assertTrue(rejected)
+            assertEquals(next, repo.list("a").single())
+            assertEquals("更新草稿", repo.draft("a", "formal"))
+            assertTrue(repo.list("b").isEmpty())
+        }
+    }
+    private suspend fun consent() { ConsentRepository(session).update(true) }
+    private suspend fun source(origin: StyleOrigin): StyleSample {
+        when (origin) {
+            StyleOrigin.IMPORT -> ImportRepository(session).save(ChatImport("imp", "a", contentHash = "synthetic-hash"),
+                listOf(ChatLine("line", "imp", speaker = Speaker.ME, text = "您好合成唯一标记", speakerConfirmed = true, contactId = "a")))
+            StyleOrigin.EDITED_REPLY -> {
+                ConversationRepository(session).save(Conversation("conv", "a"))
+                ConversationRepository(session).saveMessage(Message("answer", "conv", MessageRole.ASSISTANT, "合成答案", contactId = "a"))
+            }
+            StyleOrigin.QUIZ -> Unit
+        }
+        val contact = if (origin == StyleOrigin.QUIZ) null else "a"
+        val stamp = session.stamp(contact)
+        return StyleSample("sample", if (contact == null) RelationGroup.DEFAULT else RelationGroup.SOCIAL,
+            if (origin == StyleOrigin.IMPORT) "您好合成唯一标记" else "合成唯一标记", origin, contact,
+            if (origin == StyleOrigin.IMPORT) "imp" else null,
+            if (origin == StyleOrigin.IMPORT) "line" else null,
+            if (origin == StyleOrigin.EDITED_REPLY) "answer" else null,
+            stamp.consentVersion, stamp.sourceRevision)
+    }
+    private suspend fun stamp(sample: StyleSample) = session.stamp(sample.sourceContactId)
+    private suspend fun rejected(block: suspend () -> Unit) {
+        try { block(); fail("Expected transaction rejection") } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun contactsAndForeignKeysIsolateMessagesAndImports() = runBlocking {
+        val conversations = ConversationRepository(session)
+        conversations.save(Conversation("conv", "a"))
+        conversations.saveMessage(Message("m", "conv", text = "只属于甲", contactId = "a"))
+        assertTrue(conversations.messages("b", "conv").isEmpty())
+        rejected { conversations.saveMessage(Message("bad", "conv", contactId = "b")) }
+        rejected { conversations.save(Conversation("conv", "b")) }
+        ImportRepository(session).save(ChatImport("i", "a", contentHash = "same"), emptyList())
+        ImportRepository(session).save(ChatImport("j", "b", contentHash = "same"), emptyList())
+        assertEquals(1, ImportRepository(session).list("b").size)
+    }
+
+    @Test fun allThreeStyleOriginsRejectNoConsentPauseRevocationAndLateConsent() = runBlocking {
+        for (origin in StyleOrigin.entries) {
+            for (mode in listOf("none", "pause", "revoke", "late")) {
+                ConsentRepository(session).update(false)
+                val sample = source(origin)
+                if (mode != "none") consent()
+                val ready = sample.copy(consentVersion = ConsentRepository(session).get().consentVersion,
+                    sourceRevision = session.stamp(sample.sourceContactId).sourceRevision)
+                val captured = stamp(ready)
+                when (mode) {
+                    "pause" -> ConsentRepository(session).update(true, true)
+                    "revoke" -> ConsentRepository(session).update(false)
+                    "late" -> ConsentRepository(session).update(true)
+                }
+                rejected { StyleRepository(session).saveSample(ready, captured) }
+                rejected { StyleRepository(session).saveProfile(StyleProfile(relationGroup = ready.relationGroup,
+                    sourceRevision = captured.sourceRevision, consentVersion = captured.consentVersion), captured) }
+                assertTrue(StyleRepository(session).samples(ready.relationGroup).isEmpty())
+                assertNull(StyleRepository(session).profile(ready.relationGroup))
+                if (origin == StyleOrigin.IMPORT) ImportRepository(session).delete("a", "imp")
+            }
+        }
+    }
+
+    @Test fun allThreeOriginsRejectLateSourceAndStaleDerivedDescription() = runBlocking {
+        consent()
+        for (origin in StyleOrigin.entries) {
+            val sample = source(origin)
+            val captured = stamp(sample)
+            ContactRepository(session).save(Contact("a", "来源改变"))
+            rejected { StyleRepository(session).saveSample(sample, captured) }
+            rejected { StyleRepository(session).saveProfile(StyleProfile(sourceRevision = captured.sourceRevision,
+                consentVersion = captured.consentVersion), captured) }
+            if (origin == StyleOrigin.IMPORT) ImportRepository(session).delete("a", "imp")
+        }
+    }
+
+    @Test fun sourceDeletionClearsSamplesAndGeneratedDescriptionsAndRecomputes() = runBlocking {
+        consent()
+        val imported = source(StyleOrigin.IMPORT)
+        StyleRepository(session).saveSample(imported, stamp(imported))
+        ImportRepository(session).save(ChatImport("remainingImport", "a", contentHash = "remainingHash"),
+            listOf(ChatLine("remainingLine", "remainingImport", speaker = Speaker.ME, text = "好啊", speakerConfirmed = true, contactId = "a")))
+        val remainingStamp = session.stamp("a")
+        val remainingSample = imported.copy(id = "remaining", text = "好啊", sourceImportId = "remainingImport",
+            sourceMessageId = "remainingLine", sourceRevision = remainingStamp.sourceRevision, consentVersion = remainingStamp.consentVersion)
+        StyleRepository(session).saveSample(remainingSample, remainingStamp)
+        val current = session.stamp()
+        StyleRepository(session).saveProfile(StyleProfile(relationGroup = RelationGroup.SOCIAL, description = "合成唯一标记",
+            sourceRevision = current.sourceRevision, consentVersion = current.consentVersion), current)
+        ImportRepository(session).delete("a", "imp")
+        val remaining = StyleRepository(session).samples(RelationGroup.SOCIAL)
+        assertEquals(listOf("好啊"), remaining.map { it.text })
+        val profile = requireNotNull(StyleRepository(session).profile(RelationGroup.SOCIAL))
+        assertEquals("", profile.description)
+        assertFalse(profile.features.usesHonorific)
+        ContactRepository(session).delete("a")
+        assertTrue(ImportRepository(session).list("a").isEmpty())
+        assertFalse(encode(remaining).contains("合成唯一标记"))
+    }
+
+    @Test fun deletionOfContactCascadesEveryRelatedSource() = runBlocking {
+        consent()
+        val imported = source(StyleOrigin.IMPORT)
+        StyleRepository(session).saveSample(imported, stamp(imported))
+        ContactRepository(session).delete("a")
+        assertTrue(StyleRepository(session).samples(RelationGroup.SOCIAL).isEmpty())
+        assertNull(StyleRepository(session).profile(RelationGroup.SOCIAL))
+        assertTrue(ImportRepository(session).lines("a", "imp").isEmpty())
+        assertNotNull(ContactRepository(session).get("b"))
+    }
+
+    @Test fun undoRestoresEvictedRowsAndOnlyAllowsLatest() = runBlocking {
+        consent()
+        val memory = MemoryRepository(session)
+        fun entry(id: Int) = MemoryEntry(id = "$id", contactId = "a", subjectId = "a", field = "假设", value = "值$id",
+            sourceType = MemorySource.ASSISTANT_INFERENCE, updatedAt = id.toLong())
+        var first: MemoryOperation? = null
+        for (i in 1..6) {
+            val op = memory.apply("a", entry(i), session.stamp("a"))
+            if (first == null) first = op
+        }
+        assertEquals(listOf("2", "3", "4", "5", "6"), memory.list("a").map { it.id })
+        rejected { memory.undoLatest("a", session.stamp("a"), first!!.id) }
+        memory.undoLatest("a", session.stamp("a"))
+        assertEquals(listOf("1", "2", "3", "4", "5"), memory.list("a").map { it.id })
+        assertTrue(memory.list("b").isEmpty())
+        rejected { memory.applyProposal("a", MemoryProposal(scope = MemoryScope.USER, subjectId = "me", field = "姓名", value = "假名", sourceType = MemorySource.USER_EXPLICIT), session.stamp("a")) }
+    }
+
+    @Test fun undoCannotOverwriteAnIdClaimedByAnotherContactAndLeavesHistoryIntact() = runBlocking {
+        consent()
+        val memory = MemoryRepository(session)
+        fun entry(id: String, contact: String) = MemoryEntry(id, contact, subjectId = contact, field = "假设", value = "合成值")
+        memory.apply("a", entry("shared", "a"), session.stamp("a"))
+        memory.apply("a", entry("retained", "a"), session.stamp("a"))
+        memory.delete("a", "shared", session.stamp("a"))
+        memory.apply("b", entry("shared", "b"), session.stamp("b"))
+        val aBefore = memory.list("a")
+        val bBefore = memory.list("b")
+        val history = memory.operations("a")
+        rejected { memory.undoLatest("a", session.stamp("a")) }
+        assertEquals(aBefore, memory.list("a"))
+        assertEquals(bBefore, memory.list("b"))
+        assertEquals(history, memory.operations("a"))
+        // Releasing the ID allows the same retained operation to be undone successfully.
+        memory.delete("b", "shared", session.stamp("b"))
+        memory.undoLatest("a", session.stamp("a"))
+        assertEquals(setOf("shared", "retained"), memory.list("a").map { it.id }.toSet())
+    }
+
+    @Test fun undoRejectsSnapshotWithAnotherContactBeforeClearingExistingRows() = runBlocking {
+        consent()
+        val memory = MemoryRepository(session)
+        val original = MemoryEntry("own", "a", subjectId = "a", field = "假设", value = "合成值")
+        memory.apply("a", original, session.stamp("a"))
+        val corrupted = MemoryOperation("corrupt", "a", listOf(original.copy(contactId = "b")), listOf(original), 1)
+        session.transaction {
+            clearOperations("a")
+            put(MemoryOperationRow(corrupted.id, "a", 0, encode(corrupted)))
+        }
+        val before = memory.list("a")
+        val history = memory.operations("a")
+        rejected { memory.undoLatest("a", session.stamp("a")) }
+        assertEquals(before, memory.list("a"))
+        assertEquals(history, memory.operations("a"))
+        assertTrue(memory.list("b").isEmpty())
+    }
+
+    @Test fun samplesCapAtThirtyAndUseCodepointsInMemory() = runBlocking {
+        consent()
+        repeat(31) { index ->
+            val stamp = session.stamp()
+            StyleRepository(session).saveSample(StyleSample("q$index", text = "好啊", consentVersion = stamp.consentVersion,
+                sourceRevision = stamp.sourceRevision, createdAt = index.toLong()), stamp)
+        }
+        assertEquals(30, StyleRepository(session).samples(RelationGroup.DEFAULT).size)
+        val text = "😀".repeat(200)
+        MemoryRepository(session).apply("a", MemoryEntry("emoji", "a", subjectId = "a", field = "假设", value = text), session.stamp("a"))
+        rejected { MemoryRepository(session).apply("a", MemoryEntry("tooLong", "a", subjectId = "a", field = "假设", value = text + "😀"), session.stamp("a")) }
+    }
+
+    @Test fun temporaryStoreLeavesNoRowsAndExplicitSaveIsIdempotent() = runBlocking {
+        val store = TemporarySessionStore()
+        val temporary = TemporarySession("temp", draft = "合成敏感草稿", imports = listOf(ChatImport("i", contentHash = "hash")),
+            lines = listOf(ChatLine("l", "i", text = "临时合成内容")))
+        val credential = store.begin("temp")
+        assertTrue(store.put(credential, temporary))
+        assertTrue(ConversationRepository(session).list("a").isEmpty())
+        assertTrue(ImportRepository(session).list("a").isEmpty())
+        assertNull(TemporarySessionStore().get(credential))
+        val repository = ConversationRepository(session)
+        val id = repository.saveSelectedTemporary("a", store, credential)
+        assertEquals(id, repository.saveSelectedTemporary("a", store, credential))
+        assertEquals(1, repository.list("a").size)
+        assertEquals(1, ImportRepository(session).list("a").size)
+        assertEquals("合成敏感草稿", repository.draft("a", id))
+        store.clear()
+        assertNull(store.get(credential))
+        assertFalse(store.put(credential, temporary))
+        val newCredential = store.begin("temp")
+        assertTrue(store.put(newCredential, temporary.copy(draft = "同名新会话")))
+        val nextId = repository.saveSelectedTemporary("a", store, newCredential)
+        assertNotEquals("Reusing a display ID must not restore an old saved session", id, nextId)
+        assertEquals("同名新会话", repository.draft("a", nextId))
+        rejected { repository.save(Conversation("temporary")) }
+    }
+
+    @Test fun schemaVersionOneOpensWithoutDestructiveMigration() {
+        val sqlite = db.openHelper.writableDatabase
+        sqlite.query("PRAGMA user_version").use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
+        sqlite.query("PRAGMA foreign_keys").use { assertTrue(it.moveToFirst()); assertEquals(1, it.getInt(0)) }
+        assertTrue(JunshiDatabase.MIGRATIONS.isEmpty())
+    }
+
+    @Test fun aPermanentPathCannotChangeContactImportOrBeReusedWhilePending() = runBlocking {
+        val cache = RuntimeEnvironment.getApplication().cacheDir
+        val root = Files.createTempDirectory(cache.toPath(), "synthetic-files-").toFile()
+        try {
+            val file = File(root, "source.txt").apply { writeText("合成甲来源") }
+            val files = FileCleanupRepository(session)
+            files.register("a", null, file, root)
+            files.register("a", null, file, root) // Same source registration is idempotent.
+            rejected { files.register("b", null, file, root) }
+            ImportRepository(session).save(ChatImport("i", "a", contentHash = "synthetic"), emptyList())
+            rejected { files.register("a", "i", file, root) }
+            ContactRepository(session).delete("b")
+            assertTrue("Deleting B must not delete A's registered file", file.exists())
+            assertEquals("a", session.transaction { sourceFile(file.canonicalPath)?.contactId })
+            session.transaction {
+                removeFile(file.canonicalPath)
+                put(PendingFileCleanupRow(file.canonicalPath))
+            }
+            rejected { files.register("a", null, file, root) }
+            assertEquals(listOf(file.canonicalPath), files.retryWith { false })
+            assertNotNull(session.transaction { pendingFile(file.canonicalPath) })
+            rejected { files.register("a", "i", file, root) }
+            assertTrue(files.retry().isEmpty())
+            assertFalse(file.exists())
+            assertNull(session.transaction { pendingFile(file.canonicalPath) })
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun pendingDeleteAndRegistrationCannotRaceUsingAnOldSnapshot() = runBlocking {
+        val root = Files.createTempDirectory(RuntimeEnvironment.getApplication().cacheDir.toPath(), "synthetic-race-").toFile()
+        try {
+            val file = File(root, "source.txt").apply { writeText("合成待删除内容") }
+            val path = file.canonicalPath
+            session.transaction { put(PendingFileCleanupRow(path)) }
+            val files = FileCleanupRepository(session)
+            val deleting = CompletableDeferred<Unit>()
+            val releaseDelete = CompletableDeferred<Unit>()
+            val registering = CompletableDeferred<Unit>()
+            withTimeout(10_000) {
+                val retry = async {
+                    files.retryWith { target -> deleting.complete(Unit); releaseDelete.await(); target.delete() }
+                }
+                deleting.await()
+                val register = async {
+                    registering.complete(Unit)
+                    runCatching { files.register("b", null, file, root) }
+                }
+                registering.await()
+                assertFalse("Registration must wait until deletion and queue commit finish", register.isCompleted)
+                releaseDelete.complete(Unit)
+                assertTrue(retry.await().isEmpty())
+                assertTrue("A physically deleted file cannot become a new source", register.await().isFailure)
+            }
+            assertTrue(session.transaction { files("b") }.isEmpty())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun revokedTemporaryCredentialCannotMigrateAnOldSnapshot() = runBlocking {
+        val store = TemporarySessionStore()
+        val credential = store.begin("sensitive")
+        assertTrue(store.put(credential, TemporarySession("sensitive", draft = "清除前的合成内容")))
+        store.clear()
+        var rejected = false
+        try { ConversationRepository(session).saveSelectedTemporary("a", store, credential) }
+        catch (_: IllegalStateException) { rejected = true }
+        assertTrue(rejected)
+        assertTrue(ConversationRepository(session).list("a").isEmpty())
+        val newCredential = store.begin("sensitive")
+        assertFalse(store.put(credential, TemporarySession("sensitive", draft = "旧模型迟到内容")))
+        assertTrue(store.put(newCredential, TemporarySession("sensitive", draft = "用户新建内容")))
+        val saved = ConversationRepository(session).saveSelectedTemporary("a", store, newCredential)
+        assertEquals("用户新建内容", ConversationRepository(session).draft("a", saved))
+    }
+}
