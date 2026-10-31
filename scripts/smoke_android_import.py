@@ -47,6 +47,19 @@ def click_ready(device, text):
                     a, b, c, d = device.bounds(parent)
                     left, top, right, bottom = max(left, a), max(top, b), min(right, c), min(bottom, d)
                 parent = parents.get(parent)
+            # Edge-to-edge Compose nodes can include pixels covered by system bars.
+            # Never tap Android's Home/Back area instead of the visible app control.
+            for bar in root.iter("node"):
+                if bar.get("package") != APP:
+                    continue
+                if bar.get("resource-id") == "android:id/navigationBarBackground":
+                    a, b, c, d = device.bounds(bar)
+                    if a <= left and c >= right and b > 0:
+                        bottom = min(bottom, b)
+                elif bar.get("resource-id") == "android:id/statusBarBackground":
+                    a, b, c, d = device.bounds(bar)
+                    if a <= left and c >= right:
+                        top = max(top, d)
             if right > left and bottom > top:
                 device.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
                 return
@@ -102,14 +115,14 @@ def confirm_import(device, formal=False, rights_pending=False):
 
 def remove_contact(device):
     device.start(restart=True)
-    device.click("联系人")
+    click_ready(device, "联系人")
     current = labels(device)
     if CONTACT in current:
         require(current.count("删除联系人") == 1, "Refusing ambiguous fixture deletion")
-        device.click("删除联系人")
-        device.click("删除这些记录")
+        click_ready(device, "删除联系人")
+        click_ready(device, "删除这些记录")
         require(CONTACT not in labels(device), "Synthetic contact was not removed")
-    device.click("军师")
+    click_ready(device, "军师")
 
 
 def main():
@@ -126,9 +139,9 @@ def main():
     device.call("install", "-r", args.apk.resolve())
     device.call("shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", 1)
     device.start(restart=True)
-    device.click("联系人")
+    click_ready(device, "联系人")
     require("还没有联系人" in labels(device), "Use an empty dedicated test emulator")
-    device.click("军师")
+    click_ready(device, "军师")
     try:
         rights = share(device, cold=True)
         confirm_import(device, rights_pending=rights)
@@ -160,7 +173,21 @@ def main():
             "Formal evidence was not restored for analysis")
         print("PASS: formal encrypted evidence supports analysis after process death", flush=True)
     finally:
-        remove_contact(device)
+        try:
+            remove_contact(device)
+        except Exception:
+            # Only process/window metadata is emitted; no UI text or conversation dump.
+            try:
+                print("Debug process:", device.call("shell", "pidof", APP).strip(), flush=True)
+            except Exception:
+                print("Debug process is not running", flush=True)
+            try:
+                focus = device.call("shell", "dumpsys", "window", "windows")
+                print("Focused windows:", [line.strip() for line in focus.splitlines()
+                    if "mCurrentFocus=" in line or "mFocusedApp=" in line], flush=True)
+            except Exception:
+                print("Focused window metadata unavailable", flush=True)
+            raise
 
 
 if __name__ == "__main__":
