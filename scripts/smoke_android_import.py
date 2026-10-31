@@ -20,6 +20,19 @@ def labels(device):
             if node.get("package") == APP and node.get("text")]
 
 
+def find_text(device, text, scroll=False):
+    """Wait for real UI output and reach it on compact emulator screens."""
+    for upward in ([True, False] if scroll else [True]):
+        for _ in range(8):
+            root = device.tree()
+            if any(node.get("package") == APP and node.get("text") == text
+                   for node in root.iter("node")):
+                return root
+            if scroll:
+                device.swipe(root, upward)
+    raise AssertionError(f"Expected debug text was not reachable: {text}")
+
+
 def share(device, cold=False):
     if cold:
         device.call("shell", "am", "force-stop", APP)
@@ -28,17 +41,21 @@ def share(device, cold=False):
         "-a", "android.intent.action.SEND", "-t", "text/plain",
         "--es", "android.intent.extra.TEXT", SHARED)
     require("Status: ok" in result, "Debug sharing activity did not start")
+    find_text(device, "确认聊天记录")
     current = labels(device)
-    require("确认聊天记录" in current and MESSAGE in current,
-        "Explicit share did not reach the unconfirmed preview")
-    require(device.action(device.tree(), CONFIRM) is None,
+    rights_pending = any(text.startswith("请只导入") for text in current)
+    find_text(device, MESSAGE, scroll=True)
+    root = find_text(device, CONFIRM, scroll=True)
+    require(device.action(root, CONFIRM) is None,
         "Unconfirmed speakers must not be importable")
+    return rights_pending
 
 
-def confirm_import(device, formal=False):
-    if "我了解并有权使用这些记录" in labels(device):
-        device.click("我了解并有权使用这些记录")
+def confirm_import(device, formal=False, rights_pending=False):
+    if rights_pending:
+        device.click("我了解并有权使用这些记录", scroll=True)
     if formal:
+        find_text(device, "给对方起个代号，尽量不用真实姓名", scroll=True)
         node = device.editor()
         require(not node.get("text"), "Refusing to overwrite a nonempty alias")
         left, top, right, bottom = device.bounds(node)
@@ -46,9 +63,9 @@ def confirm_import(device, formal=False):
         device.call("shell", "input", "text", CONTACT)
         device.call("shell", "input", "keyevent", "KEYCODE_BACK")
         require(device.editor().get("text") == CONTACT, "Synthetic alias was changed")
-        device.click("使用此昵称建立新联系人")
+        device.click("使用此昵称建立新联系人", scroll=True)
     else:
-        device.click("导入到：请选择临时问问或联系人")
+        device.click("导入到：请选择临时问问或联系人", scroll=True)
         device.click("临时问问")
     device.click("这条消息是谁说的：尚未确认", scroll=True)
     device.click("我")
@@ -86,14 +103,13 @@ def main():
     require("还没有联系人" in labels(device), "Use an empty dedicated test emulator")
     device.click("军师")
     try:
-        share(device, cold=True)
-        confirm_import(device)
+        rights = share(device, cold=True)
+        confirm_import(device, rights_pending=rights)
         print("PASS: cold sharing requires target and speaker confirmation", flush=True)
         # Identical explicit hot deliveries are new imports, then deduplicated on confirmation.
-        share(device)
-        confirm_import(device)
-        require("这段之前导入过，已保留原有记录。" in labels(device),
-            "Repeated content did not report deduplication")
+        rights = share(device)
+        confirm_import(device, rights_pending=rights)
+        find_text(device, "这段之前导入过，已保留原有记录。", scroll=True)
         print("PASS: identical hot sharing is accepted and deduplicated", flush=True)
         device.click("发送", scroll=True)
         device.click("全部复制", scroll=True)
@@ -107,8 +123,8 @@ def main():
             "Temporary import unexpectedly survived process death")
         print("PASS: temporary evidence disappears after process death", flush=True)
         device.click("关闭")
-        share(device)
-        confirm_import(device, formal=True)
+        rights = share(device)
+        confirm_import(device, formal=True, rights_pending=rights)
         device.start(restart=True)
         require(CONTACT in labels(device), "Formal import target did not survive process death")
         device.click("发送", scroll=True)
