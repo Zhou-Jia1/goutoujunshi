@@ -18,6 +18,7 @@ import kotlinx.serialization.Serializable
     val conversationId:String="", val conversationRevision:Long=0,
     val formality:String="medium",
     val manualRelation:RelationType?=null, val manualGoal:Goal?=null, val manualFormality:String?=null,
+    val networkSelection:List<String>?=null, val timelineSummary:String="",
     val purpose:OutboundPurpose=OutboundPurpose.ANALYSIS,
     val redactionProfile:RedactionProfile=RedactionProfile(),
     val actualDataContext:OutboundDataContext=OutboundDataContext(),

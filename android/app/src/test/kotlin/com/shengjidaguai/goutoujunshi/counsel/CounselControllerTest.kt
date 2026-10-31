@@ -11,12 +11,31 @@ import org.junit.Test
 
 class CounselControllerTest {
     internal class MemoryPersistence : CounselPersistence {
+        var beforeSummary: CompletableDeferred<Unit>? = null
+        var summaryStarted = false
+        var discardSummaryFailures = 0
+        var summaryCompletionFailures = 0
+        override suspend fun discardSummary(summary: TimelineSummary) {
+            if (discardSummaryFailures > 0) { discardSummaryFailures--; error("synthetic discard failure") }
+            val id = summary.request.contactId!!
+            saved[id]?.let { prior -> saved[id] = prior.copy(summaries = prior.summaries.filterNot { it.key == summary.key && it.request.requestId == summary.request.requestId }) }
+        }
+        var summaryFailures = 0
+        override suspend fun saveSummary(summary: TimelineSummary) {
+            summaryStarted = true
+            beforeSummary?.await()
+            if (summaryFailures > 0) { summaryFailures--; error("synthetic summary save failure") }
+            val id = summary.request.contactId!!
+            val prior = saved.getValue(id)
+            saved[id] = prior.copy(summaries = prior.summaries.filterNot { it.key == summary.key } + summary)
+        }
         val feedbackPlans = mutableMapOf<String,ActionPlan>()
         var feedbackFailures = 0
         override suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) {
             if (feedbackFailures > 0) { feedbackFailures--; error("synthetic save failure") }
             check(people.any { it.id == contact.id && it.sourceRevision == plan.sourceRevision })
             feedbackPlans[plan.id] = plan
+            saved[contact.id]?.let { saved[contact.id] = it.copy(plans = feedbackPlans.values.filter { p -> p.contactId == contact.id }) }
         }
         val people = mutableListOf<Contact>()
         val saved = mutableMapOf<String, StoredCounsel>()
@@ -116,6 +135,7 @@ class CounselControllerTest {
             saved[contact.id]?.let { saved[contact.id] = it.copy(messages = it.messages.filterNot { entry -> entry.id == message.id }) }
         }
         override suspend fun saveRun(contact: Contact, run: AnalysisRun) {
+            if (summaryCompletionFailures > 0 && run.status == RunStatus.COMPLETED && run.requestSnapshot?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) { summaryCompletionFailures--; error("synthetic final checkpoint failure") }
             if (runFailures > 0) { runFailures--; error("synthetic run checkpoint failure") }
             val prior = saved.getValue(contact.id)
             saved[contact.id] = prior.copy(runs = prior.runs.filterNot { it.requestId == run.requestId } + run)

@@ -151,4 +151,9 @@
     <string name="answer_speaker_me">我：%1$s</string>
     <string name="answer_speaker_them">对方：%1$s</string>
     <string name="answer_speaker_other">其他说话人：%1$s</string>
+    <string name="summary_step">第一步：整理早期记录</string>
+    <string name="summary_running">正在整理早期记录</string>
+    <string name="summary_scope">这一步只整理发送预览中的早期节选，未提供的内容不会被总结。之后的完整分析需要再次预览并确认发送。</string>
+    <string name="summary_ready">早期节选已整理。请预览并确认第二步的分析内容。</string>
+    <string name="summary_invalid">这次整理未保留可核对的消息编号，请重试。原记录仍保留。</string>
 </resources>

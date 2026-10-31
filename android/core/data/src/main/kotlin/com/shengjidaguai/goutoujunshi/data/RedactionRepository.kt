@@ -13,6 +13,7 @@ class RedactionRepository(private val session: DataSession) {
         requireContact(contactId)
         val previous = records(contactId, OwnedRecordKind.REDACTION.name).singleOrNull()?.let { decode<RedactionProfile>(it.payload) } ?: RedactionProfile()
         check(previous.revision == expected && profile.revision == expected + 1)
+        clearSummaries(contactId)
         put(OwnedRecordRow(key(contactId), contactId, OwnedRecordKind.REDACTION, encode(profile)))
     }
 }

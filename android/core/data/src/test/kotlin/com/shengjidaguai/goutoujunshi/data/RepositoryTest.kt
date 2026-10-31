@@ -21,6 +21,29 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun timelineCacheIsOwnedSourceCasAndRemovedWithRulesOrOwner() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("summary-conv", "a", false)
+        conversations.save(c); conversations.saveDraft("a", c.id, "虚构问题")
+        val line = ChatLine("line","batch",speaker=Speaker.ME,text="虚构原文",speakerConfirmed=true,contactId="a")
+        ImportRepository(session).save(ChatImport("batch","a",ImportSource.PASTE,"synthetic-summary-hash"),listOf(line))
+        val request = AnalysisRequest(requestId="summary-request", contactId="a", sourceRevision=1, conversationId=c.id, userText="虚构问题", networkSelection=listOf("line"),
+            evidence=listOf(EvidenceBlock("batch","PASTE",listOf(ChatLine("line","batch",speaker=Speaker.ME,text="虚构原文",speakerConfirmed=true,contactId="a")))))
+        val cache = TimelineSummary("key", request, "[line] 虚构事件")
+        val repo = SummaryRepository(session)
+        repo.save(cache); assertEquals(1,repo.list("a").size); assertTrue(repo.list("b").isEmpty())
+        assertTrue(runCatching { repo.save(cache.copy(request=request.copy(sourceRevision=99))) }.isFailure)
+        assertTrue(runCatching { repo.save(cache.copy(text="[missing] 无来源")) }.isFailure)
+        val newer = cache.copy(request=request.copy(requestId="new-summary-request"))
+        repo.save(newer); repo.discard(cache); assertEquals("new-summary-request",repo.list("a").single().request.requestId)
+        repo.discard(newer); assertTrue(repo.list("a").isEmpty());repo.save(cache)
+        RedactionRepository(session).save("a",0,RedactionProfile(revision=1))
+        assertTrue(repo.list("a").isEmpty())
+        assertTrue(runCatching { repo.save(cache) }.isFailure)
+        ContactRepository(session).delete("a")
+        assertTrue(runCatching { repo.save(cache) }.isFailure)
+    }
+
     @Test fun feedbackKeepsSourceAndDoesNotCreateLearningSamples() = runBlocking {
         val conversations = ConversationRepository(session)
         val c = Conversation("feedback-conv", "a", false)

@@ -13,12 +13,12 @@ import java.security.MessageDigest
         val previous=runs.firstOrNull { it.requestId==request.requestId }
         if(previous!=null) {
             require(matchesOperation(previous, request)) { "requestId belongs to another operation" }
-            require(messages.firstOrNull { it.requestId==request.requestId && it.role==MessageRole.USER }?.text==request.userText) { "Retry input changed" }
+            if (request.purpose != OutboundPurpose.LONG_RECORD_SUMMARY) require(messages.firstOrNull { it.requestId==request.requestId && it.role==MessageRole.USER }?.text==request.userText) { "Retry input changed" }
             return copy(runs=runs.map { if(it.requestId==request.requestId && it.status!=RunStatus.COMPLETED) it.copy(status=RunStatus.RUNNING) else it })
         }
         require(messages.none { it.id==userMessageId }) { "Duplicate message id" }
         return copy(runs=runs+AnalysisRun(request.requestId,request.conversationId,request.mode,request.parentAnswerId,request.inputRevision,RunStatus.RUNNING,request.conversationRevision,request.contactId,operationFingerprint(request)),
-            messages=messages+Message(id=userMessageId,conversationId=request.conversationId,role=MessageRole.USER,text=request.userText,requestId=request.requestId,status=MessageStatus.COMPLETED,contactId=request.contactId))
+            messages=if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) messages else messages+Message(id=userMessageId,conversationId=request.conversationId,role=MessageRole.USER,text=request.userText,requestId=request.requestId,status=MessageStatus.COMPLETED,contactId=request.contactId))
     }
     /** At most one assistant message per operation. Stale callbacks leave state unchanged. */
     fun complete(request:AnalysisRequest,incoming:StructuredAnswer,assistantMessageId:String,currentInputRevision:Long,currentConversationRevision:Long):AnalysisLedger {
@@ -47,10 +47,14 @@ import java.security.MessageDigest
 
     /** T27 snapshots predate scene controls. Accept only their exact canonical hash, never a changed operation. */
     private fun legacyOperationMatches(run: AnalysisRun, request: AnalysisRequest): Boolean {
-        if (request.formality != "medium" || request.manualRelation != null || request.manualGoal != null || request.manualFormality != null) return false
+        if (request.networkSelection != null || request.timelineSummary.isNotEmpty()) return false
         val fields = Json { encodeDefaults = true }.encodeToJsonElement(AnalysisRequest.serializer(), request).jsonObject
-        val legacy = JsonObject(fields.filterKeys { it !in setOf("formality", "manualRelation", "manualGoal", "manualFormality") }).toString()
-        return run.operationFingerprint == hash(legacy)
+        val prior = JsonObject(fields.filterKeys { it !in setOf("networkSelection", "timelineSummary") }).toString()
+        if (run.operationFingerprint == hash(prior)) return true
+        if (request.formality != "medium" || request.manualRelation != null || request.manualGoal != null || request.manualFormality != null) return false
+        val legacy = JsonObject(fields.filterKeys { it !in setOf("formality", "manualRelation", "manualGoal", "manualFormality", "networkSelection", "timelineSummary") }).toString()
+        val transitional = JsonObject(fields.filterKeys { it !in setOf("formality", "manualRelation", "manualGoal", "manualFormality") }).toString()
+        return run.operationFingerprint in setOf(hash(legacy), hash(transitional))
     }
 
     /** Hash an immutable serialized snapshot, including every nested request field and default. */

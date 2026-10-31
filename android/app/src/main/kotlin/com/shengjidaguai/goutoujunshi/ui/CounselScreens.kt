@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shengjidaguai.goutoujunshi.R
 import com.shengjidaguai.goutoujunshi.counsel.*
+import com.shengjidaguai.goutoujunshi.domain.OutboundPurpose
 import com.shengjidaguai.goutoujunshi.designsystem.*
 import com.shengjidaguai.goutoujunshi.domain.Goal
 import com.shengjidaguai.goutoujunshi.domain.RelationType
@@ -213,11 +214,16 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         state.messages.filter { it.role == MessageRole.USER }.takeLast(3).forEach { message ->
             item(key = message.id) { UserMessageBubble(message.text, emptyList()) }
         }
+        if (presentation.showOrdinaryStrategy && state.currentRequest?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) item {
+            BodyText(stringResource(if (state.streaming) R.string.summary_running else R.string.summary_step))
+            BodyText(stringResource(R.string.summary_scope), secondary = true)
+        }
+        if (presentation.showOrdinaryStrategy && state.summaryReady) item { BodyText(stringResource(R.string.summary_ready)) }
         if (state.streaming) item { ThinkingIndicator(
             when(state.waiting.stage) { 0 -> ThinkingStage.LISTENING; 1 -> ThinkingStage.SORTING; else -> ThinkingStage.PLANNING }, state.waiting.slow) }
         val answer = state.answer
         val hasAnswerSource = actionableAnswer
-        val partialReply = state.partial[SectionId.REPLY]?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
+        val partialReply = (if (state.currentRequest?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) null else state.partial[SectionId.REPLY])?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
         if (presentation.showSafetyCard) item {
             JunshiColumn(Modifier.testTag("counsel-safety")) {
                 SafetyCard({ number -> context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))) },
@@ -255,7 +261,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 }
             }
         }
-        if (presentation.showOrdinaryStrategy && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
+        if (presentation.showOrdinaryStrategy && state.currentRequest?.purpose != OutboundPurpose.LONG_RECORD_SUMMARY && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
             BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))
         }
         state.error?.let { error -> item {
@@ -265,7 +271,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             ErrorState(UiError(stringResource(errorLabel(error.code))), if (error.retryable) ({
                 if (error.code == "INTERRUPTED" && !state.demo && origin != null) {
                     actions.preparePreview(origin); previewOpen = true
-                } else actions.retry()
+                } else { actions.retry(); if (!state.demo && origin != null && error.code != "STORAGE_UNAVAILABLE") previewOpen = true }
             }) else null, if (error.code in setOf("KEY_MISSING", "KEY_INVALID", "HTTP_401", "HTTP_403", "INSUFFICIENT_BALANCE", "CONFIG_INVALID", "SETTINGS_UNAVAILABLE")) actions.openSettings else null)
         } }
         item { SecondaryButton(stringResource(R.string.preview_request), {
@@ -294,6 +300,10 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     note?.let { message -> ContentDialog(stringResource(R.string.app_name), stringResource(R.string.close), { note = null }) { BodyText(stringResource(message)) } }
     if (previewOpen && presentation.showOrdinaryStrategy) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false },
         if (!state.demo && state.outboundBody != null && origin != null) stringResource(R.string.live_send) to { actions.analyze(origin); previewOpen = false } else null) {
+        if (state.currentRequest?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
+            BodyText(stringResource(R.string.summary_step))
+            BodyText(stringResource(R.string.summary_scope))
+        }
         BodyText(stringResource(if (state.demo) R.string.preview_demo_notice else R.string.live_scope))
         BodyText(stringResource(R.string.redaction_honesty))
         BodyText(stringResource(R.string.redaction_count, state.preview?.redactionCount ?: 0))
@@ -435,6 +445,7 @@ fun errorLabel(code: String): Int = when (code) {
     "FIRST_PACKET_TIMEOUT", "STREAM_TIMEOUT" -> R.string.model_error_timeout
     "NETWORK", "STREAM_INTERRUPTED" -> R.string.model_error_network
     "NOT_SSE", "INVALID_JSON", "EMPTY_RESPONSE", "PROVIDER_REJECTED", "PROVIDER_ERROR" -> R.string.model_error_protocol
+    "SUMMARY_INVALID" -> R.string.summary_invalid
     "PREVIEW_REQUIRED" -> R.string.model_error_preview
     "REDACTION_INVALID" -> R.string.redaction_invalid
     "CONTACT_ALIAS_REQUIRED" -> R.string.error_alias
