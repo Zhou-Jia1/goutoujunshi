@@ -39,6 +39,8 @@ interface CounselPersistence {
     suspend fun discardMessage(contact: Contact, message: Message)
     suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String { error("Import persistence unavailable") }
     suspend fun clearAll(): Boolean
+    suspend fun redactionProfile(contactId: String): RedactionProfile = RedactionProfile()
+    suspend fun saveRedactionProfile(contactId: String, expected: Long, profile: RedactionProfile) { error("Privacy persistence unavailable") }
 }
 
 /** All calls are serialized by CounselController, including deletion and full wipe. */
@@ -84,6 +86,8 @@ class EncryptedCounselPersistence(
     override suspend fun clearAll(): Boolean {
         try { return store.clearAll(temporary).isEmpty() } finally { session = null }
     }
+    override suspend fun redactionProfile(contactId: String) = RedactionRepository(checkNotNull(session)).load(contactId)
+    override suspend fun saveRedactionProfile(contactId: String, expected: Long, profile: RedactionProfile) = RedactionRepository(checkNotNull(session)).save(contactId, expected, profile)
 }
 
 /** A single mailbox serializes edits, database writes and model callbacks. Intent epochs also
@@ -274,6 +278,7 @@ class CounselController(
                 it.requestId == latestUser?.requestId && latestUser?.text == saved.draft
         }
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
+        val profile = persistence.redactionProfile(contact.id)
         val oldCredential = synchronized(intentLock) {
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
@@ -285,7 +290,7 @@ class CounselController(
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
                 conversation = saved.conversation, draft = saved.draft, relationType = contact.relationType,
                 messages = saved.messages, evidence = saved.evidence, answer = answer, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
-                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile))
             recovery = null
             old
         }
@@ -360,6 +365,18 @@ class CounselController(
     fun setEmotion(value: Int?) = enqueue(true) { edit { it.copy(emotion = value?.coerceIn(0, 10)) } }
     fun setStyleBias(value: Float) = enqueue(true) { edit { it.copy(styleBias = if (value.isFinite()) value.coerceIn(0f, 1f) else 0.5f) } }
     fun setTone(value: Tone) = enqueue(true) { edit { it.copy(tone = value) } }
+    fun saveRedactionProfile(origin: String?, terms: List<String>, aliases: List<RedactionAlias>) = enqueueFrom(origin, true) {
+        invalidateRun()
+        try {
+            val previous = state.value.currentContact?.let { persistence.redactionProfile(it.id) } ?: state.value.redactionProfile
+            val next = RedactionProfile(previous.revision + 1, terms, aliases)
+            com.shengjidaguai.goutoujunshi.knowledge.Redactor(next.terms, next.aliases)
+            // Publish before IO so uncertain saves cannot authorize a previous frozen request.
+            inputRevision++
+            set(state.value.copy(redactionProfile = next, redactionError = false, answer = null))
+            state.value.currentContact?.let { persistence.saveRedactionProfile(it.id, previous.revision, next) }
+        } catch (_: Exception) { set(state.value.copy(redactionError = true, error = CounselError("REDACTION_INVALID"))) }
+    }
     private fun request(): AnalysisRequest {
         val current = state.value
         val conversation = checkNotNull(current.conversation)
@@ -368,10 +385,12 @@ class CounselController(
             userText = current.draft, emotionLevel = current.emotion, styleBias = current.styleBias, tone = current.tone,
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
+            redactionProfile = current.redactionProfile,
             evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
     fun preparePreview() = preparePreview(state.value.conversation?.id)
     fun preparePreview(originConversationId: String?) = enqueueFrom(originConversationId) preview@{
+        if (state.value.redactionError) return@preview
         if (importPending || state.value.loading || state.value.conversation == null) return@preview
         if (state.value.streaming) return@preview
         if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@preview }
@@ -389,6 +408,7 @@ class CounselController(
     }
     fun analyze() = analyze(state.value.conversation?.id)
     fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{
+        if (state.value.redactionError) return@analyze
         if (state.value.testingConnection) return@analyze
         if (importPending || state.value.loading || state.value.conversation == null) return@analyze
         if (state.value.streaming) return@analyze
@@ -475,7 +495,8 @@ class CounselController(
             is AnalysisChunk.Failed -> fail(chunk.error.code, chunk.error.retryable)
             is AnalysisChunk.Completed -> {
                 val conversationRevision = checkNotNull(state.value.conversation).revision
-                val answer = AnswerPolicy.apply(request, chunk.answer, inputRevision, conversationRevision) ?: return
+                val displayAnswer = state.value.preview?.let { SafeAliasRestorer.restore(chunk.answer, it) } ?: chunk.answer
+                val answer = AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return
                 val completedLedger = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
                 val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
                 val message = next.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT } ?: return

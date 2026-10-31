@@ -30,6 +30,13 @@ class CounselControllerTest {
             if (failImportAfterCommit) { failImportAfterCommit = false; error("synthetic acknowledgement failure") }
             return imported.id
         }
+        val privacy = mutableMapOf<String, RedactionProfile>()
+        override suspend fun redactionProfile(contactId: String) = privacy[contactId] ?: RedactionProfile()
+        override suspend fun saveRedactionProfile(contactId: String, expected: Long, profile: RedactionProfile) {
+            check(people.any { it.id == contactId })
+            check((privacy[contactId]?.revision ?: 0) == expected)
+            privacy[contactId] = profile
+        }
         var messageWrites = 0
         var draftWrites = 0
         var beforeMessage: CompletableDeferred<Unit>? = null
@@ -128,6 +135,48 @@ class CounselControllerTest {
     private suspend fun await(predicate: () -> Boolean) = withTimeout(2_000) { while (!predicate()) yield() }
     private val completed get() = AnalysisChunk.Completed(StructuredAnswer(id = "synthetic-answer", reply = listOf("synthetic reply")))
 
+    @Test fun temporaryRulesInvalidatePreviewAndRunningRequestAndDisappearOnLeaving() = runBlocking {
+        val f = Fixture()
+        try {
+            f.controller.initialize(); f.controller.editDraft("虚构输入")
+            val origin = f.controller.state.value.conversation!!.id
+            f.controller.preparePreview(); await { f.controller.state.value.preview != null }
+            f.controller.saveRedactionProfile(origin, listOf("虚构公司"), listOf(RedactionAlias("虚构姓名", "小伙伴")))
+            assertNull(f.controller.state.value.preview)
+            assertTrue(f.persistence.privacy.isEmpty())
+            f.controller.analyze(); await { f.provider.calls.size == 1 }
+            val channel = f.provider.outputs.single()
+            assertEquals(listOf("虚构公司"), f.provider.calls.single().redactionProfile.terms)
+            f.controller.saveRedactionProfile(origin, listOf("新屏蔽词"), emptyList())
+            channel.send(completed); yield()
+            assertFalse(f.controller.state.value.streaming); assertNull(f.controller.state.value.answer)
+            f.controller.newTemporary()
+            assertEquals(RedactionProfile(), f.controller.state.value.redactionProfile)
+            assertTrue(f.persistence.privacy.isEmpty())
+        } finally { f.close() }
+    }
+    @Test fun formalRulesReloadAndStaleContactEditorCannotInvalidateNewContact() = runBlocking {
+        val f = Fixture()
+        try {
+            f.controller.initialize(); f.controller.createContact("虚构甲", RelationType.FRIEND)
+            val a = f.controller.state.value.currentContact!!.id
+            val origin = f.controller.state.value.conversation!!.id
+            f.controller.saveRedactionProfile(origin, listOf("虚构甲公司"), emptyList())
+            f.controller.createContact("虚构乙", RelationType.FRIEND)
+            val bOrigin = f.controller.state.value.conversation!!.id
+            f.controller.editDraft("虚构问题"); f.controller.preparePreview(); await { f.controller.state.value.preview != null }
+            val preview = f.controller.state.value.preview
+            f.controller.saveRedactionProfile(origin, listOf("过期规则"), emptyList())
+            assertEquals(bOrigin, f.controller.state.value.conversation!!.id)
+            assertEquals(preview, f.controller.state.value.preview)
+            assertEquals(RedactionProfile(), f.controller.state.value.redactionProfile)
+            f.controller.selectContact(a)
+            assertEquals(listOf("虚构甲公司"), f.controller.state.value.redactionProfile.terms)
+            f.controller.saveRedactionProfile(f.controller.state.value.conversation!!.id, listOf("x".repeat(201)), emptyList())
+            assertTrue(f.controller.state.value.redactionError)
+            f.controller.preparePreview(); assertNull(f.controller.state.value.preview)
+        } finally { f.close() }
+    }
     @Test fun importedInjectionIsEvidenceAndTemporaryDedupNeverWritesPersistence() = runBlocking {
         val f = Fixture()
         try {

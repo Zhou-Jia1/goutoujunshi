@@ -28,6 +28,9 @@ import com.shengjidaguai.goutoujunshi.domain.Goal
 import com.shengjidaguai.goutoujunshi.domain.RelationType
 import com.shengjidaguai.goutoujunshi.domain.SectionId
 import com.shengjidaguai.goutoujunshi.domain.MessageRole
+import com.shengjidaguai.goutoujunshi.domain.RedactionAlias
+import com.shengjidaguai.goutoujunshi.domain.RedactionProfile
+import com.shengjidaguai.goutoujunshi.domain.SafeAliasRestorer
 import com.shengjidaguai.goutoujunshi.domain.group
 import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
@@ -51,6 +54,7 @@ data class CounselUiActions(
     val newTemporary: () -> Unit = {},
     val clearAll: () -> Unit = {},
     val importFile: () -> Unit = {},
+    val saveRedactionProfile: (String, List<String>, List<RedactionAlias>) -> Unit = { _, _, _ -> },
 )
 
 /** UI-only clipboard seam. Reading is invoked exclusively by an explicit paste click. */
@@ -86,6 +90,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         analyze = viewModel::analyze, retry = viewModel::retry, stop = viewModel::stop,
         newTemporary = viewModel::newTemporary, clearAll = viewModel::clearAll,
         importFile = { files.launch(arrayOf("text/plain", "application/json")) },
+        saveRedactionProfile = viewModel::saveRedactionProfile,
     ), importing != null)
 }
 
@@ -95,6 +100,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     var createContact by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<Int?>(null) }
     var previewOpen by remember { mutableStateOf(false) }
+    var rulesOpen by remember(state.conversation?.id) { mutableStateOf(false) }
     // Process memory only, keyed to the conversation so switching never exposes another draft.
     val origin = state.conversation?.id
     val editor = remember(origin) { CounselDraftEditor(state.draft, origin) }
@@ -185,11 +191,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         }
         if (state.streaming) item { ThinkingIndicator(ThinkingStage.PLANNING, false) }
         val answer = state.answer
-        val partialReply = state.partial[SectionId.REPLY]?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
+        val partialReply = state.partial[SectionId.REPLY]?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
         if (answer != null || partialReply.isNotEmpty()) item {
             JunshiColumn(Modifier.testTag("counsel-answer")) {
                 if (state.answerDemo) DemoBadge()
-                val verdict = answer?.verdict ?: state.partial[SectionId.VERDICT].orEmpty()
+                val verdict = answer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
                 ReplySuggestionCard(replies, state.streaming, (state.emotion ?: 0) >= 8, null,
@@ -219,10 +225,37 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     if (previewOpen) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false },
         if (!state.demo && state.outboundBody != null && origin != null) stringResource(R.string.live_send) to { actions.analyze(origin); previewOpen = false } else null) {
         BodyText(stringResource(if (state.demo) R.string.preview_demo_notice else R.string.live_scope))
+        BodyText(stringResource(R.string.redaction_honesty))
+        BodyText(stringResource(R.string.redaction_count, state.preview?.redactionCount ?: 0))
+        SecondaryButton(stringResource(R.string.redaction_rules), { rulesOpen = true; previewOpen = false })
         if (!state.demo) BodyText(runCatching { state.modelSettings.saved.connection().safeDestination() }.getOrDefault(""))
         state.preview?.let { preview -> BodyText(state.outboundBody ?: (preview.system + "\n\n" + preview.user)) }
             ?: BodyText(stringResource(if (state.error == null) R.string.preparing_preview else errorLabel(state.error!!.code)))
     }
+    if (rulesOpen && origin != null) ContentDialog(stringResource(R.string.redaction_rules), stringResource(R.string.close), { rulesOpen = false }) {
+        RedactionRulesContent(state.redactionProfile, state.currentContact != null, state.redactionError) { terms, aliases ->
+            actions.saveRedactionProfile(origin, terms, aliases)
+        }
+    }
+}
+
+@Composable fun RedactionRulesContent(profile: RedactionProfile, formal: Boolean, failed: Boolean,
+    save: (List<String>, List<RedactionAlias>) -> Unit) {
+    var words by remember(profile) { mutableStateOf(profile.terms.joinToString("\n")) }
+    var names by remember(profile) { mutableStateOf(profile.aliases.joinToString("\n") { "${it.original}=${it.alias}" }) }
+    var invalid by remember { mutableStateOf(false) }
+    BodyText(stringResource(if (formal) R.string.redaction_formal else R.string.redaction_temporary))
+    BodyText(stringResource(R.string.redaction_honesty))
+    FormTextField(words, { words = it }, stringResource(R.string.redaction_words))
+    FormTextField(names, { names = it }, stringResource(R.string.redaction_aliases))
+    if (failed || invalid) BodyText(stringResource(R.string.redaction_invalid))
+    PrimaryButton(stringResource(R.string.redaction_save), {
+        val terms = words.lines().filter { it.isNotBlank() }.distinct()
+        val lines = names.lines().filter { it.isNotBlank() }
+        val aliases = lines.map { RedactionAlias(it.substringBefore('='), it.substringAfter('=', "")) }
+        invalid = runCatching { RedactionProfile(terms = terms, aliases = aliases) }.isFailure
+        if (!invalid) save(terms, aliases)
+    })
 }
 
 @Composable fun ContactsScreen(viewModel: CounselViewModel, onOpen: () -> Unit) {
@@ -330,6 +363,7 @@ fun errorLabel(code: String): Int = when (code) {
     "NETWORK", "STREAM_INTERRUPTED" -> R.string.model_error_network
     "NOT_SSE", "INVALID_JSON", "EMPTY_RESPONSE", "PROVIDER_REJECTED", "PROVIDER_ERROR" -> R.string.model_error_protocol
     "PREVIEW_REQUIRED" -> R.string.model_error_preview
+    "REDACTION_INVALID" -> R.string.redaction_invalid
     "CONTACT_ALIAS_REQUIRED" -> R.string.error_alias
     "INPUT_REQUIRED" -> R.string.error_input
     "PROMPT_UNAVAILABLE" -> R.string.error_prompt

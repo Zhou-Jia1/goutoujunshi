@@ -1,24 +1,62 @@
 package com.shengjidaguai.goutoujunshi.knowledge
 
-/** One session-scoped redactor is shared across every field of an outbound request. */
-class Redactor(customTerms: List<String> = emptyList()) {
-    private val terms = customTerms.filter { it.isNotBlank() }.distinct().sortedByDescending { it.codePointLength() }
+import com.shengjidaguai.goutoujunshi.domain.RedactionAlias
+
+/** Select spans in ORIGINAL input; generated tokens are never searched again. */
+class Redactor(customTerms: List<String> = emptyList(), aliases: List<RedactionAlias> = emptyList()) {
+    private val terms = customTerms.filter { it.isNotBlank() }.distinct()
+    private val names = aliases.associate { it.original to it.alias }
     private val substitutions = linkedMapOf<Pair<String, String>, String>()
+    private val safe = linkedMapOf<String, String>()
     val count: Int get() = substitutions.size
-
+    val safeAliases: Map<String, String> get() = safe.toMap()
+    init {
+        require(terms.size + aliases.size <= 100 && terms.all { it.length <= 200 })
+        require(aliases.all { candidate ->
+            candidate.original.isNotBlank() && candidate.original.length <= 200 &&
+                candidate.alias.isNotBlank() && candidate.alias.length <= 40 &&
+                !candidate.alias.any { it.isISOControl() || it in "[]<>" } &&
+                names.keys.none { candidate.alias.contains(it) } &&
+                terms.none { candidate.alias.contains(it) } &&
+                patterns.none { (_, regex) -> regex.containsMatchIn(candidate.alias) }
+        }) { "Unsafe alias" }
+    }
+    private data class Span(val start: Int, val end: Int, val kind: String, val value: String, val priority: Int)
     fun redact(input: String): String {
-        var output = input
-        for (term in terms) if (output.contains(term)) output = output.replace(term, token("屏蔽词", term))
-        for ((kind, expression) in patterns) {
-            output = expression.replace(output) { token(kind, it.value) }
+        val candidates = mutableListOf<Span>()
+        fun literal(value: String, kind: String, priority: Int) {
+            var from = 0
+            while (from < input.length) {
+                val index = input.indexOf(value, from)
+                if (index < 0) break
+                candidates += Span(index, index + value.length, kind, value, priority)
+                from = index + 1
+            }
         }
-        return output
+        terms.forEach { literal(it, "屏蔽词", 0) }
+        names.keys.forEach { literal(it, "昵称", 1) }
+        patterns.forEachIndexed { index, (kind, regex) -> regex.findAll(input).forEach {
+            candidates += Span(it.range.first, it.range.last + 1, kind, it.value, index + 2)
+        } }
+        // Longest overlapping span wins (e.g. phone inside a custom company name).
+        val selected = mutableListOf<Span>()
+        candidates.sortedWith(compareByDescending<Span> { it.end - it.start }.thenBy { it.priority }.thenBy { it.start }).forEach { span ->
+            if (selected.none { span.start < it.end && it.start < span.end }) selected += span
+        }
+        return buildString {
+            var cursor = 0
+            for (span in selected.sortedBy { it.start }) {
+                append(input.substring(cursor, span.start))
+                val token = substitutions.getOrPut(span.kind to span.value) {
+                    "[${span.kind}${substitutions.keys.count { it.first == span.kind } + 1}]"
+                }
+                if (span.kind == "昵称") safe[token] = names.getValue(span.value)
+                append(token)
+                cursor = span.end
+            }
+            append(input.substring(cursor))
+        }
     }
-
-    private fun token(kind: String, value: String): String = substitutions.getOrPut(kind to value) {
-        "[$kind${substitutions.keys.count { it.first == kind } + 1}]"
-    }
-
     companion object {
         private val patterns = listOf(
             "邮箱" to Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"),

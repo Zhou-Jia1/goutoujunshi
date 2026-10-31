@@ -100,4 +100,13 @@
     <string name="model_workspace_hint">预设仅为可编辑示例。通义千问请从控制台填写自己的工作区专属地址与可用模型。</string>
     <string name="model_error_settings">模型设置保存未确认，已停用旧连接。请重新保存后再发送。</string>
     <string name="model_not_configured_notice">已选择真实模型，但尚未保存 API Key。请在“我的”中完成设置后再发送。</string>
+    <string name="redaction_rules">补充屏蔽词与昵称代号</string>
+    <string name="redaction_honesty">已在本机识别并替换常见敏感信息，仍可能漏检。请核对全部发送内容；可补充姓名、公司等屏蔽词。回复只会还原为你选的安全代号。</string>
+    <string name="redaction_count">本次替换了 %1$d 项敏感内容</string>
+    <string name="redaction_formal">仅用于当前联系人，加密保存在本机。删除联系人或清空数据时一并删除。</string>
+    <string name="redaction_temporary">仅用于这次临时问问，保存在内存，离开或进程结束即清除。</string>
+    <string name="redaction_words">屏蔽词：每行一个，最多共 100 项，每项 200 字</string>
+    <string name="redaction_aliases">你确认的昵称：每行 原昵称=安全代号，代号最多 40 字</string>
+    <string name="redaction_invalid">未能保存。请检查数量、长度和格式；代号不能包含原名、屏蔽词、电话、邮箱、地址或链接。也可以重试保存。</string>
+    <string name="redaction_save">保存规则（发送前需重新预览）</string>
 </resources>
