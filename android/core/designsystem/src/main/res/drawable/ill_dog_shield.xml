@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original MIT-licensed placeholder; replaceable by the visual design team. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="@color/ds_illustration_ink" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M24,36 L14,18 L36,24 L48,20 L60,24 L82,18 L72,36 L76,62 L62,78 L34,78 L20,62 Z" />
+    <path android:fillColor="@android:color/transparent" android:strokeColor="@color/ds_illustration_ink" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M32,44 L32,50 M64,44 L64,50 M43,58 L53,58 L48,63 Z M68,62 L85,67 L82,81 L76,87 L70,81 Z M73,73 L76,77 L81,70" />
+</vector>
