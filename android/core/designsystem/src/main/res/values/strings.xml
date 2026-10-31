@@ -1,0 +1,33 @@
+<resources>
+    <string name="ds_floating_idle">悬浮军师，点击分析</string><string name="ds_floating_hint">打开一个聊天，点我试试</string>
+    <string name="ds_scene_work">职场</string><string name="ds_scene_intimate">亲密</string><string name="ds_scene_family">家庭</string><string name="ds_scene_social">社交</string><string name="ds_scene_mediation">调解</string><string name="ds_scene_default">当前场景</string>
+    <string name="ds_formality_low">轻松</string><string name="ds_formality_medium">日常</string><string name="ds_formality_high">较正式</string><string name="ds_separator"> · </string>
+    <string name="ds_reply_number">第 %1$d 条</string>
+    <string name="ds_mood_low">还好</string><string name="ds_mood_high">快撑不住了</string>
+    <string name="ds_evidence_text">%1$s：%2$s</string>
+    <string name="ds_evidence_fact_symbol" translatable="false">✓</string>
+    <string name="ds_evidence_guess_symbol" translatable="false">≈</string>
+    <string name="ds_evidence_unknown_symbol" translatable="false">?</string>
+    <string name="ds_illustration_listening">军师在听你说</string><string name="ds_illustration_thinking">军师在思考</string>
+    <string name="ds_illustration_calm">先缓一缓</string><string name="ds_illustration_sleeping">休息一会儿</string>
+    <string name="ds_illustration_shield">保护你的隐私和安全</string><string name="ds_illustration_confused">还需要一点信息</string>
+    <string name="ds_upload">上传聊天记录</string><string name="ds_screenshots">截图</string><string name="ds_file">文件</string><string name="ds_paste">粘贴</string>
+    <string name="ds_create">新建联系人</string><string name="ds_confirm_right">右边是你吗？</string><string name="ds_confirm_left">左边是你吗？</string><string name="ds_yes">是</string><string name="ds_other_side">不是，换一边</string>
+    <string name="ds_redaction">已隐藏可识别的 %1$d 处信息，可能漏检 · 查看</string>
+    <string name="ds_copy">复制</string><string name="ds_copy_all">全部复制</string><string name="ds_reply">可以这样回</string><string name="ds_tone">换口吻</string><string name="ds_sent">我发了</string><string name="ds_edited">我改了再发</string><string name="ds_not_sent">我没发</string>
+    <string name="ds_natural">自然</string><string name="ds_gentle">温和</string><string name="ds_direct">直接</string><string name="ds_formal">正式</string><string name="ds_warm">温暖</string><string name="ds_calm">平静</string><string name="ds_humorous">轻松</string>
+    <string name="ds_appropriate">更得体</string><string name="ds_like_me">更像我</string><string name="ds_details">为什么与接下来</string><string name="ds_fact">事实</string><string name="ds_guess">推测</string><string name="ds_unknown">未知</string>
+    <string name="ds_save_tip">收藏技巧</string><string name="ds_unsave_tip">取消收藏</string><string name="ds_dismiss">收起</string><string name="ds_never_this">不再提醒这一条</string>
+    <string name="ds_listening">在听你说</string><string name="ds_sorting">在理清事实</string><string name="ds_planning">在想怎么办</string><string name="ds_slow">有点慢，可以继续等，或者先停下</string><string name="ds_undo">撤销</string>
+    <string name="ds_safety">你现在的安全最重要</string><string name="ds_trusted">联系一个你信任的人</string><string name="ds_resources">当地求助资源</string><string name="ds_safe_now">我现在是安全的</string>
+    <string name="ds_breathe">先别急着发，给自己一点时间</string><string name="ds_breathe_button">缓一缓</string><string name="ds_breathing">深呼吸，确认这是你明天也会想发的话（%1$d 秒）</string><string name="ds_continue_copy">还是复制</string><string name="ds_save_draft">先放草稿</string>
+    <string name="ds_mood">此刻心情：%1$d</string><string name="ds_mood_optional">此刻心情（可选）</string><string name="ds_clear_mood">不打分</string><string name="ds_input">说说你遇到的事…</string><string name="ds_attach">添加聊天内容</string><string name="ds_send">发送</string><string name="ds_stop">停止</string>
+    <string name="ds_edit">编辑</string><string name="ds_delete">删除</string><string name="ds_wrong">这条不对</string><string name="ds_samples">来自 %1$d 条你的消息</string>
+    <string name="ds_capture_more">再往上截一屏</string><string name="ds_open_full">在 App 中打开完整分析</string><string name="ds_close">关闭</string><string name="ds_need_auth">需要重新授权</string><string name="ds_capture_failed">暂时没能读取画面</string><string name="ds_secure">这个页面限制截图，可以复制可分享文字或导入已有文件</string><string name="ds_fallback">选择其他方式</string>
+    <string name="ds_back">返回</string><string name="ds_retry">重试</string><string name="ds_settings">检查设置</string><string name="ds_cancel">取消</string><string name="ds_demo">演示</string><string name="ds_live">真实模型</string><string name="ds_not_configured">尚未接入模型</string><string name="ds_offline">离线</string>
+    <string name="ds_empty_title">今天遇到什么事了？说说看。</string><string name="ds_step">第 %1$d / %2$d 步</string><string name="ds_loading">正在处理</string>
+    <string name="ds_symbol_dog">犬</string><string name="ds_symbol_back">‹</string><string name="ds_symbol_attach">＋</string>
+    <string name="ds_later">等你平静一点再看</string>
+    <string name="ds_police">中国大陆：110</string><string name="ds_ambulance">中国大陆：120</string>
+    <string name="ds_police_number" translatable="false">110</string><string name="ds_ambulance_number" translatable="false">120</string>
+</resources>
