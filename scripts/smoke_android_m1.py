@@ -132,9 +132,12 @@ class Device:
                 for node in root.iter("node") if node.get("package") == APP][:200]
 
     def click(self, text, scroll=False):
+        observed_public = set()
         for upward in ([True, False] if scroll else [True]):
             for _ in range(10 if scroll else 1):
                 root = self.tree()
+                for row in self.redacted_controls(root):
+                    observed_public.update(value for value in row[:2] if value != "<redacted>")
                 node = self.action(root, text)
                 if node is not None:
                     left, top, right, bottom = self.visible_bounds(root, node)
@@ -144,6 +147,7 @@ class Device:
                 if scroll:
                     self.swipe(root, upward)
         print("Redacted action state:", self.redacted_controls(root), flush=True)
+        print("Observed checked-in public labels:", sorted(observed_public), flush=True)
         raise AssertionError(f"Debug action not available: {text}")
 
     def editor(self):
