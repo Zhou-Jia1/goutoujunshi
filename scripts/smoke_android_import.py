@@ -39,27 +39,7 @@ def click_ready(device, text):
         root = device.tree()
         node = device.action(root, text)
         if node is not None:
-            parents = {child: parent for parent in root.iter() for child in parent}
-            left, top, right, bottom = device.bounds(node)
-            parent = parents.get(node)
-            while parent is not None:
-                if parent.get("scrollable") == "true":
-                    a, b, c, d = device.bounds(parent)
-                    left, top, right, bottom = max(left, a), max(top, b), min(right, c), min(bottom, d)
-                parent = parents.get(parent)
-            # Edge-to-edge Compose nodes can include pixels covered by system bars.
-            # Never tap Android's Home/Back area instead of the visible app control.
-            for bar in root.iter("node"):
-                if bar.get("package") != APP:
-                    continue
-                if bar.get("resource-id") == "android:id/navigationBarBackground":
-                    a, b, c, d = device.bounds(bar)
-                    if a <= left and c >= right and b > 0:
-                        bottom = min(bottom, b)
-                elif bar.get("resource-id") == "android:id/statusBarBackground":
-                    a, b, c, d = device.bounds(bar)
-                    if a <= left and c >= right:
-                        top = max(top, d)
+            left, top, right, bottom = device.visible_bounds(root, node)
             if right > left and bottom > top:
                 device.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
                 return

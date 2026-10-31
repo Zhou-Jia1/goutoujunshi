@@ -94,17 +94,45 @@ class Device:
         high, low = int(top + (bottom - top) * .2), int(top + (bottom - top) * .8)
         self.call("shell", "input", "swipe", x, low if upward else high, x, high if upward else low, 250)
 
+    def visible_bounds(self, root, node):
+        parents = {child: parent for parent in root.iter() for child in parent}
+        left, top, right, bottom = self.bounds(node)
+        parent = parents.get(node)
+        while parent is not None:
+            if parent.get("scrollable") == "true":
+                a, b, c, d = self.bounds(parent)
+                left, top, right, bottom = max(left, a), max(top, b), min(right, c), min(bottom, d)
+            parent = parents.get(parent)
+        for bar in root.iter("node"):
+            if bar.get("package") != APP:
+                continue
+            if bar.get("resource-id") == "android:id/navigationBarBackground":
+                a, b, c, d = self.bounds(bar)
+                if a <= left and c >= right and b > 0:
+                    bottom = min(bottom, b)
+            elif bar.get("resource-id") == "android:id/statusBarBackground":
+                a, b, c, d = self.bounds(bar)
+                if a <= left and c >= right:
+                    top = max(top, d)
+        return left, top, right, bottom
+
     def click(self, text, scroll=False):
         for upward in ([True, False] if scroll else [True]):
             for _ in range(10 if scroll else 1):
                 root = self.tree()
                 node = self.action(root, text)
                 if node is not None:
-                    left, top, right, bottom = self.bounds(node)
-                    self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
-                    return
+                    left, top, right, bottom = self.visible_bounds(root, node)
+                    if right > left and bottom > top:
+                        self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
+                        return
                 if scroll:
                     self.swipe(root, upward)
+        # Emit only fixed public controls, never arbitrary labels or model output.
+        public_controls = {"发送", "停止", "重试", "全部复制", "查看实际准备的内容"}
+        print("Public action state:", [(node.get("text"), node.get("bounds"), node.get("enabled"))
+            for node in root.iter("node")
+            if node.get("package") == APP and node.get("text") in public_controls], flush=True)
         raise AssertionError(f"Debug action not available: {text}")
 
     def editor(self):
