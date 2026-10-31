@@ -29,6 +29,6 @@ adb shell am start -n com.shengjidaguai.goutoujunshi.debug/com.shengjidaguai.gou
 ./gradlew assembleDebug test lint
 ```
 
-根 Skill 与 references 是知识唯一来源；知识模块将在 T15 接入构建时生成 assets 及 SHA-256 清单。没有 Key 的模型测试只使用明确标注的合成响应，不声称真实模型验证已通过。
+根 Skill 与 references 是知识唯一来源；知识模块在构建时生成 assets 及 SHA-256 清单。没有 Key 的模型测试只使用明确标注的合成响应，不声称真实模型验证已通过。
 
 不得提交 `local.properties`、API Key、密钥库、签名配置或真实聊天。临时会话只在进程内存中，正式草稿与业务资料使用加密数据层。
