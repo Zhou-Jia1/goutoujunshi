@@ -93,15 +93,38 @@ def confirm_import(device, formal=False, rights_pending=False):
     require("确认聊天记录" not in labels(device), "Confirmed import did not finish")
 
 
+def wait_contacts_view(device, empty=False):
+    for _ in range(8):
+        try:
+            current = labels(device)
+        except AssertionError as error:
+            if str(error) != "Debug app must remain in foreground":
+                raise
+            activity = device.call("shell", "dumpsys", "activity", "activities")
+            resumed = [line for line in activity.splitlines()
+                if "topResumedActivity=" in line or "mResumedActivity:" in line]
+            # A transient window gap is allowed only while our Activity remains resumed.
+            # A real departure to Home or another app must still fail immediately.
+            if not any(APP + "/" in line for line in resumed):
+                raise
+            continue
+        if current.count("联系人") >= 2:
+            if "还没有联系人" in current:
+                return current
+            if not empty and CONTACT in current and current.count("删除联系人") == 1:
+                return current
+    raise AssertionError("Dedicated contact screen did not become ready for safe cleanup")
+
+
 def remove_contact(device):
     device.start(restart=True)
     click_ready(device, "联系人")
-    current = labels(device)
+    current = wait_contacts_view(device)
     if CONTACT in current:
         require(current.count("删除联系人") == 1, "Refusing ambiguous fixture deletion")
         click_ready(device, "删除联系人")
         click_ready(device, "删除这些记录")
-        require(CONTACT not in labels(device), "Synthetic contact was not removed")
+        require(CONTACT not in wait_contacts_view(device, empty=True), "Synthetic contact was not removed")
     click_ready(device, "军师")
 
 
