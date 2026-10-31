@@ -6,4 +6,55 @@
     <string name="bootstrap_message">今天遇到什么事了？说说看。</string>
     <string name="bootstrap_contacts">联系人功能正在接入</string>
     <string name="bootstrap_settings">模型与隐私设置正在接入</string>
+    <string name="temporary_title">临时问问</string>
+    <string name="temporary_explanation">这次内容只留在内存里。应用进程结束后会清除；需要保留时，请先创建联系人。</string>
+    <string name="demo_explanation">当前是演示模式：播放所选场景的虚构示例，不会分析你的具体内容，也不会联网。</string>
+    <string name="demo_example_only">虚构示例</string>
+    <string name="clipboard_empty">剪贴板里没有可粘贴的文字。</string>
+    <string name="copied">已复制。发送前再看一眼，确认像你想说的话。</string>
+    <string name="close">关闭</string>
+    <string name="import_next_stage">本阶段可以粘贴文字。截图和文件导入将在下一阶段接通。</string>
+    <string name="relation_label">对方是</string>
+    <string name="goal_label">这次想</string>
+    <string name="empty_counsel_title">今天遇到什么事了？</string>
+    <string name="empty_counsel_body">说说你的想法，或者主动粘贴一段文字，先体验军师的回答方式。</string>
+    <string name="answer_details">看看这份示例为什么这样说</string>
+    <string name="preview_request">查看实际准备的内容</string>
+    <string name="preview_demo_notice">演示模式不会发送。这里展示已加载的知识、场景规则和脱敏后的输入。接入模型前，你也可以在这里检查内容。</string>
+    <string name="preparing_preview">正在准备，请稍等。</string>
+    <string name="create_contact">新建联系人</string>
+    <string name="contact_alias_hint">给对方起个代号，尽量不用真实姓名</string>
+    <string name="no_contacts">还没有联系人</string>
+    <string name="delete_contact">删除联系人</string>
+    <string name="delete_contact_consequence">将删除此联系人的会话、导入和关联记录。这个操作不能撤销。</string>
+    <string name="confirm_delete">删除这些记录</string>
+    <string name="local_privacy_title">你的内容，由你决定怎么留</string>
+    <string name="local_privacy_body">正式会话和草稿保存在本机的加密数据库里；临时问问只留在进程内存中。系统云备份不包含这些资料。</string>
+    <string name="model_next_stage">自带 Key 的网络模块正在接入设置页；本版本暂时使用演示模式。</string>
+    <string name="clear_all">清除全部本机资料</string>
+    <string name="clear_all_consequence">删除本机联系人、会话、草稿、来源文件和密钥，并清除临时会话。清除后不能恢复。</string>
+    <string name="confirm_clear">清除全部资料</string>
+    <string name="initialize_store">清除后重新开始</string>
+    <string name="error_alias">先给联系人填一个代号吧。</string>
+    <string name="error_input">先说说你想问什么。</string>
+    <string name="error_prompt">这次内容暂时无法准备。请检查输入长度或导入内容后再试。</string>
+    <string name="error_cancelled">已停止。你可以修改内容后再试。</string>
+    <string name="error_cleanup">还有文件未能清除，请稍后重试清除。</string>
+    <string name="error_storage">本机加密资料暂时无法打开。请重试；临时内容仍可能随进程结束清除。</string>
+    <string name="error_analysis">这次回答没完成。你的输入还在，可以手动重试。</string>
+    <string name="relation_boss">领导</string><string name="relation_colleague">同事</string>
+    <string name="relation_subordinate">下属</string><string name="relation_client">客户</string>
+    <string name="relation_crush">有好感的人</string><string name="relation_partner">伴侣</string>
+    <string name="relation_ex">前任</string><string name="relation_parent">父母</string>
+    <string name="relation_in_law">姻亲</string><string name="relation_relative">亲戚</string>
+    <string name="relation_child">子女</string><string name="relation_sibling">兄弟姐妹</string>
+    <string name="relation_friend">朋友</string><string name="relation_acquaintance">熟人</string>
+    <string name="relation_group">群聊</string><string name="relation_mediation">调解双方</string>
+    <string name="goal_reply">回复</string><string name="goal_report">汇报</string>
+    <string name="goal_ask_help">请求帮助</string><string name="goal_decline">拒绝</string>
+    <string name="goal_apologize">道歉</string><string name="goal_clarify">澄清</string>
+    <string name="goal_comfort">安慰</string><string name="goal_advance">推进关系</string>
+    <string name="goal_invite">邀请</string><string name="goal_boundary">表达边界</string>
+    <string name="goal_icebreak">破冰</string><string name="goal_repair">修复关系</string>
+    <string name="goal_mediate">调解</string><string name="goal_close">结束对话</string>
 </resources>

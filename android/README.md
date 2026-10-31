@@ -32,3 +32,15 @@ adb shell am start -n com.shengjidaguai.goutoujunshi.debug/com.shengjidaguai.gou
 根 Skill 与 references 是知识唯一来源；知识模块在构建时生成 assets 及 SHA-256 清单。没有 Key 的模型测试只使用明确标注的合成响应，不声称真实模型验证已通过。
 
 不得提交 `local.properties`、API Key、密钥库、签名配置或真实聊天。临时会话只在进程内存中，正式草稿与业务资料使用加密数据层。
+
+## 真正运行 APK 的回归
+
+使用没有联系人资料的专用测试模拟器。脚本在安装前校验包名和 debuggable 标志，仅创建、操作并删除一位合成联系人，不清除应用数据；UI 树只在进程内存中读取。它会为该测试模拟器开启软键盘。
+
+在仓库根目录运行（将工具路径和模拟器编号改成你的测试环境）：
+
+```powershell
+python scripts/smoke_android_m1.py --adb 'D:\tools\android-sdk\platform-tools\adb.exe' --aapt2 'D:\tools\android-sdk\build-tools\37.0.0\aapt2.exe' --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+检查快速输入、演示生成与复制、真实进程终止后正式草稿恢复、临时内容清除。CI 的独立设备任务同时运行该脚本和原生数据测试。仅检查 APK 身份时可加 `--check-apk-only`，不会访问设备。
