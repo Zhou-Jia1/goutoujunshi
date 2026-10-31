@@ -44,3 +44,11 @@ python scripts/smoke_android_m1.py --adb 'D:\tools\android-sdk\platform-tools\ad
 ```
 
 检查快速输入、演示生成与复制、真实进程终止后正式草稿恢复、临时内容清除。CI 的独立设备任务同时运行该脚本和原生数据测试。仅检查 APK 身份时可加 `--check-apk-only`，不会访问设备。
+
+导入流程使用相同的专用空白模拟器和工具参数：
+
+```powershell
+python scripts/smoke_android_import.py --adb 'D:\tools\android-sdk\platform-tools\adb.exe' --aapt2 'D:\tools\android-sdk\build-tools\37.0.0\aapt2.exe' --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+覆盖冷启动分享、相同内容热分享、目标与说话人确认、重复提示、纯证据演示分析、临时进程清除，以及正式加密记录在进程重启后再次分析；结束时只删除本脚本创建的合成联系人。该脚本不代替真实模型、OCR、SAF 系统选择器或真机验收。

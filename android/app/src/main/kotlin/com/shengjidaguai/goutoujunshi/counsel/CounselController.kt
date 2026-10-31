@@ -2,6 +2,7 @@ package com.shengjidaguai.goutoujunshi.counsel
 
 import com.shengjidaguai.goutoujunshi.data.*
 import com.shengjidaguai.goutoujunshi.domain.*
+import com.shengjidaguai.goutoujunshi.importing.*
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
@@ -9,7 +10,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
 
-data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>)
+data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>, val evidence: List<EvidenceBlock> = emptyList())
 
 /** Share this assembler with the provider so preview and playback consume the same snapshot. */
 class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssembler {
@@ -35,6 +36,7 @@ interface CounselPersistence {
     suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String)
     suspend fun saveMessage(contact: Contact, conversation: Conversation, message: Message)
     suspend fun discardMessage(contact: Contact, message: Message)
+    suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String { error("Import persistence unavailable") }
     suspend fun clearAll(): Boolean
 }
 
@@ -59,7 +61,9 @@ class EncryptedCounselPersistence(
         val repo = conversationsRepo()
         val conversation = repo.list(contact.id).maxByOrNull { it.updatedAt }
             ?: Conversation(UUID.randomUUID().toString(), contact.id, false, System.currentTimeMillis()).also { repo.save(it) }
-        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id))
+        val imports = ImportRepository(checkNotNull(session))
+        val evidence = imports.list(contact.id).map { EvidenceBlock(it.id, it.sourceType.name, imports.lines(contact.id, it.id)) }
+        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence)
     }
     override suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String) {
         require(next.canPersist && next.contactId == contact.id && next.id == previous.id)
@@ -72,6 +76,9 @@ class EncryptedCounselPersistence(
     }
     override suspend fun discardMessage(contact: Contact, message: Message) {
         conversationsRepo().deleteMessage(contact.id, message.id)
+    }
+    override suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String {
+        return ImportRepository(checkNotNull(session)).save(imported, lines, contact.sourceRevision)
     }
     override suspend fun clearAll(): Boolean {
         try { return store.clearAll(temporary).isEmpty() } finally { session = null }
@@ -93,6 +100,14 @@ class CounselController(
     private val mailbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
     private val epoch = AtomicLong()
     private val intentLock = Any()
+    @Volatile private var importPending = false
+    fun setImportPending(value: Boolean) { synchronized(intentLock) {
+        importPending = value; epoch.incrementAndGet(); stream?.cancel()
+        mailbox.trySend {
+            // A share queued during startup must not erase the failure needed by its retry UI.
+            if (state.value.conversation != null || state.value.error == null) invalidateRun()
+        }
+    } }
     private var inputRevision = 0L
     private var credential: TemporarySessionCredential? = null
     private var ledger = AnalysisLedger()
@@ -130,12 +145,14 @@ class CounselController(
             mailbox.trySend(block)
         }
     }
-    private fun enqueueFrom(origin: String?, invalidate: Boolean = false, block: suspend () -> Unit) {
+    private fun enqueueFrom(origin: String?, invalidate: Boolean = false, onDropped: () -> Unit = {}, block: suspend (Long) -> Unit) {
         synchronized(intentLock) {
-            if (origin == null || state.value.conversation?.id != origin) return
+            if (origin == null || state.value.conversation?.id != origin) { onDropped(); return }
             if (invalidate) { epoch.incrementAndGet(); stream?.cancel() }
+            val submissionEpoch = epoch.get()
             mailbox.trySend {
-                if (synchronized(intentLock) { state.value.conversation?.id == origin }) block()
+                if (synchronized(intentLock) { state.value.conversation?.id == origin }) block(submissionEpoch)
+                else onDropped()
             }
         }
     }
@@ -148,14 +165,28 @@ class CounselController(
         set(state.value.copy(streaming = false, partial = emptyMap(), currentRequest = null, preview = null, error = null))
     }
 
-    fun initialize() = enqueue {
+    fun initialize() = enqueue { initializeNow() }
+    private suspend fun initializeNow() {
         if (!initialized) {
             recovery = Recovery.Initialize
+            set(state.value.copy(loading = true, error = null))
             persistence.initialize()
             val contacts = persistence.contacts()
             initialized = true
             set(state.value.copy(contacts = contacts, loading = false))
             if (contacts.isEmpty()) beginTemporary() else loadContact(contacts.first())
+        }
+    }
+    /** Explicit completion avoids relying on conflated loading/error transitions for a retry. */
+    fun retryStartup(completion: (String?) -> Unit) = enqueue {
+        try {
+            if (!initialized) initializeNow()
+            else (recovery as? Recovery.Load)?.let { loadContact(it.contact) }
+            completion(state.value.conversation?.id)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            set(state.value.copy(loading = false, streaming = false, error = CounselError("STORAGE_UNAVAILABLE", recovery != null)))
+            completion(null)
         }
     }
     private suspend fun beginTemporary() {
@@ -169,25 +200,33 @@ class CounselController(
             conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
-    private suspend fun loadContact(contact: Contact) {
+    private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null): Boolean {
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
-        credential?.let { temporary.remove(it) }
-        credential = null
-        inputRevision++
-        dirtyDraft = false
-        ledger = AnalysisLedger(messages = saved.messages)
         val latestUser = saved.messages.lastOrNull { it.role == MessageRole.USER }
         val answer = saved.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.answerJson != null &&
                 it.requestId == latestUser?.requestId && latestUser?.text == saved.draft
+        }?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
+        val oldCredential = synchronized(intentLock) {
+            // Target publication and its private actor state form one atomic token decision.
+            if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
+            val old = credential
+            credential = null
+            inputRevision++
+            dirtyDraft = false
+            ledger = AnalysisLedger(messages = saved.messages)
+            set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
+                conversation = saved.conversation, draft = saved.draft, relationType = contact.relationType,
+                messages = saved.messages, evidence = saved.evidence, answer = answer,
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
+            recovery = null
+            old
         }
-            ?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
-        set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
-            conversation = saved.conversation, draft = saved.draft, relationType = contact.relationType,
-            messages = saved.messages, answer = answer, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
-        recovery = null
+        // A rejected publication must leave the previous temporary lease usable.
+        oldCredential?.let { temporary.remove(it) }
+        return true
     }
     fun selectContact(id: String) = enqueue(true) {
         state.value.contacts.firstOrNull { it.id == id }?.let { flushDraft(); loadContact(it) }
@@ -263,13 +302,14 @@ class CounselController(
             contactId = current.currentContact?.id, relationType = current.relationType, goal = current.goal,
             userText = current.draft, emotionLevel = current.emotion, styleBias = current.styleBias, tone = current.tone,
             conversationId = conversation.id, conversationRevision = conversation.revision,
-            sourceRevision = current.currentContact?.sourceRevision ?: 0)
+            sourceRevision = current.currentContact?.sourceRevision ?: 0,
+            evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
     fun preparePreview() = preparePreview(state.value.conversation?.id)
     fun preparePreview(originConversationId: String?) = enqueueFrom(originConversationId) preview@{
-        if (state.value.loading || state.value.conversation == null) return@preview
+        if (importPending || state.value.loading || state.value.conversation == null) return@preview
         if (state.value.streaming) return@preview
-        if (state.value.draft.isBlank()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@preview }
+        if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@preview }
         flushDraft()
         recovery = Recovery.Preview
         try {
@@ -284,9 +324,9 @@ class CounselController(
     }
     fun analyze() = analyze(state.value.conversation?.id)
     fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{
-        if (state.value.loading || state.value.conversation == null) return@analyze
+        if (importPending || state.value.loading || state.value.conversation == null) return@analyze
         if (state.value.streaming) return@analyze
-        if (state.value.draft.isBlank()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
+        if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
         flushDraft()
         val snapshot = previewRequest ?: request()
         previewRequest = null // A preview can authorize one new operation, never two sends.
@@ -386,6 +426,64 @@ class CounselController(
                 recovery = null
                 set(state.value.copy(answer = answer, messages = ledger.messages, streaming = false, error = null))
             }
+        }
+    }
+    /** The same mailbox owns target selection, source CAS, dedup and evidence refresh. */
+    fun commitImport(preview: ImportPreview, completion: (Boolean) -> Unit) {
+        val origin = state.value.conversation?.id
+        enqueueFrom(origin, true, onDropped = { completion(false) }) { intentEpoch ->
+            try {
+                if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                check(preview.canConfirm)
+                flushDraft()
+                if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                invalidateRun()
+                val target = checkNotNull(preview.target)
+                var contact = target.contact
+                if (target.newAlias != null) {
+                    val id = "import-contact:${preview.id}"
+                    contact = persistence.contacts().firstOrNull { it.id == id }
+                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    if (contact == null) {
+                        val created = Contact(id, target.newAlias.trim(), RelationType.ACQUAINTANCE, createdAt = System.currentTimeMillis())
+                        persistence.createContact(created)
+                        if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                        contact = persistence.contacts().first { it.id == id }
+                        if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    }
+                }
+                val id = "import:${preview.id}"
+                val hash = ChatImportParser.hash(preview.rows)
+                val imported = ChatImport(id, contact?.id, preview.source, hash, System.currentTimeMillis())
+                val lines = preview.rows.mapIndexed { i, row -> ChatLine("$id:$i", id, i,
+                    checkNotNull(row.speaker), row.text, row.sentAt, speakerConfirmed = true,
+                    contactId = contact?.id, speakerName = row.name.ifBlank { null }) }
+                if (contact != null) {
+                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    val savedId = persistence.saveImport(contact, imported, lines)
+                    val contacts = persistence.contacts()
+                    set(state.value.copy(contacts = contacts,
+                        currentContact = state.value.currentContact?.let { current -> contacts.firstOrNull { it.id == current.id } }))
+                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    if (!loadContact(contacts.first { it.id == contact.id }, intentEpoch)) { completion(false); return@enqueueFrom }
+                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    set(state.value.copy(importDuplicate = savedId != imported.id))
+                } else {
+                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    if (state.value.currentContact != null) beginTemporary()
+                    val lease = checkNotNull(credential)
+                    val session = checkNotNull(temporary.get(lease))
+                    val duplicate = session.imports.any { it.contentHash == hash }
+                    set(state.value.copy(importDuplicate = duplicate))
+                    if (!duplicate) {
+                        check(temporary.put(lease, session.copy(imports = session.imports + imported, lines = session.lines + lines)))
+                        inputRevision++
+                        set(state.value.copy(evidence = state.value.evidence + EvidenceBlock(id, preview.source.name, lines), answer = null))
+                    }
+                }
+                recovery = null
+                completion(true)
+            } catch (_: Exception) { completion(false) }
         }
     }
     fun stop() = enqueue(true) {

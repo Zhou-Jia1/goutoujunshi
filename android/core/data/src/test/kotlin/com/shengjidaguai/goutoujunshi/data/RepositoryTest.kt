@@ -31,6 +31,24 @@ class RepositoryTest {
     }
     @After fun close() { db.close() }
 
+    @Test fun importCasDedupIsPerContactAndRestartReloadsConfirmedNamedOther() = runBlocking {
+        val imports = ImportRepository(session)
+        val item = ChatImport("t21-a", "a", ImportSource.FILE, "synthetic-sha")
+        val line = ChatLine("t21-line", item.id, text = "虚构消息", speaker = Speaker.OTHER,
+            speakerConfirmed = true, contactId = "a", speakerName = "虚构群成员")
+        assertEquals(item.id, imports.save(item, listOf(line), 0))
+        assertEquals(item.id, imports.save(item.copy(id = "retry"), emptyList(), 0))
+        assertEquals(1L, ContactRepository(session).get("a")!!.sourceRevision)
+        assertThrows(IllegalStateException::class.java) { runBlocking {
+            imports.save(item.copy(id = "stale", contentHash = "changed"), listOf(line.copy(id = "stale-line", importId = "stale")), 0)
+        } }
+        val other = item.copy(id = "t21-b", contactId = "b")
+        imports.save(other, listOf(line.copy(id = "t21-b-line", importId = other.id, contactId = "b")), 0)
+        val reloaded = ImportRepository(session)
+        assertEquals("虚构群成员", reloaded.lines("a", item.id).single().speakerName)
+        assertEquals(1, reloaded.list("b").size)
+    }
+
     @Test fun draftAndConversationAdvanceTogetherAndRejectStaleOrWrongOwner() = runBlocking {
         val repo = ConversationRepository(session)
         val initial = Conversation("formal", "a", false)

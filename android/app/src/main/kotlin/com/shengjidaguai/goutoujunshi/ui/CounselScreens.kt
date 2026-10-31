@@ -1,5 +1,7 @@
 package com.shengjidaguai.goutoujunshi.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -46,6 +48,7 @@ data class CounselUiActions(
     val stop: () -> Unit = {},
     val newTemporary: () -> Unit = {},
     val clearAll: () -> Unit = {},
+    val importFile: () -> Unit = {},
 )
 
 /** UI-only clipboard seam. Reading is invoked exclusively by an explicit paste click. */
@@ -71,17 +74,20 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 
 @Composable fun CounselScreen(viewModel: CounselViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val importing by viewModel.imports.state.collectAsStateWithLifecycle()
+    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importFile) }
     CounselContent(state, CounselUiActions(
-        initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = viewModel::pasteText,
+        initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = { text, _ -> viewModel.importPaste(text) },
         selectContact = viewModel::selectContact, createContact = viewModel::createContact, deleteContact = viewModel::deleteContact,
         setRelation = viewModel::setRelation, setGoal = viewModel::setGoal, setEmotion = viewModel::setEmotion,
         setStyleBias = viewModel::setStyleBias, setTone = viewModel::setTone, preparePreview = viewModel::preparePreview,
         analyze = viewModel::analyze, retry = viewModel::retry, stop = viewModel::stop,
         newTemporary = viewModel::newTemporary, clearAll = viewModel::clearAll,
-    ))
+        importFile = { files.launch(arrayOf("text/plain", "application/json")) },
+    ), importing != null)
 }
 
-@Composable fun CounselContent(state: CounselState, actions: CounselUiActions) {
+@Composable fun CounselContent(state: CounselState, actions: CounselUiActions, importing: Boolean = false) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     var createContact by remember { mutableStateOf(false) }
@@ -99,7 +105,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val platformClipboard = remember(context, appName) {
         val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         CounselClipboard(
-            read = { manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() },
+            read = { manager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString() },
             write = { text ->
                 val clip = ClipData.newPlainText(appName, text)
                 clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
@@ -108,11 +114,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         )
     }
     val clipboard = LocalCounselClipboard.current ?: platformClipboard
-    val canAnalyze = !state.loading && state.conversation != null && !state.streaming
+    val canAnalyze = !importing && !state.loading && state.conversation != null && !state.streaming
     fun paste() {
         val text = clipboard.read()
         if (text.isNullOrBlank()) note = R.string.clipboard_empty else {
-            editor.edit(text)?.let { actions.pasteText(text, it) }
+            origin?.let { actions.pasteText(text, DraftEditStamp("import", 0, it)) }
         }
     }
     fun copy(text: String) {
@@ -136,7 +142,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         item { BodyText(stringResource(R.string.demo_explanation), secondary = true) }
         if (state.loading) item { ThinkingIndicator(ThinkingStage.LISTENING, false) }
         item {
-            UploadHeroButton({ note = R.string.import_next_stage }, { note = R.string.import_next_stage }, ::paste)
+            UploadHeroButton({ note = R.string.import_ocr_pending }, actions.importFile, ::paste)
         }
         item {
             Row(Modifier.horizontalScroll(rememberScrollState()).testTag("quick-scenes"),
@@ -156,11 +162,12 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             ChoiceField(stringResource(R.string.goal_label), stringResource(goalLabel(state.goal)),
                 Goal.entries.map { goal -> stringResource(goalLabel(goal)) to { actions.setGoal(goal) } })
         }
-        if (state.messages.isEmpty() && !state.streaming) item {
+        if (state.messages.isEmpty() && state.evidence.isEmpty() && !state.streaming) item {
             Box(Modifier.testTag("counsel-empty")) {
                 EmptyState(Illustration.LISTENING, stringResource(R.string.empty_counsel_title), stringResource(R.string.empty_counsel_body))
             }
         }
+        if (state.importDuplicate) item { BodyText(stringResource(R.string.import_duplicate)) }
         state.messages.filter { it.role == MessageRole.USER }.takeLast(3).forEach { message ->
             item(key = message.id) { UserMessageBubble(message.text, emptyList()) }
         }
@@ -189,8 +196,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         }) }
         item {
             Box(Modifier.testTag("counsel-composer")) {
-                Composer(editor.text, ::editDraft, emptyList(), state.emotion, actions.setEmotion, state.streaming,
-                    { source -> if (source == AttachSource.PASTE) paste() else note = R.string.import_next_stage },
+                Composer(editor.text, ::editDraft, if (state.evidence.isEmpty()) emptyList() else listOf(AttachmentModel("imports", stringResource(R.string.import_ready, state.evidence.sumOf { it.lines.size }))), state.emotion, actions.setEmotion, state.streaming,
+                    { source -> if (source == AttachSource.PASTE) paste() else actions.importFile() },
                     { if (canAnalyze && origin != null) { flushDisplayedDraft(); actions.analyze(origin) } }, actions.stop)
             }
         }

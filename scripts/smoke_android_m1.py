@@ -91,20 +91,69 @@ class Device:
         require(area is not None, "No scroll area in debug app")
         left, top, right, bottom = self.bounds(area)
         x = (left + right) // 2
-        high, low = int(top + (bottom - top) * .2), int(top + (bottom - top) * .8)
-        self.call("shell", "input", "swipe", x, low if upward else high, x, high if upward else low, 250)
+        high, low = int(top + (bottom - top) * .3), int(top + (bottom - top) * .7)
+        self.call("shell", "input", "swipe", x, low if upward else high, x, high if upward else low, 800)
+
+    def visible_bounds(self, root, node):
+        parents = {child: parent for parent in root.iter() for child in parent}
+        left, top, right, bottom = self.bounds(node)
+        parent = parents.get(node)
+        while parent is not None:
+            if parent.get("scrollable") == "true":
+                a, b, c, d = self.bounds(parent)
+                left, top, right, bottom = max(left, a), max(top, b), min(right, c), min(bottom, d)
+            parent = parents.get(parent)
+        for bar in root.iter("node"):
+            if bar.get("package") != APP:
+                continue
+            if bar.get("resource-id") == "android:id/navigationBarBackground":
+                a, b, c, d = self.bounds(bar)
+                if a <= left and c >= right and b > 0:
+                    bottom = min(bottom, b)
+            elif bar.get("resource-id") == "android:id/statusBarBackground":
+                a, b, c, d = self.bounds(bar)
+                if a <= left and c >= right:
+                    top = max(top, d)
+        return left, top, right, bottom
+
+    @staticmethod
+    def redacted_controls(root):
+        public = {"军师", "联系人", "我的", "发送", "停止", "重试", "全部复制"}
+        resources = Path(__file__).resolve().parents[1] / "android/app/src/main/res/values/strings.xml"
+        if resources.is_file():
+            public.update("".join(node.itertext()) for node in ET.parse(resources).getroot()
+                          if node.tag == "string")
+        # Structural information and exact checked-in UI strings only. Arbitrary user
+        # text, aliases, output and field descriptions are never returned.
+        return [(node.get("text") if node.get("text") in public else "<redacted>",
+                 node.get("content-desc") if node.get("content-desc") in public else "<redacted>",
+                 node.get("class"), node.get("bounds"), node.get("enabled"),
+                 node.get("clickable"), node.get("scrollable"), node.get("selected"))
+                for node in root.iter("node") if node.get("package") == APP][:200]
 
     def click(self, text, scroll=False):
+        observed_public = set()
+        previous = None
         for upward in ([True, False] if scroll else [True]):
-            for _ in range(10 if scroll else 1):
+            for _ in range(10 if scroll else 8):
                 root = self.tree()
+                for row in self.redacted_controls(root):
+                    observed_public.update(value for value in row[:2] if value != "<redacted>")
                 node = self.action(root, text)
                 if node is not None:
-                    left, top, right, bottom = self.bounds(node)
-                    self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
-                    return
+                    left, top, right, bottom = self.visible_bounds(root, node)
+                    if right > left and bottom > top:
+                        position = (left, top, right, bottom)
+                        if position == previous:
+                            self.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
+                            return
+                        previous = position
+                        continue
+                previous = None
                 if scroll:
                     self.swipe(root, upward)
+        print("Redacted action state:", self.redacted_controls(root), flush=True)
+        print("Observed checked-in public labels:", sorted(observed_public), flush=True)
         raise AssertionError(f"Debug action not available: {text}")
 
     def editor(self):

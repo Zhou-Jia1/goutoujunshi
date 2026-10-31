@@ -161,7 +161,7 @@ class AppCounselBehaviorTest {
         compose.setContent { JunshiTheme { Surface { CounselContent(syntheticCounselState("empty"), CounselUiActions()) } } }
         compose.onNodeWithTag("counsel-list").performScrollToNode(hasText(text(DsR.string.ds_screenshots)))
         compose.onNodeWithText(text(DsR.string.ds_screenshots)).performClick()
-        compose.onNodeWithText(text(R.string.import_next_stage)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.import_ocr_pending)).assertIsDisplayed()
     }
 
     @Test fun contactSwitcherOffersExplicitTemporarySession() {
@@ -254,7 +254,7 @@ class AppCounselBehaviorTest {
         } finally { f.close() }
     }
 
-    @Test fun pasteUpdatesPendingEditorImmediatelyAndConversationSwitchResetsIt() {
+    @Test fun pasteOpensImportWithoutReplacingPendingDraftAndSwitchResetsEditor() {
         val state = mutableStateOf(syntheticCounselState("empty"))
         var pasted: String? = null
         compose.setContent { JunshiTheme {
@@ -268,10 +268,10 @@ class AppCounselBehaviorTest {
         compose.onNodeWithTag("counsel-list").performScrollToNode(hasText(text(DsR.string.ds_paste)))
         compose.onNodeWithText(text(DsR.string.ds_paste)).performClick()
         compose.onNodeWithTag("counsel-list").performScrollToNode(hasTestTag("counsel-composer"))
-        field.assertTextEquals("synthetic_pasted")
+        field.assertTextEquals("synthetic_pending")
         assertEquals("synthetic_pasted", pasted)
         compose.runOnIdle { state.value = state.value.copy(draft = "synthetic_pending") }
-        field.assertTextEquals("synthetic_pasted")
+        field.assertTextEquals("synthetic_pending")
         compose.runOnIdle {
             state.value = state.value.copy(conversation = state.value.conversation!!.copy(id = "synthetic-second-session"), draft = "synthetic_other_contact")
         }

@@ -1,6 +1,9 @@
 package com.shengjidaguai.goutoujunshi.counsel
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import com.shengjidaguai.goutoujunshi.importing.*
 import androidx.lifecycle.AndroidViewModel
 import com.shengjidaguai.goutoujunshi.data.EncryptedDataStore
 import com.shengjidaguai.goutoujunshi.data.TemporarySessionStore
@@ -10,6 +13,12 @@ import kotlinx.coroutines.*
 
 /** Application lifetime keeps temporary sessions across Activity recreation, never process death. */
 private object CounselRuntime {
+    private var importer: ImportCoordinator? = null
+    @Synchronized fun imports(application: Application): ImportCoordinator = importer ?: ImportCoordinator(get(application),
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        { application.getSharedPreferences("import-notice", 0).getBoolean("accepted", false) },
+        { application.getSharedPreferences("import-notice", 0).edit().putBoolean("accepted", true).apply() }
+    ).also { importer = it }
     @Volatile private var controller: CounselController? = null
     fun get(application: Application): CounselController = controller ?: synchronized(this) {
         controller ?: run {
@@ -29,7 +38,11 @@ private object CounselRuntime {
 
 class CounselViewModel(application: Application) : AndroidViewModel(application) {
     private val controller = CounselRuntime.get(application)
+    val imports = CounselRuntime.imports(application)
     val state = controller.state
+    fun receiveShare(intent: Intent) = imports.receive(intent, getApplication<Application>().contentResolver)
+    fun importFile(uri: Uri) = imports.file(getApplication<Application>().contentResolver, uri)
+    fun importPaste(text: String) = imports.text(text)
     init { initialize() }
     fun initialize() = controller.initialize()
     fun editDraft(text: String) = controller.editDraft(text)
@@ -51,5 +64,5 @@ class CounselViewModel(application: Application) : AndroidViewModel(application)
     fun retry() = controller.retry()
     fun stop() = controller.stop()
     fun newTemporary() = controller.newTemporary()
-    fun clearAll() = controller.clearAll()
+    fun clearAll() { imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); controller.clearAll() }
 }
