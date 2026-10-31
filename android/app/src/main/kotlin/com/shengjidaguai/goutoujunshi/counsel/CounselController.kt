@@ -1,6 +1,7 @@
 package com.shengjidaguai.goutoujunshi.counsel
 
 import com.shengjidaguai.goutoujunshi.data.*
+import com.shengjidaguai.goutoujunshi.data.network.*
 import com.shengjidaguai.goutoujunshi.domain.*
 import com.shengjidaguai.goutoujunshi.importing.*
 import java.util.UUID
@@ -92,10 +93,16 @@ class CounselController(
     private val persistence: CounselPersistence,
     private val temporary: TemporarySessionStore,
     private val assembler: PromptAssembler,
-    private val provider: AnalysisProvider,
+    private var provider: AnalysisProvider,
     private val scope: CoroutineScope,
+    private val modelSettings: ModelSettingsRepository? = null,
+    private val liveProvider: ((SavedModelSettings) -> AnalysisProvider)? = null,
 ) {
-    private val mutableState = MutableStateFlow(CounselState(modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
+    private val demoProvider = provider
+    private var settings = ModelSettingsSnapshot()
+    private var testJob: Job? = null
+    private var testGeneration = 0L
+    private val mutableState = MutableStateFlow(CounselState(modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
     val state: StateFlow<CounselState> = mutableState.asStateFlow()
     private val mailbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
     private val epoch = AtomicLong()
@@ -158,11 +165,67 @@ class CounselController(
     }
     private fun set(next: CounselState) = synchronized(intentLock) { mutableState.value = next }
     private fun invalidateRun() {
+        testGeneration++; testJob?.cancel(); testJob = null
         stream?.cancel(); stream = null; frozen = null
         previewRequest = null
         recovery = null
         (assembler as? FrozenPromptAssembler)?.clear()
-        set(state.value.copy(streaming = false, partial = emptyMap(), currentRequest = null, preview = null, error = null))
+        set(state.value.copy(streaming = false, testingConnection = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, error = null))
+    }
+
+    private fun applyModelSettings() {
+        provider = if (settings.saved.live) checkNotNull(liveProvider).invoke(settings.saved) else demoProvider
+        set(state.value.copy(modelSettings = settings, modelStatus = provider.kind,
+            demo = !settings.saved.live, testingConnection = false, connectionResult = null, answer = null))
+    }
+    private fun outboundBody(prompt: PreparedPrompt): String? = if (settings.saved.live)
+        CompletionBody.encode(settings.saved.connection(), prompt) else null
+
+    fun saveModelSettings(saved: SavedModelSettings, newKey: String?, removeKey: Boolean = false) = enqueue(true) {
+        testGeneration++; testJob?.cancel(); testJob = null
+        invalidateRun()
+        if (!initialized || modelSettings == null) return@enqueue
+        try {
+            saved.connection().completionUrl()
+            settings = modelSettings.save(saved, newKey, removeKey)
+            applyModelSettings()
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            // Save may have committed before acknowledgement failed. Revoke the previous
+            // provider rather than letting a retained endpoint read a newer credential.
+            settings = ModelSettingsSnapshot(saved.copy(revision = ""))
+            provider = if (saved.live) object : AnalysisProvider {
+                override val kind = ProviderKind.BYOK
+                override fun analyze(request: AnalysisRequest) = flowOf(AnalysisChunk.Failed(
+                    AnalysisError("SETTINGS_UNAVAILABLE", "模型设置保存未确认，请重新保存后再发送", false)))
+            } else demoProvider
+            val code = if (failure is IllegalArgumentException) "CONFIG_INVALID" else "SETTINGS_UNAVAILABLE"
+            set(state.value.copy(modelSettings = settings, modelStatus = provider.kind, demo = !saved.live,
+                answer = null, connectionResult = code, testingConnection = false, error = CounselError(code)))
+        }
+    }
+    fun testModelConnection() = enqueue {
+        if (!initialized || state.value.streaming || state.value.testingConnection || !settings.saved.live) return@enqueue
+        val token = testGeneration
+        val operationProvider = provider
+        set(state.value.copy(testingConnection = true, connectionResult = null))
+        testJob = scope.launch {
+            try {
+                val terminal = operationProvider.analyze(AnalysisRequest(requestId = "connection-test",
+                    userText = "连接测试：请只回复‘连接成功’。")).last()
+                val result = when (terminal) {
+                    is AnalysisChunk.Completed -> "SUCCESS"
+                    is AnalysisChunk.Failed -> terminal.error.code
+                    else -> "STREAM_INCOMPLETE"
+                }
+                mailbox.send { if (testGeneration == token) set(state.value.copy(testingConnection = false, connectionResult = result)) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { mailbox.send { if (testGeneration == token) set(state.value.copy(testingConnection = false, connectionResult = "NETWORK")) } }
+        }
+    }
+    fun cancelModelTest() = enqueue {
+        testGeneration++; testJob?.cancel(); testJob = null
+        set(state.value.copy(testingConnection = false, connectionResult = "CANCELLED"))
     }
 
     fun initialize() = enqueue { initializeNow() }
@@ -171,6 +234,7 @@ class CounselController(
             recovery = Recovery.Initialize
             set(state.value.copy(loading = true, error = null))
             persistence.initialize()
+            modelSettings?.let { settings = it.load(); applyModelSettings() }
             val contacts = persistence.contacts()
             initialized = true
             set(state.value.copy(contacts = contacts, loading = false))
@@ -197,7 +261,7 @@ class CounselController(
         ledger = AnalysisLedger()
         dirtyDraft = false
         set(CounselState(loading = false, contacts = state.value.contacts,
-            conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
+            conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null): Boolean {
@@ -205,10 +269,11 @@ class CounselController(
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
         val latestUser = saved.messages.lastOrNull { it.role == MessageRole.USER }
-        val answer = saved.messages.lastOrNull {
+        val answerMessage = saved.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.answerJson != null &&
                 it.requestId == latestUser?.requestId && latestUser?.text == saved.draft
-        }?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
+        }
+        val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val oldCredential = synchronized(intentLock) {
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
@@ -219,8 +284,8 @@ class CounselController(
             ledger = AnalysisLedger(messages = saved.messages)
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
                 conversation = saved.conversation, draft = saved.draft, relationType = contact.relationType,
-                messages = saved.messages, evidence = saved.evidence, answer = answer,
-                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
+                messages = saved.messages, evidence = saved.evidence, answer = answer, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
             recovery = null
             old
         }
@@ -317,17 +382,21 @@ class CounselController(
             val snapshot = previewRequest ?: request()
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
             previewRequest = snapshot
-            set(state.value.copy(preview = prepared, error = null))
+            set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared), error = null))
             recovery = null
         }
         catch (_: Exception) { set(state.value.copy(error = CounselError("PROMPT_UNAVAILABLE", true))) }
     }
     fun analyze() = analyze(state.value.conversation?.id)
     fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{
+        if (state.value.testingConnection) return@analyze
         if (importPending || state.value.loading || state.value.conversation == null) return@analyze
         if (state.value.streaming) return@analyze
         if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
         flushDraft()
+        if (settings.saved.live && previewRequest == null) {
+            set(state.value.copy(error = CounselError("PREVIEW_REQUIRED"))); return@analyze
+        }
         val snapshot = previewRequest ?: request()
         previewRequest = null // A preview can authorize one new operation, never two sends.
         start(snapshot)
@@ -370,10 +439,11 @@ class CounselController(
         }
     }
     private suspend fun start(request: AnalysisRequest) {
+        val operationProvider = provider
         val token = epoch.incrementAndGet()
         frozen = request
         recovery = Recovery.Analysis(request)
-        set(state.value.copy(streaming = true, partial = emptyMap(), answer = null, error = null, currentRequest = request))
+        set(state.value.copy(streaming = true, partial = emptyMap(), answer = null, answerDemo = operationProvider.kind == ProviderKind.DEMO, error = null, currentRequest = request))
         try {
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(request) }
             if (!isCurrent(request, token)) return
@@ -387,7 +457,7 @@ class CounselController(
         set(state.value.copy(messages = ledger.messages))
         stream = scope.launch {
             try {
-                provider.analyze(request).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
+                operationProvider.analyze(request).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
                 mailbox.send {
                     if (isCurrent(request, token) && state.value.streaming) fail("STREAM_INCOMPLETE", true)
                 }
@@ -406,7 +476,8 @@ class CounselController(
             is AnalysisChunk.Completed -> {
                 val conversationRevision = checkNotNull(state.value.conversation).revision
                 val answer = AnswerPolicy.apply(request, chunk.answer, inputRevision, conversationRevision) ?: return
-                val next = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
+                val completedLedger = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
+                val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
                 val message = next.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT } ?: return
                 if (!isCurrent(request, token)) return
                 recovery = Recovery.Complete(request, token, chunk.answer)
@@ -493,13 +564,18 @@ class CounselController(
         set(state.value.copy(streaming = false, error = CounselError("CANCELLED", true)))
     }
     fun clearAll() = enqueue(true) {
+        testGeneration++; testJob?.cancel(); testJob = null
+        settings = ModelSettingsSnapshot(); provider = demoProvider
         invalidateRun()
         temporary.clear(); credential = null; ledger = AnalysisLedger(); initialized = false; inputRevision++
         dirtyDraft = false
         recovery = Recovery.Clear
         // Clear UI before suspending so a failed physical cleanup cannot expose old content.
-        set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO))
+        set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
         val cleared = persistence.clearAll()
+        // The application store records durable wipe intent before destroying the shared
+        // vault. Do not let a separate settings remove failure prevent that privacy boundary.
+        modelSettings?.clear()
         set(state.value.copy(loading = false, error = if (cleared) null else CounselError("CLEANUP_INCOMPLETE", true)))
         if (cleared) recovery = null
     }

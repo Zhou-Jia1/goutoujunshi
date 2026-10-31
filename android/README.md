@@ -52,3 +52,9 @@ python scripts/smoke_android_import.py --adb 'D:\tools\android-sdk\platform-tool
 ```
 
 覆盖冷启动分享、相同内容热分享、目标与说话人确认、重复提示、纯证据演示分析、临时进程清除，以及正式加密记录在进程重启后再次分析；结束时只删除本脚本创建的合成联系人。该脚本不代替真实模型、OCR、SAF 系统选择器或真机验收。
+
+模型配置回归只用于专用空白模拟器。它要求没有联系人、处于演示模式、尚未保存 Key，输入固定虚构 Key 后检查掩码、进程重启、移除与清除；不执行外部连接测试。**此脚本故意调用应用的全清除 UI 清理自身测试配置，不要对含有需保留资料的安装运行。**
+
+```powershell
+python scripts/smoke_android_model_settings.py --adb 'D:\tools\android-sdk\platform-tools\adb.exe' --aapt2 'D:\tools\android-sdk\build-tools\37.0.0\aapt2.exe' --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk
+```

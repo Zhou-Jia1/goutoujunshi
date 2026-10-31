@@ -81,4 +81,23 @@
     <string name="import_duplicate">这段之前导入过，已保留原有记录。</string>
     <string name="import_ready">已确认 %1$d 条聊天记录，可以开始分析</string>
     <string name="import_initialize_error">本地存储暂时无法打开。记录仍在当前内存中，可以重试或关闭导入。</string>
+    <string name="live_explanation">真实模型会将你确认的请求发送给所选服务商。API Key 仅加密保存在此设备。</string>
+    <string name="live_scope">发送范围：下方 JSON 中的系统知识与脱敏输入。不会自动上传原始截图、通讯录或文件。请核对服务商、模型和全部内容后发送。</string>
+    <string name="live_send">确认并发送到真实模型</string>
+    <string name="model_mode">模式</string><string name="model_demo">演示（不联网）</string><string name="model_live">真实模型（自备 Key）</string>
+    <string name="model_preset">可编辑预设</string><string name="preset_openai">OpenAI</string><string name="preset_deepseek">DeepSeek</string><string name="preset_qwen">通义千问</string><string name="preset_custom">自定义</string>
+    <string name="model_base">HTTPS Base URL</string><string name="model_name">模型名称</string><string name="model_key">API Key（留空保留同一服务商的密钥）</string>
+    <string name="model_key_saved">已保存：%1$s</string><string name="model_key_missing">尚未保存 API Key</string>
+    <string name="model_key_origin">更换地址的协议、主机或端口后，原密钥会移除；请为新地址重新输入密钥。</string>
+    <string name="model_save">保存模型设置</string><string name="model_remove_key">移除已保存密钥</string>
+    <string name="model_test_scope">连接测试会发送固定的虚构测试句和本地知识，不包含联系人、草稿、记忆或风格样本。可能产生服务商费用。</string>
+    <string name="model_test">测试已保存连接</string><string name="model_test_cancel">取消连接测试</string><string name="model_test_success">连接成功：已收到真实模型完整响应</string><string name="model_save_first">请先保存更改，再测试连接。</string>
+    <string name="model_error_config">地址或模型无效，请使用不含凭据或查询参数的 HTTPS 地址。</string>
+    <string name="model_error_key">请在设置中填写有效的 API Key。</string><string name="model_error_auth">密钥无效或没有模型权限（401/403）。</string>
+    <string name="model_error_limit">服务商限流或额度不足（429），请稍后手动重试。</string><string name="model_error_server">服务商暂时不可用（5xx），请稍后手动重试。</string>
+    <string name="model_error_timeout">等待模型内容超时，请检查连接后手动重试。</string><string name="model_error_network">网络或响应中断，请检查连接后手动重试。</string>
+    <string name="model_error_protocol">模型响应协议或内容无效，请检查兼容接口与模型权限。</string><string name="model_error_preview">请先预览并确认本次发送内容。</string>
+    <string name="model_workspace_hint">预设仅为可编辑示例。通义千问请从控制台填写自己的工作区专属地址与可用模型。</string>
+    <string name="model_error_settings">模型设置保存未确认，已停用旧连接。请重新保存后再发送。</string>
+    <string name="model_not_configured_notice">已选择真实模型，但尚未保存 API Key。请在“我的”中完成设置后再发送。</string>
 </resources>

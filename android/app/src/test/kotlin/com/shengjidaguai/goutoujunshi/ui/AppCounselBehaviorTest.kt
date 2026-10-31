@@ -86,6 +86,27 @@ class AppCounselBehaviorTest {
         compose.onNode(hasText(text(DsR.string.ds_demo)) and hasAnyAncestor(hasTestTag("counsel-answer"))).assertIsDisplayed()
     }
 
+    @Test fun modelPillExplanationMatchesDemoLiveMissingKeyAndOffline() {
+        val state = mutableStateOf(syntheticCounselState("empty"))
+        compose.setContent { JunshiTheme { Surface { CounselContent(state.value, CounselUiActions()) } } }
+        val settings = com.shengjidaguai.goutoujunshi.data.network.ModelSettingsSnapshot(
+            com.shengjidaguai.goutoujunshi.data.network.SavedModelSettings(true, "https://synthetic.example", "synthetic", "Synthetic"), "••••1234")
+        val cases = listOf(
+            syntheticCounselState("empty") to R.string.demo_explanation,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings) to R.string.live_explanation,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings.copy(maskedKey = null)) to R.string.model_not_configured_notice,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings,
+                error = com.shengjidaguai.goutoujunshi.counsel.CounselError("NETWORK")) to R.string.model_error_network,
+        )
+        cases.forEach { (snapshot, explanation) ->
+            compose.runOnIdle { state.value = snapshot }
+            compose.onNode(hasClickAction() and hasAnyAncestor(hasTestTag("model-status"))).performClick()
+            compose.onNode(hasText(text(explanation)) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+            if (!snapshot.demo) compose.onNode(hasText(text(R.string.demo_explanation)) and hasAnyAncestor(isDialog())).assertDoesNotExist()
+            compose.onNodeWithText(text(R.string.close)).performClick()
+        }
+    }
+
     @Test fun copiedReplyIsReadableFromAndroidClipboardAndMarkedSensitive() {
         val state = syntheticCounselState("completed")
         compose.setContent { JunshiTheme { Surface { CounselContent(state, CounselUiActions()) } } }

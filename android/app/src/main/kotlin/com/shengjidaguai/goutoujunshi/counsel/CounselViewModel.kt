@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import com.shengjidaguai.goutoujunshi.importing.*
 import androidx.lifecycle.AndroidViewModel
+import com.shengjidaguai.goutoujunshi.data.network.*
 import com.shengjidaguai.goutoujunshi.data.EncryptedDataStore
 import com.shengjidaguai.goutoujunshi.data.TemporarySessionStore
 import com.shengjidaguai.goutoujunshi.domain.*
@@ -31,7 +32,9 @@ private object CounselRuntime {
             }
             val assembler = FrozenPromptAssembler(builder)
             CounselController(EncryptedCounselPersistence(store, temporary), temporary, assembler,
-                DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO))
+                DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO),
+                VaultModelSettingsRepository(store.vault),
+                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) })
         }.also { controller = it }
     }
 }
@@ -64,5 +67,8 @@ class CounselViewModel(application: Application) : AndroidViewModel(application)
     fun retry() = controller.retry()
     fun stop() = controller.stop()
     fun newTemporary() = controller.newTemporary()
+    fun saveModelSettings(settings: SavedModelSettings, key: String?, removeKey: Boolean = false) = controller.saveModelSettings(settings, key, removeKey)
+    fun testModelConnection() = controller.testModelConnection()
+    fun cancelModelTest() = controller.cancelModelTest()
     fun clearAll() { imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); controller.clearAll() }
 }

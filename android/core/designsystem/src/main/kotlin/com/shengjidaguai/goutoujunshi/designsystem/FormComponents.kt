@@ -12,6 +12,44 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.BasicSecureTextField
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.TextObfuscationMode
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.AnnotatedString
+
+/** Caller owns RAM-only state. Secure input disables copy/cut and never reveals typed characters. */
+@Composable fun SensitiveTextField(state: TextFieldState, label: String) {
+    val focus = remember { FocusRequester() }
+    var hasFocus by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.s)) {
+        BodyText(label)
+        Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            BasicSecureTextField(state = state, textObfuscationMode = TextObfuscationMode.Hidden,
+                modifier = Modifier.fillMaxWidth().padding(JunshiTheme.spacing.m).focusRequester(focus).onFocusChanged { hasFocus = it.isFocused }
+                    .clearAndSetSemantics {
+                        // BasicSecureTextField masks pixels but exposes its original input through
+                        // semantics/autofill. Export only bullets, with explicit accessible edit actions.
+                        contentDescription = label
+                        password()
+                        val masked = AnnotatedString("•".repeat(state.text.length))
+                        editableText = masked
+                        this[SemanticsProperties.InputText] = masked
+                        isEditable = true
+                        focused = hasFocus
+                        textSelectionRange = state.selection
+                        requestFocus { focus.requestFocus(); true }
+                        onClick { focus.requestFocus(); true }
+                        setText { value -> state.edit { replace(0, length, value.text) }; true }
+                        insertTextAtCursor { value -> state.edit { replace(selection.min, selection.max, value.text) }; true }
+                    },
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface))
+        }
+    }
+}
 
 @Composable fun BodyText(text: String, modifier: Modifier = Modifier, secondary: Boolean = false) {
     Text(text, modifier, style = if (secondary) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
