@@ -21,7 +21,7 @@ class PromptBuilder(
             val allLines = request.evidence.flatMap { it.lines }
             require(allLines.map { it.id }.distinct().size == allLines.size && allLines.all { it.id.isNotBlank() }) { "Evidence message IDs must be unique" }
             require(allLines.all {
-                it.speakerConfirmed && it.speaker != Speaker.OTHER && (it.contactId == null || it.contactId == request.contactId)
+                it.speakerConfirmed && (it.speaker != Speaker.OTHER || !it.speakerName.isNullOrBlank()) && (it.contactId == null || it.contactId == request.contactId)
             }) { "Evidence identity conflicts with current contact" }
         }
         val type = request.relationType ?: RelationType.ACQUAINTANCE
@@ -60,7 +60,7 @@ class PromptBuilder(
             var evidenceBudget = 12_000
             for ((blockIndex, block) in request.evidence.asReversed().withIndex()) {
                 if (evidenceBudget <= 0) break
-                val lines = block.lines.map { "[${it.id}] ${if (it.speaker == Speaker.ME) "我" else "TA"}：${it.text}" }
+                val lines = block.lines.map { "[${it.id}] ${if (it.speaker == Speaker.ME) "我" else it.speakerName ?: "TA"}：${it.text}" }
                 val selectedLines = mutableListOf<String>()
                 for (line in lines.asReversed()) {
                     if (line.codePointLength() + 1 > evidenceBudget) break

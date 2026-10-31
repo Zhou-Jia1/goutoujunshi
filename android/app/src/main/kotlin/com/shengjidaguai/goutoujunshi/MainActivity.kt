@@ -1,6 +1,7 @@
 package com.shengjidaguai.goutoujunshi
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.*
@@ -23,10 +24,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val viewModel = ViewModelProvider(this)[CounselViewModel::class.java]
+        viewModel.receiveShare(intent)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
             JunshiTheme(calm = (state.emotion ?: 0) >= 8) { JunshiNavigation(viewModel) }
         }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ViewModelProvider(this)[CounselViewModel::class.java].receiveShare(intent)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        // The live intent has already been stripped of private share payloads.
+        super.onSaveInstanceState(outState)
     }
 }
 
@@ -35,6 +46,8 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
     val nav = rememberNavController()
     val current by nav.currentBackStackEntryAsState()
     val destinations = listOf("counsel" to R.string.nav_counsel, "contacts" to R.string.nav_contacts, "me" to R.string.nav_me)
+    val pendingImport by viewModel.imports.state.collectAsStateWithLifecycle()
+    if (pendingImport != null) { ImportOverlay(viewModel); return }
     Scaffold(bottomBar = {
         NavigationBar {
             destinations.forEach { (route, label) ->

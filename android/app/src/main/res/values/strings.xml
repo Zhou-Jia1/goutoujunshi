@@ -57,4 +57,28 @@
     <string name="goal_invite">邀请</string><string name="goal_boundary">表达边界</string>
     <string name="goal_icebreak">破冰</string><string name="goal_repair">修复关系</string>
     <string name="goal_mediate">调解</string><string name="goal_close">结束对话</string>
+    <string name="import_title">确认聊天记录</string>
+    <string name="import_confirmation">先选择保存位置，再逐条检查内容和说话人。昵称只是线索，确认后才能分析。</string>
+    <string name="import_rights">请只导入你有权使用的记录，并尊重对方隐私。确认前，原文只保存在当前进程内存中；临时问问始终不落库。</string>
+    <string name="import_rights_accept">我了解并有权使用这些记录</string>
+    <string name="import_unknown_json">这个 JSON 格式还未验证，以下仅是原文预览。请整理内容并确认说话人。</string>
+    <string name="import_ocr_pending">当前尚不能识别截图中的文字。已接收的图片仅在当前内存中保留，不会上传；可以关闭此页，点击粘贴导入文字。</string>
+    <string name="import_too_large">记录超过 2 MiB 或 2000 条消息，请分段导入。</string>
+    <string name="import_read_error">没能读取记录。请选择 UTF-8 编码的 TXT 或受支持的 JSON 文件，再试一次。</string>
+    <string name="import_save_error">这次没有完成保存。记录仍在当前内存中，可以重试或重新选择联系人。</string>
+    <string name="import_retry">重试保存</string>
+    <string name="import_target">导入到</string>
+    <string name="import_choose_target">请选择临时问问或联系人</string>
+    <string name="import_new_contact">使用此昵称建立新联系人</string>
+    <string name="import_nickname">原记录中的昵称（其他说话人必须填写）</string>
+    <string name="import_message">聊天内容</string>
+    <string name="import_speaker">这条消息是谁说的</string>
+    <string name="import_me">我</string>
+    <string name="import_them">对方</string>
+    <string name="import_other">其他人（保留昵称）</string>
+    <string name="import_unconfirmed">尚未确认</string>
+    <string name="import_save">确认说话人并导入</string>
+    <string name="import_duplicate">这段之前导入过，已保留原有记录。</string>
+    <string name="import_ready">已确认 %1$d 条聊天记录，可以开始分析</string>
+    <string name="import_initialize_error">本地存储暂时无法打开。记录仍在当前内存中，可以重试或关闭导入。</string>
 </resources>

@@ -109,12 +109,13 @@ class ImportRepository(private val session: DataSession) {
     suspend fun list(contactId: String): List<ChatImport> = session.transaction { imports(contactId).map { decode(it.payload) } }
     suspend fun lines(contactId: String, importId: String): List<ChatLine> = session.transaction { lines(contactId, importId).map { decode(it.payload) } }
     /** Hash deduplication is scoped to a contact; caller supplies a deterministic content hash. */
-    suspend fun save(imported: ChatImport, lines: List<ChatLine>): String = session.transaction {
+    suspend fun save(imported: ChatImport, lines: List<ChatLine>, expectedSourceRevision: Long? = null): String = session.transaction {
         val contactId = requireNotNull(imported.contactId)
-        requireContact(contactId)
+        val source = requireContact(contactId)
         require(imported.id.isNotBlank() && imported.contentHash.isNotBlank())
         require(ownerOfImport(imported.id).let { it == null || it == contactId })
         imports(contactId).firstOrNull { it.hash == imported.contentHash }?.let { return@transaction it.id }
+        if (expectedSourceRevision != null) check(source.revision == expectedSourceRevision) { "Contact source changed" }
         require(imported(contactId, imported.id) == null) { "Imports are immutable; delete then import corrected content" }
         require(lines.all { it.contactId == contactId && it.importId == imported.id && it.id.isNotBlank() })
         require(lines.map { it.id }.distinct().size == lines.size)

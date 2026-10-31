@@ -12,6 +12,8 @@ data class CounselState(
     val contacts: List<Contact> = emptyList(),
     val currentContact: Contact? = null,
     val conversation: Conversation? = null,
+    val importDuplicate: Boolean = false,
+    val evidence: List<EvidenceBlock> = emptyList(),
     val draft: String = "",
     val draftEditAck: DraftEditStamp? = null,
     val relationType: RelationType = RelationType.ACQUAINTANCE,
