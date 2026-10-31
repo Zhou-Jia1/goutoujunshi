@@ -38,6 +38,7 @@ class CounselControllerTest {
             privacy[contactId] = profile
         }
         var messageWrites = 0
+        var runFailures = 0
         var draftWrites = 0
         var beforeMessage: CompletableDeferred<Unit>? = null
         var beforeUpdate: CompletableDeferred<Unit>? = null
@@ -107,6 +108,11 @@ class CounselControllerTest {
         override suspend fun discardMessage(contact: Contact, message: Message) {
             saved[contact.id]?.let { saved[contact.id] = it.copy(messages = it.messages.filterNot { entry -> entry.id == message.id }) }
         }
+        override suspend fun saveRun(contact: Contact, run: AnalysisRun) {
+            if (runFailures > 0) { runFailures--; error("synthetic run checkpoint failure") }
+            val prior = saved.getValue(contact.id)
+            saved[contact.id] = prior.copy(runs = prior.runs.filterNot { it.requestId == run.requestId } + run)
+        }
         override suspend fun clearAll(): Boolean { people.clear(); saved.clear(); return true }
     }
     internal class ControlledProvider : AnalysisProvider {
@@ -121,7 +127,8 @@ class CounselControllerTest {
         }
     }
     internal class Fixture(val persistence: MemoryPersistence = MemoryPersistence(),
-        val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)) {
+        val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
+        val clock: () -> Long = { System.nanoTime() / 1_000_000 }) {
         val provider = ControlledProvider()
         var prepares = 0
         val controller = CounselController(persistence, TemporarySessionStore(), FrozenPromptAssembler(object : PromptAssembler {
@@ -129,7 +136,7 @@ class CounselControllerTest {
                 prepares++
                 return PreparedPrompt("synthetic system", "synthetic ${request.userText}", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 9)), "synthetic-v1")
             }
-        }), provider, scope)
+        }), provider, scope, monotonicMillis = clock)
         fun close() { scope.cancel() }
     }
     private suspend fun await(predicate: () -> Boolean) = withTimeout(2_000) { while (!predicate()) yield() }

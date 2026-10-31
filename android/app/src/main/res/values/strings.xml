@@ -94,7 +94,7 @@
     <string name="model_test">测试已保存连接</string><string name="model_test_cancel">取消连接测试</string><string name="model_test_success">连接成功：已收到真实模型完整响应</string><string name="model_save_first">请先保存更改，再测试连接。</string>
     <string name="model_error_config">地址或模型无效，请使用不含凭据或查询参数的 HTTPS 地址。</string>
     <string name="model_error_key">请在设置中填写有效的 API Key。</string><string name="model_error_auth">密钥无效或没有模型权限（401/403）。</string>
-    <string name="model_error_limit">服务商限流或额度不足（429），请稍后手动重试。</string><string name="model_error_server">服务商暂时不可用（5xx），请稍后手动重试。</string>
+    <string name="model_error_limit">服务商限制了请求频率（429），请稍后手动重试。</string><string name="model_error_server">服务商暂时不可用（5xx），请稍后手动重试。</string>
     <string name="model_error_timeout">等待模型内容超时，请检查连接后手动重试。</string><string name="model_error_network">网络或响应中断，请检查连接后手动重试。</string>
     <string name="model_error_protocol">模型响应协议或内容无效，请检查兼容接口与模型权限。</string><string name="model_error_preview">请先预览并确认本次发送内容。</string>
     <string name="model_workspace_hint">预设仅为可编辑示例。通义千问请从控制台填写自己的工作区专属地址与可用模型。</string>
@@ -109,4 +109,12 @@
     <string name="redaction_aliases">你确认的昵称：每行 原昵称=安全代号，代号最多 40 字</string>
     <string name="redaction_invalid">未能保存。请检查数量、长度和格式；代号不能包含原名、屏蔽词、电话、邮箱、地址或链接。也可以重试保存。</string>
     <string name="redaction_save">保存规则（发送前需重新预览）</string>
+    <string name="answer_format_disordered">这次的回答格式有点乱，内容仍可参考</string>
+    <string name="error_network_temporary">内容暂留本次打开期间，关闭进程后会清除</string>
+    <string name="error_network_saved">网络断开了，已保存加密草稿</string>
+    <string name="error_network_unsaved">网络断开了，草稿尚未确认保存，请先保留本次打开</string>
+    <string name="model_error_balance">模型服务暂时用不了（服务商返回：余额或额度不足）。请检查账户设置</string>
+    <string name="model_error_filtered">这个问题模型服务商不愿回答。可以换种说法，或者看看求助资源</string>
+    <string name="error_interrupted">上次没说完，要继续吗？继续可能再次产生服务商费用；真实模型须重新预览确认</string>
+    <string name="counsel_locked">请先解锁，再查看本次内容</string>
 </resources>

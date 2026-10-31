@@ -53,8 +53,8 @@ class ModelSettingsUiTest {
         compose.onNodeWithTag("model-settings").performScrollToNode(hasText("取消连接测试"))
         compose.onNodeWithText("取消连接测试").performClick()
         compose.runOnIdle { assertEquals(1, cancelled) }
-        compose.onNodeWithTag("model-settings").performScrollToNode(hasText("服务商限流或额度不足（429），请稍后手动重试。"))
-        compose.onNodeWithText("服务商限流或额度不足（429），请稍后手动重试。").assertIsDisplayed()
+        compose.onNodeWithTag("model-settings").performScrollToNode(hasText("服务商限制了请求频率（429），请稍后手动重试。"))
+        compose.onNodeWithText("服务商限制了请求频率（429），请稍后手动重试。").assertIsDisplayed()
     }
 
     @Test fun captureNewModelSettings() {

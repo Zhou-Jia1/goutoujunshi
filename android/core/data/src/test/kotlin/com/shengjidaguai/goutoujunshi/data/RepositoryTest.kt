@@ -21,6 +21,25 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun runCheckpointUsesSourceAndConversationCasAndCannotRecreateDeletedContact() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("t27-conversation", "a", false)
+        conversations.save(c)
+        conversations.saveDraft("a", c.id, "虚构问题")
+        val request = AnalysisRequest(requestId = "t27", contactId = "a", conversationId = c.id, userText = "虚构问题")
+        val run = AnalysisRun(requestId = request.requestId, contactId = "a", conversationId = c.id,
+            status = RunStatus.RUNNING, requestSnapshot = request)
+        val repo = TimelineRepository(session)
+        repo.saveCurrentRun(run, 0)
+        assertEquals(run, TimelineRepository(session).runs("a").single())
+        assertTrue(repo.runs("b").isEmpty())
+        conversations.updateDraft("a", 0, c.copy(revision = 1), "新虚构问题", 0)
+        assertThrows(IllegalStateException::class.java) { runBlocking { repo.saveCurrentRun(run, 0) } }
+        ContactRepository(session).delete("a")
+        assertTrue(repo.runs("a").isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.saveCurrentRun(run, 0) } }
+        Unit
+    }
     private lateinit var db: JunshiDatabase
     private lateinit var session: DataSession
     @Before fun setup() = runBlocking {

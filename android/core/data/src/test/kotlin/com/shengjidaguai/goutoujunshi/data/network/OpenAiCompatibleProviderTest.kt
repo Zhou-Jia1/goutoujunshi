@@ -16,6 +16,42 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class OpenAiCompatibleProviderTest {
+    @Test fun `account and refusal errors are static and never echo provider body`() = runTest {
+        for ((body, code) in listOf(
+            "{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"$secret\"}}" to "INSUFFICIENT_BALANCE",
+            "{\"error\":{\"code\":\"content_policy_violation\",\"message\":\"$secret\"}}" to "CONTENT_FILTERED")) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setResponseCode(429).setBody(body))
+                val result = error(provider(server))
+                assertEquals(code, result.code)
+                assertFalse(result.toString().contains(secret))
+                assertFalse(result.retryable)
+            }
+        }
+        MockWebServer().use { server ->
+            server.enqueue(stream(event("[[REPLY]]虚构半截") + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n\n"))
+            val chunks = provider(server).analyze(AnalysisRequest(userText = "虚构输入")).toList()
+            assertEquals("CONTENT_FILTERED", (chunks.last() as AnalysisChunk.Failed).error.code)
+            assertTrue(chunks.none { it is AnalysisChunk.Completed })
+        }
+    }
+
+    @Test fun `malformed model text completes as readable content while broken envelopes never complete`() = runTest {
+        MockWebServer().use { server ->
+            val text = "虚构全文：没有标记也要能读。[[UNKNOWN]]末尾"
+            server.enqueue(stream(event(text) + "data: [DONE]\n\n"))
+            val answer = (provider(server).analyze(AnalysisRequest(userText = "虚构输入")).last() as AnalysisChunk.Completed).answer
+            assertEquals(text, answer.rawText)
+            assertTrue(answer.freeText.contains("末尾"))
+        }
+        MockWebServer().use { server ->
+            server.enqueue(stream(event("[[REPLY]]虚构半截") + "data: invalid-$secret\n\ndata: [DONE]\n\n"))
+            val chunks = provider(server).analyze(AnalysisRequest(userText = "虚构输入")).toList()
+            assertEquals("INVALID_JSON", (chunks.last() as AnalysisChunk.Failed).error.code)
+            assertTrue(chunks.none { it is AnalysisChunk.Completed })
+            assertFalse(chunks.last().toString().contains(secret))
+        }
+    }
     private val secret = "sk-fictional-secret-DO-NOT-ECHO"
     private val reference = KnowledgeReference("references/test.md", "a".repeat(64), 20)
     private val assembler = object : PromptAssembler {

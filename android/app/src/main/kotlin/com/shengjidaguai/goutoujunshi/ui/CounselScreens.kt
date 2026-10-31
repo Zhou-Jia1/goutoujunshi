@@ -31,6 +31,8 @@ import com.shengjidaguai.goutoujunshi.domain.MessageRole
 import com.shengjidaguai.goutoujunshi.domain.RedactionAlias
 import com.shengjidaguai.goutoujunshi.domain.RedactionProfile
 import com.shengjidaguai.goutoujunshi.domain.SafeAliasRestorer
+import com.shengjidaguai.goutoujunshi.domain.SafetyLevel
+import com.shengjidaguai.goutoujunshi.domain.SafetyPolicy
 import com.shengjidaguai.goutoujunshi.domain.group
 import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
@@ -53,6 +55,7 @@ data class CounselUiActions(
     val stop: () -> Unit = {},
     val newTemporary: () -> Unit = {},
     val clearAll: () -> Unit = {},
+    val openSettings: () -> Unit = {},
     val importFile: () -> Unit = {},
     val saveRedactionProfile: (String, List<String>, List<RedactionAlias>) -> Unit = { _, _, _ -> },
 )
@@ -78,7 +81,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     }
 }
 
-@Composable fun CounselScreen(viewModel: CounselViewModel) {
+@Composable fun CounselScreen(viewModel: CounselViewModel, openSettings: () -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val importing by viewModel.imports.state.collectAsStateWithLifecycle()
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importFile) }
@@ -89,12 +92,20 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         setStyleBias = viewModel::setStyleBias, setTone = viewModel::setTone, preparePreview = viewModel::preparePreview,
         analyze = viewModel::analyze, retry = viewModel::retry, stop = viewModel::stop,
         newTemporary = viewModel::newTemporary, clearAll = viewModel::clearAll,
+        openSettings = openSettings,
         importFile = { files.launch(arrayOf("text/plain", "application/json")) },
         saveRedactionProfile = viewModel::saveRedactionProfile,
     ), importing != null)
 }
 
 @Composable fun CounselContent(state: CounselState, actions: CounselUiActions, importing: Boolean = false) {
+    if (!state.lockState.canDisplaySensitiveContent) {
+        EmptyState(Illustration.SHIELD, stringResource(R.string.counsel_locked), null)
+        return
+    }
+    val streamSafety = SafetyLevel.entries.filter { Regex("\\b${it.name}\\b", RegexOption.IGNORE_CASE)
+        .containsMatchIn(state.partial[SectionId.SAFETY].orEmpty()) }.maxByOrNull { it.ordinal } ?: SafetyLevel.NONE
+    val presentation = SafetyPolicy.evaluate(state.emotion, (state.answer?.safety ?: SafetyLevel.NONE).upgrade(state.safety), streamSafety, state.lockState)
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     var createContact by remember { mutableStateOf(false) }
@@ -189,25 +200,44 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         state.messages.filter { it.role == MessageRole.USER }.takeLast(3).forEach { message ->
             item(key = message.id) { UserMessageBubble(message.text, emptyList()) }
         }
-        if (state.streaming) item { ThinkingIndicator(ThinkingStage.PLANNING, false) }
+        if (state.streaming) item { ThinkingIndicator(
+            when(state.waiting.stage) { 0 -> ThinkingStage.LISTENING; 1 -> ThinkingStage.SORTING; else -> ThinkingStage.PLANNING }, state.waiting.slow) }
         val answer = state.answer
         val partialReply = state.partial[SectionId.REPLY]?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
-        if (answer != null || partialReply.isNotEmpty()) item {
+        if (presentation.showSafetyCard) item {
+            JunshiColumn(Modifier.testTag("counsel-safety")) {
+                BodyText(stringResource(com.shengjidaguai.goutoujunshi.designsystem.R.string.ds_safety))
+            }
+        }
+        if (presentation.showOrdinaryStrategy && (answer != null || partialReply.isNotEmpty())) item {
             JunshiColumn(Modifier.testTag("counsel-answer")) {
                 if (state.answerDemo) DemoBadge()
                 val verdict = answer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
-                ReplySuggestionCard(replies, state.streaming, (state.emotion ?: 0) >= 8, null,
-                    { index -> replies.getOrNull(index)?.let(::copy) }, { copy(replies.joinToString("\n")) })
-                if (!answer?.freeText.isNullOrBlank()) BodyText(answer!!.freeText)
+                ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8, null,
+                    { index -> if (answer != null) replies.getOrNull(index)?.let(::copy) }, { if (answer != null) copy(replies.joinToString("\n")) })
+                if (answer != null && (answer.formatDisordered || answer.freeText.isNotBlank())) {
+                    BodyText(stringResource(R.string.answer_format_disordered))
+                    BodyText(answer.freeText.ifBlank { answer.rawText })
+                }
                 if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
                     BodyText(listOf(answer.empathy, answer.why.joinToString("\n"), answer.cost, answer.next).filter { it.isNotBlank() }.joinToString("\n\n"))
                 }
             }
         }
+        if (presentation.showOrdinaryStrategy && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
+            BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))
+        }
         state.error?.let { error -> item {
-            ErrorState(UiError(stringResource(errorLabel(error.code))), if (error.retryable) actions.retry else null, null)
+            if (error.code == "NETWORK") BodyText(stringResource(
+                if (state.currentContact == null) R.string.error_network_temporary
+                else if (state.draftSaved) R.string.error_network_saved else R.string.error_network_unsaved))
+            ErrorState(UiError(stringResource(errorLabel(error.code))), if (error.retryable) ({
+                if (error.code == "INTERRUPTED" && !state.demo && origin != null) {
+                    actions.preparePreview(origin); previewOpen = true
+                } else actions.retry()
+            }) else null, if (error.code in setOf("KEY_MISSING", "KEY_INVALID", "HTTP_401", "HTTP_403", "INSUFFICIENT_BALANCE", "CONFIG_INVALID", "SETTINGS_UNAVAILABLE")) actions.openSettings else null)
         } }
         item { SecondaryButton(stringResource(R.string.preview_request), {
             if (canAnalyze && origin != null) { flushDisplayedDraft(); actions.preparePreview(origin); previewOpen = true }
@@ -357,8 +387,11 @@ fun errorLabel(code: String): Int = when (code) {
     "CONFIG_INVALID" -> R.string.model_error_config
     "KEY_MISSING", "KEY_INVALID" -> R.string.model_error_key
     "HTTP_401", "HTTP_403" -> R.string.model_error_auth
+    "INSUFFICIENT_BALANCE" -> R.string.model_error_balance
+    "CONTENT_FILTERED" -> R.string.model_error_filtered
+    "INTERRUPTED" -> R.string.error_interrupted
     "HTTP_429" -> R.string.model_error_limit
-    "HTTP_500", "HTTP_502", "HTTP_503", "HTTP_504" -> R.string.model_error_server
+    in (500..599).map { "HTTP_$it" } -> R.string.model_error_server
     "FIRST_PACKET_TIMEOUT", "STREAM_TIMEOUT" -> R.string.model_error_timeout
     "NETWORK", "STREAM_INTERRUPTED" -> R.string.model_error_network
     "NOT_SSE", "INVALID_JSON", "EMPTY_RESPONSE", "PROVIDER_REJECTED", "PROVIDER_ERROR" -> R.string.model_error_protocol

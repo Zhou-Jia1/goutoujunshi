@@ -23,6 +23,15 @@ class TipRepository(private val session: DataSession) {
 
 /** The enum is the only public route into the shared table; raw arbitrary payloads are not exposed. */
 class TimelineRepository(private val session: DataSession) {
+    /** No upsert may recreate a deleted owner or accept an obsolete source/input. */
+    suspend fun saveCurrentRun(run: AnalysisRun, expectedSource: Long) = session.transaction {
+        val contactId = requireNotNull(run.contactId)
+        check(requireContact(contactId).revision == expectedSource)
+        val row = requireNotNull(conversation(contactId, run.conversationId))
+        check(decode<Conversation>(row.payload).revision == run.conversationRevision)
+        run.requestSnapshot?.let { check(it.sourceRevision == expectedSource && it.userText == row.draft) }
+        putOwned(contactId, run.requestId, OwnedRecordKind.ANALYSIS_RUN, encode(run))
+    }
     suspend fun events(contactId: String): List<Event> = session.transaction { records(contactId, OwnedRecordKind.EVENT.name).map { decode(it.payload) } }
     suspend fun save(event: Event) = session.transaction { putOwned(requireNotNull(event.contactId), event.id, OwnedRecordKind.EVENT, encode(event)) }
     suspend fun deleteEvent(contactId: String, id: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.EVENT.name, id) }

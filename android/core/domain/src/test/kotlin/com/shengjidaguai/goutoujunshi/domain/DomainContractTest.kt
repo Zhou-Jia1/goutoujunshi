@@ -19,6 +19,16 @@ class DomainContractTest {
         assertEquals(1, expected.memoryProposals.size)
     }
     @Test fun safetyNeverDowngradesAndMalformedTextSurvives() {
+        val malformed = "[[SITUATION]]虚构[昵称1] [手机号1] [昵称999]"
+        val projected = SafeAliasRestorer.restore(SectionParser().apply { feed(malformed) }.finish(),
+            PreparedPrompt("虚构知识", "虚构输入", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 4)), "synthetic",
+                safeAliases = mapOf("[昵称1]" to "小伙伴")))
+        assertEquals(malformed, projected.rawText)
+        assertEquals("[[SITUATION]]虚构小伙伴 [手机号1] [昵称999]", projected.freeText)
+        val missing = SectionParser().apply { feed("[[SITUATION]]虚构局势") }.finish()
+        assertTrue(missing.formatDisordered)
+        assertEquals("[[SITUATION]]虚构局势", missing.rawText)
+        assertFalse(SectionParser().apply { feed("[[SAFETY]]CRISIS") }.finish().formatDisordered)
         val input = "[[SAFETY]]crisis[[SAFETY]]none[[REPLY]]好[[NEW_TAG]]未知[[ALT]]坏格式[[TIP]]只有一个字段[[SCENE]]bad[[REPLY"
         val answer = SectionParser().apply { input.forEach { feed(it.toString()) } }.finish()
         assertEquals(SafetyLevel.CRISIS, answer.safety)
