@@ -9,15 +9,15 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
-
 class OutboundPrivacyTest {
     private fun builder(): PromptBuilder {
         val root = File(System.getProperty("junshi.repositoryRoot")!!)
         val bundled = File(System.getProperty("junshi.generatedKnowledge")!!)
         return PromptBuilder(KnowledgeLibrary(KnowledgeSource { path ->
-            requireSafeAssetPath(path)
-            if (path.startsWith("knowledge/")) File(bundled, path.removePrefix("knowledge/")).readBytes()
-            else File(root, "android/core/knowledge/src/main/assets/$path").readBytes()
+            val base = if (path.startsWith("knowledge/")) bundled else File(root, "android/core/knowledge/src/main/assets")
+            val file = File(base, path.removePrefix("knowledge/")).canonicalFile
+            require(file.toPath().startsWith(base.canonicalFile.toPath()))
+            file.readBytes()
         }))
     }
     private val phone = "13987654321"

@@ -27,6 +27,15 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+tasks.withType<Test>().configureEach {
+    dependsOn(":core:knowledge:syncKnowledge")
+    doFirst {
+        systemProperty("junshi.repositoryRoot", rootProject.layout.projectDirectory.dir("..").asFile.absolutePath)
+        val knowledgeSync = project(":core:knowledge").tasks.named<Sync>("syncKnowledge").get()
+        systemProperty("junshi.generatedKnowledge", knowledgeSync.destinationDir.absolutePath)
+    }
+}
+
 dependencies {
     implementation(project(":core:domain"))
     implementation(project(":core:data"))
@@ -48,5 +57,6 @@ dependencies {
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)
     testImplementation(libs.coroutines.test)
+    testImplementation(libs.mockwebserver)
     debugImplementation(libs.compose.test.manifest)
 }
