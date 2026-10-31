@@ -29,6 +29,15 @@ def button(bounds, text="联系人"):
 
 
 class NativeClickTests(unittest.TestCase):
+    def test_diagnostic_never_emits_unknown_user_text_or_description(self):
+        root = ET.fromstring(f'<hierarchy><node package="{APP}" text="synthetic_private_body" '
+            'content-desc="synthetic_private_alias" bounds="[0,0][10,10]"/>'
+            f'<node package="{APP}" text="发送" bounds="[0,10][10,20]"/></hierarchy>')
+        output = repr(Device.redacted_controls(root))
+        self.assertNotIn("synthetic_private", output)
+        self.assertIn("发送", output)
+        self.assertIn("[0,10][10,20]", output)
+
     def test_shared_click_clips_send_control_to_scroll_viewport(self):
         device = FakeDevice(f'<node scrollable="true" bounds="[0,80][320,560]">{button("[40,548][280,612]", "发送")}</node>')
         device.click("发送")

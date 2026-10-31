@@ -116,6 +116,21 @@ class Device:
                     top = max(top, d)
         return left, top, right, bottom
 
+    @staticmethod
+    def redacted_controls(root):
+        public = {"军师", "联系人", "我的", "发送", "停止", "重试", "全部复制"}
+        resources = Path(__file__).resolve().parents[1] / "android/app/src/main/res/values/strings.xml"
+        if resources.is_file():
+            public.update("".join(node.itertext()) for node in ET.parse(resources).getroot()
+                          if node.tag == "string")
+        # Structural information and exact checked-in UI strings only. Arbitrary user
+        # text, aliases, output and field descriptions are never returned.
+        return [(node.get("text") if node.get("text") in public else "<redacted>",
+                 node.get("content-desc") if node.get("content-desc") in public else "<redacted>",
+                 node.get("class"), node.get("bounds"), node.get("enabled"),
+                 node.get("clickable"), node.get("scrollable"), node.get("selected"))
+                for node in root.iter("node") if node.get("package") == APP][:200]
+
     def click(self, text, scroll=False):
         for upward in ([True, False] if scroll else [True]):
             for _ in range(10 if scroll else 1):
@@ -128,11 +143,7 @@ class Device:
                         return
                 if scroll:
                     self.swipe(root, upward)
-        # Emit only fixed public controls, never arbitrary labels or model output.
-        public_controls = {"发送", "停止", "重试", "全部复制", "查看实际准备的内容"}
-        print("Public action state:", [(node.get("text"), node.get("bounds"), node.get("enabled"))
-            for node in root.iter("node")
-            if node.get("package") == APP and node.get("text") in public_controls], flush=True)
+        print("Redacted action state:", self.redacted_controls(root), flush=True)
         raise AssertionError(f"Debug action not available: {text}")
 
     def editor(self):
