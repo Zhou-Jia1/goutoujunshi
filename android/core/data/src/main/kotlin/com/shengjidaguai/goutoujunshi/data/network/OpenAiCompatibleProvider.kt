@@ -86,7 +86,7 @@ class OpenAiCompatibleProvider(
                     timedOut.set("FIRST_PACKET_TIMEOUT"); active.cancel()
                 }
                 active.execute().use { response ->
-                    if (!response.isSuccessful) throw httpFailure(response.code)
+                    if (!response.isSuccessful) throw httpFailure(response.code, response.peekBody(16_384).string())
                     if (response.header("Content-Type")?.substringBefore(';')?.trim()?.equals("text/event-stream", true) != true) {
                         throw ProviderFailure("NOT_SSE", "服务商未返回 SSE 流式响应，请检查协议与地址", false)
                     }
@@ -151,10 +151,15 @@ class OpenAiCompatibleProvider(
     private fun decodeToken(data: String): String {
         try {
             val root = json.parseToJsonElement(data).jsonObject
-            if (root["error"] != null) throw ProviderFailure("PROVIDER_REJECTED", "服务商拒绝了模型请求，请检查账户和模型权限", false)
+            if (root["error"] != null) throw classifiedFailure(root, "PROVIDER_REJECTED")
             val choices = root["choices"]?.jsonArray ?: throw IllegalArgumentException()
             if (choices.isEmpty()) return "" // Some providers send a final usage-only event.
-            val delta = choices.first().jsonObject["delta"]?.jsonObject ?: throw IllegalArgumentException()
+            val choice = choices.first().jsonObject
+            if (choice["finish_reason"]?.jsonPrimitive?.contentOrNull == "content_filter")
+                throw ProviderFailure("CONTENT_FILTERED", "服务商拦截了内容", false)
+            val delta = choice["delta"]?.jsonObject ?: throw IllegalArgumentException()
+            if (delta["refusal"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true)
+                throw ProviderFailure("CONTENT_FILTERED", "服务商拦截了内容", false)
             val content = delta["content"] ?: return ""
             if (content == JsonNull) return ""
             require(content is JsonPrimitive && content.isString)
@@ -163,11 +168,27 @@ class OpenAiCompatibleProvider(
         catch (_: Exception) { throw ProviderFailure("INVALID_JSON", "服务商返回的流式数据格式无效", false) }
     }
 
-    private fun httpFailure(status: Int) = when (status) {
+    // Only allowlisted machine codes classify errors. Never retain or display body/message.
+    private fun classifiedFailure(root: JsonObject, fallback: String): ProviderFailure {
+        val error = root["error"] as? JsonObject
+        val code = (error?.get("code") as? JsonPrimitive)?.contentOrNull
+        val type = (error?.get("type") as? JsonPrimitive)?.contentOrNull
+        return when {
+            code in setOf("insufficient_quota", "insufficient_balance", "balance_not_enough") || type == "insufficient_quota" -> ProviderFailure("INSUFFICIENT_BALANCE", "账户余额或额度不足", false)
+            code in setOf("content_filter", "content_policy_violation") -> ProviderFailure("CONTENT_FILTERED", "服务商拦截了内容", false)
+            else -> ProviderFailure(fallback, "模型服务拒绝请求，请检查设置", fallback == "HTTP_429" || fallback.removePrefix("HTTP_").toIntOrNull() in 500..599)
+        }
+    }
+    private fun httpFailure(status: Int, body: String): ProviderFailure {
+        val specific = runCatching { classifiedFailure(json.parseToJsonElement(body).jsonObject, "HTTP_$status") }.getOrNull()
+        if (specific?.code in setOf("INSUFFICIENT_BALANCE", "CONTENT_FILTERED")) return checkNotNull(specific)
+        return when (status) {
         401, 403 -> ProviderFailure("HTTP_$status", "API Key 无效或没有模型访问权限（$status）", false)
         429 -> ProviderFailure("HTTP_429", "服务商限流或额度不足（429），请稍后手动重试", true)
         in 500..599 -> ProviderFailure("HTTP_$status", "模型服务暂时不可用（$status），请稍后手动重试", true)
         else -> ProviderFailure("HTTP_$status", "模型服务返回错误（$status），请检查地址与模型配置", false)
+    }
+
     }
 
     private class ProviderFailure(val code: String, val safeMessage: String, val canRetry: Boolean) : Exception()

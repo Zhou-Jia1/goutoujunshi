@@ -40,6 +40,7 @@ interface AnalysisProvider { val kind:ProviderKind; fun analyze(request:Analysis
     val risk:String="", val tips:List<Tip> = emptyList(), val habit:String="", val next:String="",
     val ask:List<String> = emptyList(), val memoryProposals:List<MemoryProposal> = emptyList(),
     val freeText:String="", val rawText:String="", val sections:Map<SectionId,String> = emptyMap(),
+    val formatDisordered:Boolean=false,
 )
 interface PromptAssembler { fun prepare(request:AnalysisRequest):PreparedPrompt }
 @Serializable data class KnowledgeReference(val path:String, val sha256:String, val characters:Int) {
