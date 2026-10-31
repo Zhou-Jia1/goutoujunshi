@@ -33,6 +33,30 @@ def find_text(device, text, scroll=False):
     raise AssertionError(f"Expected debug text was not reachable: {text}")
 
 
+def click_ready(device, text):
+    # Popup composition can lag behind its anchor click. Never repeat the anchor action.
+    for _ in range(8):
+        root = device.tree()
+        node = device.action(root, text)
+        if node is not None:
+            parents = {child: parent for parent in root.iter() for child in parent}
+            left, top, right, bottom = device.bounds(node)
+            parent = parents.get(node)
+            while parent is not None:
+                if parent.get("scrollable") == "true":
+                    a, b, c, d = device.bounds(parent)
+                    left, top, right, bottom = max(left, a), max(top, b), min(right, c), min(bottom, d)
+                parent = parents.get(parent)
+            if right > left and bottom > top:
+                device.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
+                return
+    public_controls = {"我", "对方", "其他人（保留昵称）", "关闭", CONFIRM,
+        "这条消息是谁说的：尚未确认", "这条消息是谁说的：我"}
+    print("Visible import controls:", [(n.get("text"), n.get("bounds"), n.get("enabled"))
+        for n in device.tree().iter("node") if n.get("package") == APP and n.get("text") in public_controls], flush=True)
+    raise AssertionError(f"Expected debug action was not ready: {text}")
+
+
 def share(device, cold=False):
     if cold:
         device.call("shell", "am", "force-stop", APP)
@@ -67,8 +91,11 @@ def confirm_import(device, formal=False, rights_pending=False):
     else:
         device.click("导入到：请选择临时问问或联系人", scroll=True)
         device.click("临时问问")
-    device.click("这条消息是谁说的：尚未确认", scroll=True)
-    device.click("我")
+    speaker_label = "这条消息是谁说的：尚未确认"
+    find_text(device, speaker_label, scroll=True)
+    click_ready(device, speaker_label)
+    click_ready(device, "我")
+    find_text(device, "这条消息是谁说的：我", scroll=True)
     device.click(CONFIRM, scroll=True)
     require("确认聊天记录" not in labels(device), "Confirmed import did not finish")
 
