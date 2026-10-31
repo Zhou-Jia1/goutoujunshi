@@ -1,0 +1,638 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>狗头军师视觉预览</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 布局：左侧一台可点击的手机原型，右侧为当前页面的设计说明；窄屏时上下排列。
+   令牌取自 documentation/android/04-视觉设计系统.md */
+:root{
+  --bg:#FBF6EF; --surface:#FFFDF9; --surface-var:#F3EADF; --outline:#E4D6C6;
+  --fg:#2A1F17; --fg-2:#6B5A4C; --primary:#A84F24; --on-primary:#FFFFFF;
+  --primary-c:#FCE3D2; --on-primary-c:#3D1A08; --secondary-c:#EFE3D0; --on-secondary-c:#2E2214;
+  --tertiary:#7A4E7E; --brand:#E8823A; --warm:#D9A23A; --fact:#2A1F17; --guess:#7A4E7E; --unknown:#8C7D70;
+  --safety-c:#E3EEF8; --on-safety-c:#12324F; --calm-bg:#F4EFE9; --calm-primary:#8A6A55; --demo:#8A5A12;
+  --s-work:#6E6A78; --s-intimate:#C0573F; --s-family:#9A7330; --s-social:#5E7F4F; --s-med:#7A4E7E;
+  --frame:#2E241D; --stage:#F1E7DA; --chat-bg:#EDEDED; --chat-me:#D8EBCF; --chat-them:#FFFFFF; --scrim:rgba(30,20,12,.32);
+  --font:"PingFang SC","HarmonyOS Sans SC","MiSans","Noto Sans CJK SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#1A1411; --surface:#231B16; --surface-var:#30261F; --outline:#4A3B30;
+  --fg:#F1E6DA; --fg-2:#C2B1A1; --primary:#F2A777; --on-primary:#4A1D06;
+  --primary-c:#6B3214; --on-primary-c:#FFDCC7; --secondary-c:#4A3A2A; --on-secondary-c:#F5E6D3;
+  --tertiary:#D9B3DD; --brand:#F0924A; --warm:#E8B85A; --fact:#F1E6DA; --guess:#D9B3DD; --unknown:#9C8E80;
+  --safety-c:#16304A; --on-safety-c:#D4E6F7; --calm-bg:#17120F; --calm-primary:#C9A58C; --demo:#E8B85A;
+  --s-work:#B5B0C2; --s-intimate:#EE9A82; --s-family:#DDB878; --s-social:#A5C493; --s-med:#D9B3DD;
+  --frame:#000000; --stage:#100C0A; --chat-bg:#111111; --chat-me:#2F4A2A; --chat-them:#2C2C2C; --scrim:rgba(0,0,0,.5);
+  color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#1A1411; --surface:#231B16; --surface-var:#30261F; --outline:#4A3B30;
+  --fg:#F1E6DA; --fg-2:#C2B1A1; --primary:#F2A777; --on-primary:#4A1D06;
+  --primary-c:#6B3214; --on-primary-c:#FFDCC7; --secondary-c:#4A3A2A; --on-secondary-c:#F5E6D3;
+  --tertiary:#D9B3DD; --brand:#F0924A; --warm:#E8B85A; --fact:#F1E6DA; --guess:#D9B3DD; --unknown:#9C8E80;
+  --safety-c:#16304A; --on-safety-c:#D4E6F7; --calm-bg:#17120F; --calm-primary:#C9A58C; --demo:#E8B85A;
+  --s-work:#B5B0C2; --s-intimate:#EE9A82; --s-family:#DDB878; --s-social:#A5C493; --s-med:#D9B3DD;
+  --frame:#000000; --stage:#100C0A; --chat-bg:#111111; --chat-me:#2F4A2A; --chat-them:#2C2C2C; --scrim:rgba(0,0,0,.5);
+  color-scheme:dark;}
+
+*{box-sizing:border-box}
+body{background:var(--stage);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:8px}
+.wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+/* 顶栏 */
+.head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand h1{font-size:20px;margin:0;font-weight:600;letter-spacing:.02em}
+.brand small{color:var(--fg-2);font-size:13px}
+.ctrls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--outline);border-radius:999px;padding:3px}
+.seg button{padding:5px 12px;border-radius:999px;font-size:13px;color:var(--fg-2)}
+.seg button[aria-pressed="true"]{background:var(--primary-c);color:var(--on-primary-c);font-weight:600}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.tabs button{white-space:nowrap;padding:7px 14px;border-radius:10px;font-size:14px;color:var(--fg-2);border:1px solid transparent}
+.tabs button[aria-selected="true"]{background:var(--surface);border-color:var(--outline);color:var(--fg);font-weight:600}
+
+.stagegrid{display:grid;grid-template-columns:minmax(0,380px) minmax(0,1fr);gap:32px;align-items:start}
+@media (max-width:760px){.stagegrid{grid-template-columns:1fr}}
+
+/* 手机 */
+.phone{width:100%;max-width:380px;margin:0 auto;aspect-ratio:9/19;max-height:800px;background:var(--frame);border-radius:44px;padding:10px;box-shadow:0 20px 50px -20px rgba(0,0,0,.35)}
+.screen{position:relative;height:100%;border-radius:34px;overflow:hidden;background:var(--bg);display:flex;flex-direction:column}
+.phone[data-calm="true"] .screen{--bg:var(--calm-bg);--primary:var(--calm-primary)}
+.status{display:flex;justify-content:space-between;padding:10px 22px 4px;font-size:12px;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.view{flex:1;display:flex;flex-direction:column;min-height:0}
+.view[hidden]{display:none!important}
+.scroll{flex:1;overflow-y:auto;padding:4px 16px 16px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin}
+
+/* 通用组件 */
+.appbar{display:flex;align-items:center;justify-content:space-between;padding:6px 12px 8px 16px;gap:8px}
+.appbar h2{font-size:17px;margin:0;font-weight:600}
+.iconbtn{width:40px;height:40px;display:grid;place-items:center;border-radius:12px;color:var(--fg-2)}
+.switcher{display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:var(--surface);border:1px solid var(--outline);font-size:14px;font-weight:500}
+.pill{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--demo);padding:5px 10px;border-radius:999px;border:1px solid currentColor;font-weight:600}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.dog{display:block}
+.hello{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0 2px;text-align:center}
+.hello p{margin:0;font-size:18px;font-weight:600;text-wrap:balance}
+.hero{display:flex;align-items:center;gap:14px;background:var(--primary);color:var(--on-primary);border-radius:20px;padding:16px 18px;text-align:left;width:100%}
+.hero b{display:block;font-size:17px}
+.hero span{font-size:13px;opacity:.85}
+.hero .hi{width:44px;height:44px;border-radius:14px;background:rgba(255,255,255,.18);display:grid;place-items:center;flex:none}
+.label{font-size:13px;color:var(--fg-2)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:12px;background:var(--surface);border:1px solid var(--outline);font-size:14px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.row{display:flex;align-items:center;gap:10px}
+.recent{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-radius:14px;background:var(--surface-var);font-size:14px}
+.promo{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;border:1px dashed var(--outline);font-size:13px;color:var(--fg-2)}
+.composer{display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:6px;border-radius:24px;background:var(--surface);border:1px solid var(--outline)}
+.composer .ph{flex:1;color:var(--fg-2);font-size:14px}
+.send{width:36px;height:36px;border-radius:50%;background:var(--primary);color:var(--on-primary);display:grid;place-items:center}
+.plus{width:36px;height:36px;border-radius:50%;background:var(--surface-var);display:grid;place-items:center}
+.nav{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--outline);background:var(--surface);padding:6px 0 10px}
+.nav button{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:12px;color:var(--fg-2)}
+.nav button[aria-current="page"]{color:var(--primary);font-weight:600}
+.nav .ind{width:56px;height:28px;border-radius:14px;display:grid;place-items:center}
+.nav button[aria-current="page"] .ind{background:var(--primary-c);color:var(--on-primary-c)}
+
+/* 导入 */
+.confirm{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:14px;background:var(--primary-c);color:var(--on-primary-c);font-size:14px;font-weight:600}
+.confirm .btns{display:flex;gap:6px}
+.confirm button{padding:6px 12px;border-radius:10px;font-size:13px;background:var(--surface);color:var(--fg);font-weight:500}
+.confirm button.yes{background:var(--primary);color:var(--on-primary)}
+.confirm.done{background:var(--surface-var);color:var(--fg-2);font-weight:500}
+.bubbles{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:16px;background:var(--surface-var)}
+.b{max-width:80%;padding:8px 12px;border-radius:16px;font-size:14px;line-height:1.5;background:var(--surface)}
+.b small{display:block;font-size:11px;color:var(--fg-2)}
+.b.me{align-self:flex-end;background:var(--secondary-c);color:var(--on-secondary-c);border-bottom-right-radius:6px}
+.b.them{border-bottom-left-radius:6px}
+.low{text-decoration:underline dashed var(--warm);text-underline-offset:4px}
+.redact{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2)}
+.redact u{color:var(--primary);text-decoration:none;font-weight:600}
+.foot{border-top:1px solid var(--outline);padding:10px 16px 14px;display:flex;flex-direction:column;gap:10px;background:var(--surface)}
+.btnrow{display:flex;gap:10px}
+.btn{flex:1;padding:11px;border-radius:14px;font-weight:600;font-size:15px;text-align:center}
+.btn.pri{background:var(--primary);color:var(--on-primary)}
+.btn.sec{background:var(--surface-var)}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+.sel{display:flex;justify-content:space-between;font-size:14px}
+.sel b{font-weight:600}
+
+/* 答案卡 */
+.importcard{align-self:flex-end;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:16px 16px 6px 16px;background:var(--secondary-c);color:var(--on-secondary-c);font-size:13px}
+.answer{display:flex;flex-direction:column;gap:12px;background:var(--surface);border:1px solid var(--outline);border-radius:20px;padding:14px}
+.scene{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.sc{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 9px;border-radius:8px;background:var(--surface-var);color:var(--fg-2)}
+.edit{margin-left:auto;font-size:12px;color:var(--primary);font-weight:600}
+.verdict{font-size:17px;font-weight:600;line-height:1.5;margin:0;text-wrap:balance}
+.calmbanner{display:none;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:14px;background:var(--surface-var);font-size:13px}
+.phone[data-calm="true"] .calmbanner{display:flex}
+.reply{background:var(--primary-c);color:var(--on-primary-c);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.reply h3{margin:0;font-size:13px;font-weight:600;opacity:.8}
+.msg{display:flex;gap:8px;align-items:flex-start;background:var(--surface);color:var(--fg);border-radius:14px;padding:10px 10px 10px 12px;font-size:17px;line-height:1.6}
+.msg .n{font-size:12px;font-weight:700;color:var(--primary);padding-top:4px;font-variant-numeric:tabular-nums}
+.msg p{margin:0;flex:1;min-width:0}
+.copy1{flex:none;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:var(--fg-2)}
+.stylenote{font-size:12px;opacity:.85;margin:0}
+.slider{display:flex;align-items:center;gap:10px;font-size:12px}
+.slider input{flex:1;accent-color:var(--primary)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.act{padding:9px 14px;border-radius:12px;font-size:14px;font-weight:600;background:var(--surface-var)}
+.act.pri{background:var(--primary);color:var(--on-primary)}
+.alts{display:flex;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--fg-2);align-items:center}
+.alts button{padding:5px 10px;border-radius:999px;border:1px solid var(--outline);font-size:13px}
+.altbox{font-size:14px;padding:10px 12px;border-radius:12px;background:var(--surface-var)}
+.tip{display:flex;flex-direction:column;gap:4px;padding:12px 12px 12px 14px;border-radius:14px;background:var(--surface-var);border-left:3px solid var(--warm)}
+.tip b{font-size:14px}
+.tip p{margin:0;font-size:13px;color:var(--fg-2)}
+.tip .save{align-self:flex-start;font-size:12px;font-weight:600;color:var(--primary);padding:2px 0}
+details{border-top:1px solid var(--outline);padding-top:10px}
+summary{list-style:none;display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:600;cursor:pointer}
+summary::-webkit-details-marker{display:none}
+summary span{font-weight:400;font-size:12px;color:var(--fg-2)}
+details[open] summary{margin-bottom:8px}
+.ev{display:flex;flex-direction:column;gap:6px}
+.e{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:7px 10px;border-radius:10px;line-height:1.5}
+.e.f{background:color-mix(in srgb,var(--fact) 9%,transparent)}
+.e.g{border:1px dashed var(--guess);color:var(--guess)}
+.e.u{border:1px solid var(--unknown);color:var(--unknown)}
+.e em{font-style:normal;font-size:11px;opacity:.75;margin-left:auto;white-space:nowrap;font-family:var(--mono)}
+.plain{margin:0;font-size:13px;color:var(--fg-2)}
+.ask{display:flex;flex-direction:column;gap:6px}
+.ask button{text-align:left;font-size:13px;padding:8px 12px;border-radius:12px;border:1px solid var(--outline)}
+.memo{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--fg-2);padding:0 4px}
+.memo button{color:var(--primary);font-weight:600;font-size:12px}
+
+/* 风格 */
+.gtabs{display:flex;gap:6px;overflow-x:auto}
+.gtabs button{white-space:nowrap;padding:6px 12px;border-radius:999px;font-size:13px;border:1px solid var(--outline)}
+.gtabs button[aria-selected="true"]{background:var(--primary-c);color:var(--on-primary-c);border-color:transparent;font-weight:600}
+.stylecard{background:var(--surface);border:1px solid var(--outline);border-radius:20px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.stylecard p{margin:0;font-size:15px;line-height:1.7}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tags span{font-size:12px;padding:3px 9px;border-radius:8px;background:var(--surface-var);color:var(--fg-2)}
+.samples{display:flex;flex-direction:column;gap:6px}
+.samples div{font-size:14px;padding:8px 12px;border-radius:12px;background:var(--secondary-c);color:var(--on-secondary-c);align-self:flex-end;max-width:85%}
+.listrow{display:flex;justify-content:space-between;align-items:center;padding:14px;border-radius:14px;background:var(--surface-var);font-size:14px}
+
+/* 悬浮军师 */
+.chatapp{flex:1;display:flex;flex-direction:column;background:var(--chat-bg);position:relative;min-height:0}
+.chathead{display:flex;align-items:center;gap:8px;padding:8px 14px 10px;font-size:15px;font-weight:600;color:var(--fg)}
+.chatbody{flex:1;padding:8px 12px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.cb{max-width:78%;padding:8px 11px;border-radius:6px;font-size:14px;line-height:1.5;background:var(--chat-them);color:var(--fg)}
+.cb.me{align-self:flex-end;background:var(--chat-me)}
+.chatin{margin:6px 10px 10px;padding:9px 12px;border-radius:8px;background:var(--chat-them);font-size:13px;color:var(--fg-2)}
+.ball{position:absolute;right:-22px;top:46%;width:52px;height:52px;border-radius:50%;background:var(--brand);display:grid;place-items:center;box-shadow:0 4px 12px rgba(0,0,0,.25);opacity:.7;transition:right .25s,opacity .2s;z-index:3}
+.ball:hover,.ball:focus-visible{opacity:1;right:6px}
+.ball.busy{opacity:1;right:6px;animation:breathe 4s ease-in-out infinite}
+.ball .hint{position:absolute;top:-34px;right:4px;white-space:nowrap;background:var(--fg);color:var(--bg);font-size:12px;padding:4px 9px;border-radius:8px}
+@keyframes breathe{0%,100%{transform:scale(.96)}50%{transform:scale(1)}}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:4}
+.flash.on{animation:flash .35s ease-out}
+@keyframes flash{0%{opacity:.6}100%{opacity:0}}
+.panel{position:absolute;left:0;right:0;bottom:0;max-height:55%;background:var(--surface);border-top:1px solid var(--outline);border-radius:28px 28px 0 0;padding:6px 14px 14px;display:flex;flex-direction:column;gap:10px;transform:translateY(105%);transition:transform .3s cubic-bezier(.2,0,0,1);z-index:5;box-shadow:0 -10px 30px -12px rgba(0,0,0,.3)}
+.panel.open{transform:none}
+.grab{width:36px;height:4px;border-radius:2px;background:var(--outline);align-self:center;margin:4px 0}
+.panel .msg{font-size:15px;padding:8px 10px}
+.panel .pa{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.panel .pa button{padding:8px 4px;border-radius:12px;font-size:12px;font-weight:600;background:var(--surface-var)}
+.panel .pa button.pri{background:var(--primary);color:var(--on-primary)}
+.toast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:12px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:6;white-space:nowrap}
+.toast.on{opacity:1}
+
+/* 说明栏 */
+.notes{display:flex;flex-direction:column;gap:16px;min-width:0}
+.notes h2{font-size:22px;margin:0;font-weight:600;text-wrap:balance}
+.notes .lede{margin:0;color:var(--fg-2);max-width:60ch}
+.notes ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.notes li{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:12px 14px;background:var(--surface);border:1px solid var(--outline);border-radius:14px;max-width:62ch}
+.notes li b{display:block;font-size:14px}
+.notes li span{font-size:13px;color:var(--fg-2)}
+.notes .k{font-family:var(--mono);font-size:11px;color:var(--primary);padding-top:3px;font-weight:600}
+.try{font-size:13px;color:var(--fg-2);border-left:3px solid var(--brand);padding-left:12px;max-width:60ch}
+.swatches{display:flex;flex-wrap:wrap;gap:8px}
+.sw{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-2);font-family:var(--mono)}
+.sw i{width:22px;height:22px;border-radius:7px;border:1px solid var(--outline)}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <mask id="mk-fan" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+      <path fill="#fff" d="M50 66 C24 58 14 34 28 17 C37 7 63 7 72 17 C86 34 76 58 50 66 Z"/>
+      <g stroke="#000" stroke-width="3" stroke-linecap="round" fill="none">
+        <path d="M50 62 L50 14"/><path d="M50 62 L33 20"/><path d="M50 62 L67 20"/><path d="M50 62 L23 34"/><path d="M50 62 L77 34"/>
+      </g>
+    </mask>
+    <mask id="mk-owl" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+      <path fill="#fff" d="M22 30 L28 12 L41 23 Q50 20 59 23 L72 12 L78 30 Q87 48 81 66 Q73 89 50 90 Q27 89 19 66 Q13 48 22 30 Z"/>
+      <circle cx="37" cy="45" r="11" fill="#000"/><circle cx="63" cy="45" r="11" fill="#000"/>
+      <circle cx="38" cy="46" r="5" fill="#fff"/><circle cx="62" cy="46" r="5" fill="#fff"/>
+      <path d="M45 59 L55 59 L50 67 Z" fill="#000"/>
+    </mask>
+    <mask id="mk-bubble" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+      <path fill="#fff" d="M22 16 H78 Q90 16 90 28 V60 Q90 72 78 72 H46 L30 87 L32 72 H22 Q10 72 10 60 V28 Q10 16 22 16 Z"/>
+      <circle cx="37" cy="40" r="5.5" fill="#000"/><circle cx="63" cy="40" r="5.5" fill="#000"/>
+      <path d="M39 52 Q50 62 61 52" stroke="#000" stroke-width="5" stroke-linecap="round" fill="none"/>
+    </mask>
+    <symbol id="m-fan" viewBox="0 0 100 100">
+      <rect width="100" height="100" mask="url(#mk-fan)"/>
+      <circle cx="50" cy="68" r="5"/><rect x="46" y="70" width="8" height="24" rx="4"/>
+    </symbol>
+    <symbol id="m-owl" viewBox="0 0 100 100"><rect width="100" height="100" mask="url(#mk-owl)"/></symbol>
+    <symbol id="m-bubble" viewBox="0 0 100 100"><rect width="100" height="100" mask="url(#mk-bubble)"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header class="head">
+    <div class="brand">
+      <svg class="dog" width="34" height="34" style="color:var(--brand)" aria-hidden="true"><use href="#m-fan" class="mk" fill="currentColor"/></svg>
+      <div><h1>狗头军师 · 视觉预览</h1><small>暖色调 · 三个形象可切换 · 页面内容均为示例</small></div>
+    </div>
+    <div class="ctrls">
+      <div class="seg" role="group" aria-label="主题">
+        <button type="button" data-theme-set="" aria-pressed="true">跟随系统</button>
+        <button type="button" data-theme-set="light" aria-pressed="false">浅色</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">深色</button>
+      </div>
+      <div class="seg" role="group" aria-label="形象">
+        <button type="button" data-mark="m-fan" aria-pressed="true">羽扇</button>
+        <button type="button" data-mark="m-owl" aria-pressed="false">猫头鹰</button>
+        <button type="button" data-mark="m-bubble" aria-pressed="false">对话泡</button>
+      </div>
+      <div class="seg" role="group" aria-label="平静模式">
+        <button type="button" id="calmBtn" aria-pressed="false">平静模式</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="页面">
+    <button role="tab" data-go="home" aria-selected="true">① 首页</button>
+    <button role="tab" data-go="import" aria-selected="false">② 导入确认</button>
+    <button role="tab" data-go="answer" aria-selected="false">③ 答案卡</button>
+    <button role="tab" data-go="floating" aria-selected="false">④ 悬浮军师</button>
+    <button role="tab" data-go="style" aria-selected="false">⑤ 我的风格</button>
+  </nav>
+
+  <div class="stagegrid">
+    <div class="phone" id="phone" data-calm="false">
+      <div class="screen">
+        <div class="status"><span>9:41</span><span>5G ▮▮▮ 86%</span></div>
+
+        <!-- ① 首页 -->
+        <section class="view" data-view="home">
+          <div class="appbar">
+            <button class="switcher" type="button">临时问问 <span aria-hidden="true">▾</span></button>
+            <span class="pill"><i></i>演示</span>
+          </div>
+          <div class="scroll">
+            <div class="hello">
+              <svg class="dog" width="64" height="64" style="color:var(--brand)" aria-hidden="true"><use href="#m-fan" class="mk" fill="currentColor"/></svg>
+              <p>今天遇到什么事了？说说看。</p>
+            </div>
+            <button class="hero" type="button" data-go="import">
+              <span class="hi"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="3"/><circle cx="12" cy="12.5" r="3.5"/><path d="M8 5l1.5-2h5L16 5"/></svg></span>
+              <span><b>上传聊天记录</b><span>截图 · 文件 · 粘贴，图片只在手机上识别</span></span>
+            </button>
+            <div class="label">或者直接说：</div>
+            <div class="chips">
+              <button class="chip" type="button" data-go="import"><i class="dot" style="background:var(--s-work)"></i>回领导消息</button>
+              <button class="chip" type="button"><i class="dot" style="background:var(--s-intimate)"></i>回暧昧对象</button>
+              <button class="chip" type="button"><i class="dot" style="background:var(--s-family)"></i>和家人沟通</button>
+              <button class="chip" type="button"><i class="dot" style="background:var(--s-med)"></i>调解矛盾</button>
+              <button class="chip" type="button" id="hardChip"><i class="dot" style="background:var(--s-intimate)"></i>我现在很难受</button>
+            </div>
+            <div class="recent"><span>最近：王总 · 小北 · 妈妈</span><span aria-hidden="true">›</span></div>
+            <button class="promo" type="button" data-go="floating">
+              <svg width="28" height="28" style="color:var(--brand);flex:none" aria-hidden="true"><use href="#m-fan" class="mk" fill="currentColor"/></svg>
+              <span>开启悬浮军师：在聊天应用里点一下就能拿到建议 ›</span>
+            </button>
+          </div>
+          <div class="composer"><span class="plus" aria-hidden="true">+</span><span class="ph">说说你遇到的事…</span><span class="send" aria-hidden="true">↑</span></div>
+          <div class="nav">
+            <button type="button" aria-current="page"><span class="ind">💬</span>军师</button>
+            <button type="button"><span class="ind">👥</span>联系人</button>
+            <button type="button" data-go="style"><span class="ind">🙂</span>我的</button>
+          </div>
+        </section>
+
+        <!-- ② 导入确认 -->
+        <section class="view" data-view="import" hidden>
+          <div class="appbar"><button class="iconbtn" type="button" data-go="home" aria-label="返回">←</button><h2>确认聊天内容</h2><span class="label" style="padding-right:8px">3 张</span></div>
+          <div class="scroll">
+            <div class="confirm" id="confirmBar">
+              <span id="confirmText">右边是你吗？</span>
+              <span class="btns" id="confirmBtns"><button type="button" class="yes" id="yesBtn">是</button><button type="button" id="noBtn">不是</button></span>
+            </div>
+            <div class="bubbles">
+              <div class="b them"><small>王总</small>周六能来加个班吗</div>
+              <div class="b me"><small>我</small>好的我看看</div>
+              <div class="b them"><small>王总</small>客户那边比较急，<span class="low" title="识别不清，点击修改">资料周一要交</span></div>
+              <div class="b them"><small>王总</small>你上午过来就行</div>
+            </div>
+            <div class="label">有下划虚线的文字识别不清，点一下可以改。</div>
+            <div class="redact">🛡 发送前会自动隐藏 2 处个人信息 · <u>查看</u></div>
+          </div>
+          <div class="foot">
+            <div class="sel"><span>联系人</span><b>王总 · 领导 ▾</b></div>
+            <div class="btnrow">
+              <button class="btn sec" type="button" data-go="home">取消</button>
+              <button class="btn pri" type="button" id="analyzeBtn" disabled>开始分析</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ③ 答案卡 -->
+        <section class="view" data-view="answer" hidden>
+          <div class="appbar">
+            <button class="switcher" type="button"><i class="dot" style="background:var(--s-work)"></i>王总 <span aria-hidden="true">▾</span></button>
+            <span class="pill"><i></i>演示</span>
+          </div>
+          <div class="scroll">
+            <div class="importcard">📷 导入了 4 条消息 · 10/30</div>
+            <div class="answer">
+              <div class="scene">
+                <span class="sc"><i class="dot" style="background:var(--s-work)"></i>职场·领导</span>
+                <span class="sc">拒绝</span><span class="sc">较正式</span>
+                <button class="edit" type="button">改 ✎</button>
+              </div>
+              <div class="calmbanner"><span>🫧</span><span>看得出你有点着急。回复先放着也没关系，等心里平一点再决定发不发。</span></div>
+              <p class="verdict">先接住任务，再说明周六上午不行，主动给出下午远程的替代方案。</p>
+              <div class="reply">
+                <h3>可以这样回 · 分两条发</h3>
+                <div id="replyMsgs"></div>
+                <p class="stylenote" id="styleNote"></p>
+                <div class="slider"><span>更得体</span><input type="range" id="styleRange" min="0" max="2" step="1" value="1" aria-label="更得体到更像我"><span>更像我</span></div>
+              </div>
+              <div class="actions">
+                <button class="act pri" type="button" id="copyAll">全部复制</button>
+                <button class="act" type="button">换口吻 ▾</button>
+                <button class="act" type="button">我发了 ▾</button>
+              </div>
+              <div class="alts"><span>备选：</span><button type="button" data-alt="0">更稳妥</button><button type="button" data-alt="1">更直接</button></div>
+              <div class="altbox" id="altBox" hidden></div>
+              <div class="tip">
+                <b>💡 本次技巧：先接后转</b>
+                <p>先回应对方的需要（客户急），再说自己的限制，最后给替代方案。对方感到被重视，拒绝也就不生硬了。</p>
+                <p>在回复里：① 是「接」，② 里的「下午两点后远程」是替代方案。</p>
+                <button class="save" type="button" id="saveTip">☆ 收藏到技巧本</button>
+              </div>
+              <details><summary>为什么这是最优 <span>3 条</span></summary>
+                <p class="plain">王总在意的是客户进度，不一定需要你本人到场；直接拒绝会显得不配合，答应又要牺牲家事；书面给出具体替代时间，既表态又留下记录。</p>
+              </details>
+              <details><summary>代价 <span>1 条</span></summary>
+                <p class="plain">如果这件事必须到公司现场，替代方案可能不被接受，你还需要再沟通一次。</p>
+              </details>
+              <details open><summary>我看到的 <span>事实 3 · 推测 1 · 未知 1</span></summary>
+                <div class="ev">
+                  <div class="e f">✓ 王总希望你周六加班<em>#1</em></div>
+                  <div class="e f">✓ 你回复了「好的我看看」，还没有答应<em>#2</em></div>
+                  <div class="e f">✓ 王总说客户比较急，资料周一要交<em>#3</em></div>
+                  <div class="e g">◌ 王总更在意资料按时交付，而不是你到场<em>推测·中</em></div>
+                  <div class="e u">? 这项工作是否必须在公司完成<em>未知</em></div>
+                </div>
+              </details>
+              <details><summary>接下来 <span>观察对方回复</span></summary>
+                <p class="plain">如果王总坚持要你到场，先问清楚必须到场的原因和大概时长，再决定是否调整家事。</p>
+              </details>
+              <div class="ask">
+                <span class="label">想让答案更准？回答 1 个问题：</span>
+                <button type="button">这项工作一定要去公司做吗？</button>
+              </div>
+            </div>
+            <div class="memo"><span>记下了：王总偏好书面确认 · 只存在本机</span><button type="button">撤销</button></div>
+          </div>
+          <div class="composer"><span class="plus" aria-hidden="true">+</span><span class="ph">继续说，或上传对方的新回复…</span><span class="send" aria-hidden="true">↑</span></div>
+        </section>
+
+        <!-- ④ 悬浮军师 -->
+        <section class="view" data-view="floating" hidden>
+          <div class="chatapp">
+            <div class="chathead"><span>‹</span><span style="flex:1;text-align:center">王总</span><span>···</span></div>
+            <div class="chatbody">
+              <div class="cb">周六能来加个班吗</div>
+              <div class="cb me">好的我看看</div>
+              <div class="cb">客户那边比较急，资料周一要交</div>
+              <div class="cb">你上午过来就行</div>
+            </div>
+            <div class="chatin">输入消息</div>
+            <button class="ball" type="button" id="ball" aria-label="悬浮军师：分析当前屏幕">
+              <svg width="30" height="30" style="color:#fff" aria-hidden="true"><use href="#m-fan" class="mk" fill="currentColor"/></svg>
+              <span class="hint" id="ballHint">点我试试</span>
+            </button>
+            <div class="flash" id="flash"></div>
+            <div class="panel" id="panel" aria-live="polite">
+              <div class="grab"></div>
+              <div class="scene">
+                <span class="sc"><i class="dot" style="background:var(--s-work)"></i>王总</span><span class="sc">拒绝</span><span class="sc">较正式</span>
+                <button class="edit" type="button" id="closePanel" aria-label="关闭面板" style="color:var(--fg-2)">✕</button>
+              </div>
+              <div id="panelMsgs" style="display:flex;flex-direction:column;gap:6px"></div>
+              <div class="pa">
+                <button class="pri" type="button" id="panelCopy">复制</button>
+                <button type="button">换口吻</button>
+                <button type="button">↑再截一屏</button>
+                <button type="button" data-go="answer">完整分析</button>
+              </div>
+            </div>
+            <div class="toast" id="toast">已复制，去粘贴吧</div>
+          </div>
+        </section>
+
+        <!-- ⑤ 我的风格 -->
+        <section class="view" data-view="style" hidden>
+          <div class="appbar"><button class="iconbtn" type="button" data-go="home" aria-label="返回">←</button><h2>我的风格</h2><span style="width:40px"></span></div>
+          <div class="scroll">
+            <div class="gtabs" role="tablist" id="gtabs"></div>
+            <div class="stylecard">
+              <div class="row"><i class="dot" id="gDot"></i><b id="gName"></b><button class="edit" type="button">编辑 ✎</button></div>
+              <p id="gDesc"></p>
+              <div class="tags" id="gTags"></div>
+              <span class="label" id="gCount"></span>
+            </div>
+            <div class="label">你说过的话（样本，可以删除）</div>
+            <div class="samples" id="gSamples"></div>
+            <div class="listrow"><span>「哪句更像你」小测试 · 5 组</span><span aria-hidden="true">›</span></div>
+            <p class="plain">风格只保存在这台手机上。军师会保留你的说话习惯，同时修正会影响效果的地方，比如过度道歉或只回一个字。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <aside class="notes" id="notes" aria-live="polite"></aside>
+  </div>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  // 主题
+  document.querySelectorAll('[data-theme-set]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var v=b.getAttribute('data-theme-set');
+      if(v) root.setAttribute('data-theme',v); else root.removeAttribute('data-theme');
+      document.querySelectorAll('[data-theme-set]').forEach(function(x){x.setAttribute('aria-pressed',String(x===b))});
+    });
+  });
+  var MARKNAME={'m-fan':'羽扇','m-owl':'猫头鹰','m-bubble':'对话泡'};
+  document.querySelectorAll('[data-mark]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var id=b.getAttribute('data-mark');
+      document.querySelectorAll('use.mk').forEach(function(u){u.setAttribute('href','#'+id)});
+      document.querySelectorAll('[data-mark]').forEach(function(x){x.setAttribute('aria-pressed',String(x===b))});
+      try{localStorage.setItem('junshi-mark',id)}catch(e){}
+    });
+  });
+  try{var saved=localStorage.getItem('junshi-mark');var sb=saved&&document.querySelector('[data-mark="'+saved+'"]');if(sb)sb.click()}catch(e){}
+  var phone=document.getElementById('phone');
+  var calmBtn=document.getElementById('calmBtn');
+  function setCalm(on){phone.setAttribute('data-calm',String(on));calmBtn.setAttribute('aria-pressed',String(on));}
+  calmBtn.addEventListener('click',function(){setCalm(phone.getAttribute('data-calm')!=='true')});
+  document.getElementById('hardChip').addEventListener('click',function(){setCalm(true);go('answer')});
+
+  // 说明
+  var NOTES={
+    home:{t:'首页：先帮忙，再认识',l:'不登录、不填问卷。页面上视觉权重最高的是「上传聊天记录」，因为这是用户最常带着来的东西。',items:[
+      ['UploadHero','唯一的实心主色块','整页只有这一处大面积绿色，用户一眼就知道从哪里开始。'],
+      ['QuickScene','场景用图标加色点区分','五大场景各有一个低饱和度的色点，颜色只起辅助作用，文字本身已经说清楚。'],
+      ['DemoBadge','演示状态一直可见','没接模型时显示「演示」，不让示例回答被误认为真实分析。'],
+      ['Tone','开口像朋友','「今天遇到什么事了？说说看。」而不是「请输入您的问题」。']],
+      tryIt:'试试：点「上传聊天记录」进入导入确认；点「我现在很难受」会进入平静模式。'},
+    import:{t:'导入确认：只问一次「哪边是你」',l:'识别结果以聊天气泡的样子展示，方便和原截图对照。确认说话人之前不能开始分析，避免把对方的话当成你说的。',items:[
+      ['Speaker','一个问题，一次点击','推断正确时只需点「是」，之后同一次导入的所有截图沿用。'],
+      ['OCR','识别不清用虚线标出','虚线下划线提示核对，点击就能改，不用逐条检查。'],
+      ['Redact','隐私放心但不打扰','一行小字说明发送前会隐藏手机号、地址等信息，想看再点开。'],
+      ['Gate','按钮跟着状态走','「开始分析」在确认前保持灰色，确认后才可点击。']],
+      tryIt:'试试：先点「是」，再点「开始分析」。'},
+    answer:{t:'答案卡：要发的话永远在最前面',l:'首屏依次是场景标签、一句结论、可以直接复制的回复。为什么、代价、证据都折叠在下面，想学再展开。',items:[
+      ['Reply','回复是整页的视觉中心','浅绿底色，正文比普通文字大一号；分两条发的消息各自可复制。'],
+      ['Style','更得体 ←→ 更像我','拖动滑杆，回复在正式和你自己的口吻之间切换，并说明这次保留了你的哪些习惯。'],
+      ['Tip','每次只教一个技巧','左侧一条暖色竖线，和本次回复的具体句子对应起来，可以收藏。'],
+      ['Evidence','事实、推测、未知靠形状区分','实心底是事实，虚线框是推测，空心框加问号是未知；不只靠颜色。']],
+      tryIt:'试试：拖动风格滑杆；打开「平静模式」看界面怎样变安静；点「更稳妥」查看备选。'},
+    floating:{t:'悬浮军师：就在聊天旁边，但不打扰',l:'用户不用离开聊天应用。点一下悬浮球截取这一屏，在手机上识别，半屏面板给出回复，复制后自动收起。',items:[
+      ['Ball','平时半隐藏在边缘','70% 透明度，只露出一半；分析时呼吸动画，提示正在工作。'],
+      ['Panel','最多占屏幕 55%','上半部分的聊天内容仍然可见，方便对照；面板跟随系统深浅色，不跟随下方应用。'],
+      ['Copy','只复制，不代发','复制后提示「已复制，去粘贴吧」并收起，最后一步由用户决定。'],
+      ['Scope','顶部始终显示联系人','防止把给领导的话发错人。']],
+      tryIt:'试试：点右侧边缘的悬浮球，再点「复制」。'},
+    style:{t:'我的风格：像你，但更好',l:'风格画像用白话描述，而不是一堆数字。按关系大类分开，因为人对领导和对朋友说话本来就不一样。',items:[
+      ['Profile','白话描述，可以直接改','「你对领导说话简短，常用『好的』『收到』」，用户能看懂，也能纠正。'],
+      ['Samples','样本来自你自己确认过的消息','只取导入时你确认为「我」的消息，每条都能删除。'],
+      ['Groups','五个标签切换场景','默认、职场、亲密、家庭、社交分别学习。']],
+      tryIt:'试试：切换上方的场景标签。'}
+  };
+  var notesEl=document.getElementById('notes');
+  function renderNotes(v){
+    var n=NOTES[v];
+    var h='<h2>'+n.t+'</h2><p class="lede">'+n.l+'</p><ul>';
+    n.items.forEach(function(it){h+='<li><span class="k">'+it[0]+'</span><div><b>'+it[1]+'</b><span>'+it[2]+'</span></div></li>'});
+    h+='</ul><p class="try">'+n.tryIt+'</p>';
+    if(v==='home'){h+='<div class="swatches">'+[['--primary','主操作'],['--brand','品牌形象'],['--warm','技巧与提醒'],['--tertiary','推测'],['--bg','纸张底色']].map(function(s){return '<span class="sw"><i style="background:var('+s[0]+')"></i>'+s[1]+'</span>'}).join('')+'</div>'}
+    notesEl.innerHTML=h;
+  }
+
+  // 路由
+  var VIEWS=['home','import','answer','floating','style'];
+  function go(v){
+    if(VIEWS.indexOf(v)<0) v='home';
+    document.querySelectorAll('.view').forEach(function(s){s.hidden=s.getAttribute('data-view')!==v});
+    document.querySelectorAll('.tabs [data-go]').forEach(function(t){t.setAttribute('aria-selected',String(t.getAttribute('data-go')===v))});
+    renderNotes(v);
+    if(location.hash!=='#'+v){try{history.replaceState(null,'','#'+v)}catch(e){location.hash=v}}
+  }
+  document.addEventListener('click',function(e){var t=e.target.closest('[data-go]');if(t){go(t.getAttribute('data-go'))}});
+  window.addEventListener('hashchange',function(){go(location.hash.slice(1))});
+
+  // 导入确认
+  var analyzeBtn=document.getElementById('analyzeBtn');
+  function confirmSide(text){
+    var bar=document.getElementById('confirmBar');bar.classList.add('done');
+    document.getElementById('confirmText').textContent=text;
+    document.getElementById('confirmBtns').innerHTML='<button type="button" id="redo">改</button>';
+    document.getElementById('redo').addEventListener('click',resetConfirm);
+    analyzeBtn.disabled=false;
+  }
+  function resetConfirm(){
+    var bar=document.getElementById('confirmBar');bar.classList.remove('done');
+    document.getElementById('confirmText').textContent='右边是你吗？';
+    document.getElementById('confirmBtns').innerHTML='<button type="button" class="yes" id="yesBtn">是</button><button type="button" id="noBtn">不是</button>';
+    bind();analyzeBtn.disabled=true;
+  }
+  function bind(){
+    document.getElementById('yesBtn').addEventListener('click',function(){confirmSide('✓ 已确认：右边是你，左边是王总')});
+    document.getElementById('noBtn').addEventListener('click',function(){confirmSide('✓ 已确认：左边是你（示例中仍按右侧显示）')});
+  }
+  bind();
+  analyzeBtn.addEventListener('click',function(){go('answer')});
+
+  // 回复与风格
+  var REPLIES=[
+    {m:['收到王总，客户这边的情况我理解。','周六上午我有提前定好的家事，下午两点后可以远程处理，您看是否可行？'],n:'偏正式：完整句子，用「您」，不用语气词。'},
+    {m:['收到王总，客户这边我理解。','周六上午我有早定好的家事，下午两点后可以远程处理，您看行吗？'],n:'保留了你对王总常用的「收到」和「您」。'},
+    {m:['好的王总，客户那边急我明白哈','周六上午家里有事走不开，下午两点后我远程弄，您看行不'],n:'加了你常用的「哈」，句子更短；对王总来说依然不失礼。'}
+  ];
+  var ALTS=['更稳妥：收到王总，我今晚先把能准备的部分整理好，周六的时间我尽量调整，明天中午前给您确认。','更直接：王总，周六上午我实在去不了。下午两点后我远程把资料赶出来，保证周一能交。'];
+  var range=document.getElementById('styleRange');
+  function copyText(t){try{navigator.clipboard.writeText(t).catch(function(){})}catch(e){}}
+  function msgHtml(list,small){
+    return list.map(function(t,i){return '<div class="msg"><span class="n">'+'①②③'[i]+'</span><p>'+t+'</p><button class="copy1" type="button" aria-label="复制第'+(i+1)+'条" data-copy="'+t+'">⧉</button></div>'}).join('');
+  }
+  function renderReply(){
+    var r=REPLIES[+range.value];
+    document.getElementById('replyMsgs').innerHTML='<div style="display:flex;flex-direction:column;gap:6px">'+msgHtml(r.m)+'</div>';
+    document.getElementById('styleNote').textContent=r.n;
+  }
+  range.addEventListener('input',renderReply);renderReply();
+  document.getElementById('panelMsgs').innerHTML=msgHtml(REPLIES[1].m);
+  document.addEventListener('click',function(e){
+    var c=e.target.closest('[data-copy]');if(c){copyText(c.getAttribute('data-copy'));var o=c.textContent;c.textContent='✓';setTimeout(function(){c.textContent=o},1200)}
+  });
+  var copyAll=document.getElementById('copyAll');
+  copyAll.addEventListener('click',function(){copyText(REPLIES[+range.value].m.join('\n'));copyAll.textContent='已复制，去发吧';setTimeout(function(){copyAll.textContent='全部复制'},1600)});
+  document.querySelectorAll('[data-alt]').forEach(function(b){b.addEventListener('click',function(){var box=document.getElementById('altBox');var t=ALTS[+b.getAttribute('data-alt')];box.hidden=box.textContent===t&&!box.hidden;box.textContent=t})});
+  var saveTip=document.getElementById('saveTip');
+  saveTip.addEventListener('click',function(){var on=saveTip.textContent.indexOf('★')===0;saveTip.textContent=on?'☆ 收藏到技巧本':'★ 已收藏'});
+
+  // 悬浮军师
+  var ball=document.getElementById('ball'),panel=document.getElementById('panel'),flash=document.getElementById('flash'),toast=document.getElementById('toast'),hint=document.getElementById('ballHint');
+  ball.addEventListener('click',function(){
+    if(panel.classList.contains('open'))return;
+    hint.hidden=true;ball.style.visibility='hidden';
+    setTimeout(function(){flash.classList.remove('on');void flash.offsetWidth;flash.classList.add('on');ball.style.visibility='visible';ball.classList.add('busy');
+      setTimeout(function(){ball.classList.remove('busy');panel.classList.add('open')},1100)},80);
+  });
+  function closePanel(){panel.classList.remove('open')}
+  document.getElementById('closePanel').addEventListener('click',closePanel);
+  document.getElementById('panelCopy').addEventListener('click',function(){copyText(REPLIES[1].m.join('\n'));toast.classList.add('on');setTimeout(function(){closePanel();toast.classList.remove('on')},1000)});
+
+  // 风格
+  var G=[
+    ['默认','--s-social','你说话偏短，常用「哈哈」「好滴」开头，喜欢分几条连着发，很少用句号。',['#短句','#分条发','#哈哈','#不用句号'],38,['哈哈好滴','我晚点到 你们先吃','这个可以诶']],
+    ['职场','--s-work','你对领导说话简短，常用「好的」「收到」，会用「您」，几乎不用表情。',['#短句','#用您','#不用表情'],24,['好的，收到','王总我这边今天下班前给您','明白，我马上改']],
+    ['亲密','--s-intimate','你和亲近的人说话会用很多语气词和表情，习惯先问对方在干嘛。',['#语气词多','#爱用表情','#先问候'],17,['在干嘛呀','今天好累啊😮‍💨','那我们周六去嘛']],
+    ['家庭','--s-family','你和家人说话直接，回复偏短，有时只回一个「嗯」。军师会帮你多说半句，让爸妈感受到你在听。',['#直接','#回复短','#常用嗯'],12,['嗯','知道了妈','这周不回去了']],
+    ['社交','--s-social','你在朋友面前爱开玩笑，喜欢用反问和夸张的说法。',['#爱开玩笑','#反问','#夸张'],20,['你这也太离谱了吧','谁懂啊','冲！']]
+  ];
+  var gtabs=document.getElementById('gtabs');
+  function renderG(i){
+    var g=G[i];
+    gtabs.querySelectorAll('button').forEach(function(b,j){b.setAttribute('aria-selected',String(i===j))});
+    document.getElementById('gName').textContent=g[0];
+    document.getElementById('gDot').style.background='var('+g[1]+')';
+    document.getElementById('gDesc').textContent=g[2];
+    document.getElementById('gTags').innerHTML=g[3].map(function(t){return '<span>'+t+'</span>'}).join('');
+    document.getElementById('gCount').textContent='来自 '+g[4]+' 条你的消息 ›';
+    document.getElementById('gSamples').innerHTML=g[5].map(function(t){return '<div>'+t+'</div>'}).join('');
+  }
+  gtabs.innerHTML=G.map(function(g,i){return '<button type="button" role="tab">'+g[0]+'</button>'}).join('');
+  gtabs.querySelectorAll('button').forEach(function(b,i){b.addEventListener('click',function(){renderG(i)})});
+  renderG(1);
+
+  go(location.hash.slice(1)||'home');
+})();
+</script>
