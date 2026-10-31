@@ -48,4 +48,4 @@ tasks.withType<Test>().configureEach {
     }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
-dependencies { api(project(":core:domain")); testImplementation(libs.junit); testImplementation(libs.robolectric) }
+dependencies { api(project(":core:domain")); testImplementation(libs.junit); testImplementation(libs.robolectric); testImplementation(project(":core:data")); testImplementation(libs.mockwebserver); testImplementation(libs.coroutines.test) }

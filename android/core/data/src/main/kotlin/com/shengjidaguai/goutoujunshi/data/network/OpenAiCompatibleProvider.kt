@@ -101,7 +101,7 @@ class OpenAiCompatibleProvider(
                         if (data == "[DONE]") {
                             if (!receivedText) throw ProviderFailure("EMPTY_RESPONSE", "模型没有返回文本内容", true)
                             firstPacketTimer?.cancel()
-                            send(AnalysisChunk.Completed(parser.finish().copy(id = request.requestId)))
+                            send(AnalysisChunk.Completed(SafeAliasRestorer.restore(parser.finish().copy(id = request.requestId), prompt)))
                             break
                         }
                         val token = decodeToken(data)

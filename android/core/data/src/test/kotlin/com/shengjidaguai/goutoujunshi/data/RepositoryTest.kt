@@ -29,6 +29,20 @@ class RepositoryTest {
         ContactRepository(session).save(Contact("a", "虚构甲"))
         ContactRepository(session).save(Contact("b", "虚构乙"))
     }
+    @Test fun redactionRulesReloadAreContactScopedCasAndCascade() = runBlocking {
+        val repo = RedactionRepository(session)
+        val a = RedactionProfile(1, listOf("虚构公司甲"), listOf(RedactionAlias("虚构昵称甲", "朋友甲")))
+        repo.save("a", 0, a)
+        repo.save("b", 0, RedactionProfile(1, listOf("虚构公司乙")))
+        assertEquals(a, RedactionRepository(session).load("a"))
+        assertFalse(repo.load("b").terms.contains("虚构公司甲"))
+        assertThrows(IllegalStateException::class.java) { runBlocking { repo.save("a", 0, a) } }
+        ContactRepository(session).delete("a")
+        assertTrue(session.transaction { records("a", OwnedRecordKind.REDACTION.name).isEmpty() })
+        assertEquals(listOf("虚构公司乙"), repo.load("b").terms)
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.save("a", 0, a) } }
+        Unit
+    }
     @After fun close() { db.close() }
 
     @Test fun importCasDedupIsPerContactAndRestartReloadsConfirmedNamedOther() = runBlocking {

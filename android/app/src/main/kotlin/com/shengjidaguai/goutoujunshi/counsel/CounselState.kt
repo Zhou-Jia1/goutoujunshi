@@ -36,4 +36,6 @@ data class CounselState(
     val connectionResult: String? = null,
     val outboundBody: String? = null,
     val currentRequest: AnalysisRequest? = null,
+    val redactionProfile: RedactionProfile = RedactionProfile(),
+    val redactionError: Boolean = false,
 )
