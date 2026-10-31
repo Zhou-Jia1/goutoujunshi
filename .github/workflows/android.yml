@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: '3.13'
       - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "15859902"
+          packages: platform-tools
       - run: sdkmanager 'platforms;android-37.2' 'build-tools;37.0.0'
       - uses: gradle/actions/setup-gradle@v4
       - run: python -m pip install -r evals/requirements.txt
