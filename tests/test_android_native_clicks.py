@@ -30,6 +30,28 @@ def button(bounds, text="联系人"):
 
 
 class NativeClickTests(unittest.TestCase):
+    def test_click_waits_for_stable_position_and_never_taps_old_frame(self):
+        class MovingDevice(FakeDevice):
+            def __init__(self):
+                super().__init__(button("[40,100][280,164]", "发送"))
+                self.reads = 0
+            def tree(self):
+                self.reads += 1
+                if self.reads >= 2:
+                    return ET.fromstring('<hierarchy>' + button("[40,200][280,264]", "发送") + '</hierarchy>')
+                return self.root
+        device = MovingDevice()
+        device.click("发送")
+        self.assertEqual([("shell", "input", "tap", 160, 232)], device.calls)
+        self.assertGreaterEqual(device.reads, 3)
+
+    def test_scroll_scan_uses_overlapping_slow_gestures(self):
+        device = FakeDevice(f'<node package="{APP}" scrollable="true" bounds="[0,80][320,560]"/>')
+        device.swipe(device.tree(), True)
+        call = device.calls[0]
+        self.assertLess(abs(call[4] - call[6]), (560 - 80) / 2)
+        self.assertGreaterEqual(call[7], 600)
+
     def test_cleanup_window_gap_only_waits_while_owned_activity_is_resumed(self):
         class GapDevice:
             def __init__(self, resumed): self.resumed, self.reads = resumed, 0

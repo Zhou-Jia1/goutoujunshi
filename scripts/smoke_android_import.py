@@ -34,20 +34,8 @@ def find_text(device, text, scroll=False):
 
 
 def click_ready(device, text):
-    # Popup composition can lag behind its anchor click. Never repeat the anchor action.
-    for _ in range(8):
-        root = device.tree()
-        node = device.action(root, text)
-        if node is not None:
-            left, top, right, bottom = device.visible_bounds(root, node)
-            if right > left and bottom > top:
-                device.call("shell", "input", "tap", (left + right) // 2, (top + bottom) // 2)
-                return
-    public_controls = {"我", "对方", "其他人（保留昵称）", "关闭", CONFIRM,
-        "这条消息是谁说的：尚未确认", "这条消息是谁说的：我"}
-    print("Visible import controls:", [(n.get("text"), n.get("bounds"), n.get("enabled"))
-        for n in device.tree().iter("node") if n.get("package") == APP and n.get("text") in public_controls], flush=True)
-    raise AssertionError(f"Expected debug action was not ready: {text}")
+    # The common driver waits for composition/position stability, then taps once.
+    device.click(text)
 
 
 def share(device, cold=False):
