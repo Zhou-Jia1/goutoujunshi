@@ -93,3 +93,9 @@ import androidx.compose.ui.text.AnnotatedString
         }
     }
 }
+
+/** Process-local state with bounded line layout, suitable for a scrollable reply edit dialog. */
+@Composable fun ReplyEditField(state: androidx.compose.foundation.text.input.TextFieldState, label: String) {
+    OutlinedTextField(state = state, modifier = Modifier.fillMaxWidth(), label = { Text(label) },
+        lineLimits = androidx.compose.foundation.text.input.TextFieldLineLimits.MultiLine(minHeightInLines = 2, maxHeightInLines = 6))
+}

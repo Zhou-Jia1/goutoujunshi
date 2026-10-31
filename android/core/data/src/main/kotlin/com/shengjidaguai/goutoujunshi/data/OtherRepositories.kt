@@ -7,6 +7,24 @@ class PlanRepository(private val session: DataSession) {
     suspend fun save(plan: ActionPlan) = session.transaction {
         putOwned(requireNotNull(plan.contactId), plan.id, OwnedRecordKind.PLAN, encode(plan))
     }
+    /** Feedback is user-authored provenance, never implicit permission to learn. */
+    suspend fun saveFeedback(plan: ActionPlan, privacyRevision: Long) = session.transaction {
+        val contactId = requireNotNull(plan.contactId)
+        check(requireContact(contactId).revision == plan.sourceRevision)
+        val current = decode<Conversation>(requireNotNull(conversation(contactId, plan.conversationId)).payload)
+        check(current.revision == plan.conversationRevision)
+        val privacy = records(contactId, OwnedRecordKind.REDACTION.name).singleOrNull()?.let { decode<RedactionProfile>(it.payload) } ?: RedactionProfile()
+        check(privacy.revision == privacyRevision)
+        val answer = decode<Message>(requireNotNull(message(contactId, requireNotNull(plan.sourceAnswerId))).payload)
+        check(answer.role == MessageRole.ASSISTANT && answer.requestId == plan.sourceRequestId && answer.conversationId == plan.conversationId)
+        require(plan.chosenReply.isNotBlank() && !plan.learningAuthorized)
+        record(contactId, OwnedRecordKind.PLAN.name, plan.id)?.let { row ->
+            val previous = decode<ActionPlan>(row.payload)
+            require(previous.copy(consentVersion = 0) == plan.copy(consentVersion = 0)) { "Feedback versions are immutable" }
+            return@transaction
+        }
+        putOwned(contactId, plan.id, OwnedRecordKind.PLAN, encode(plan.copy(consentVersion = currentConsent().consentVersion)))
+    }
     suspend fun delete(contactId: String, id: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.PLAN.name, id) }
 }
 

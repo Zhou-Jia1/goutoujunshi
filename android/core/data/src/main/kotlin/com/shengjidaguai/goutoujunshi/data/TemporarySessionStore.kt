@@ -14,6 +14,7 @@ data class TemporarySession(
     val samples: List<StyleSample> = emptyList(),
     val screenshot: ByteArray? = null,
     val summary: String = "",
+    val plans: List<ActionPlan> = emptyList(),
 )
 
 /** Opaque process-local write authority. Never persist a credential or pass it to a new store. */

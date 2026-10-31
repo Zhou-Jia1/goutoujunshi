@@ -11,6 +11,13 @@ import org.junit.Test
 
 class CounselControllerTest {
     internal class MemoryPersistence : CounselPersistence {
+        val feedbackPlans = mutableMapOf<String,ActionPlan>()
+        var feedbackFailures = 0
+        override suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) {
+            if (feedbackFailures > 0) { feedbackFailures--; error("synthetic save failure") }
+            check(people.any { it.id == contact.id && it.sourceRevision == plan.sourceRevision })
+            feedbackPlans[plan.id] = plan
+        }
         val people = mutableListOf<Contact>()
         val saved = mutableMapOf<String, StoredCounsel>()
         val imports = mutableMapOf<String, ChatImport>()
@@ -120,9 +127,10 @@ class CounselControllerTest {
         val calls = mutableListOf<AnalysisRequest>()
         val outputs = mutableListOf<Channel<AnalysisChunk>>()
         override fun analyze(request: AnalysisRequest) = flow {
-            calls += request
             val output = Channel<AnalysisChunk>(Channel.UNLIMITED)
             outputs += output
+            // Publishing the observed call also guarantees its response channel is ready.
+            calls += request
             for (chunk in output) emit(chunk)
         }
     }

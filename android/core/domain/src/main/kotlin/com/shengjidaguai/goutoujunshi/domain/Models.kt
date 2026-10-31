@@ -42,7 +42,10 @@ fun RelationType.group(): RelationGroup = when(this) {
 @Serializable data class StyleSample(val id:String="", val relationGroup:RelationGroup=RelationGroup.DEFAULT, val text:String="", val origin:StyleOrigin=StyleOrigin.QUIZ, val sourceContactId:String?=null, val sourceImportId:String?=null, val sourceMessageId:String?=null, val sourceAnswerId:String?=null, val consentVersion:Long=0, val sourceRevision:Long=0, val createdAt:Long=0)
 @Serializable data class Tip(val id:String="", val name:String="", val explanation:String="", val example:String="", val savedAt:Long=0)
 @Serializable data class Event(val id:String="", val contactId:String?=null, val occurredAt:String?=null, val timePrecision:TimePrecision=TimePrecision.UNKNOWN, val summary:String="", val lineRefs:List<String> = emptyList())
-@Serializable data class ActionPlan(val id:String="", val contactId:String?=null, val chosenReply:String="", val wasEdited:Boolean=false, val status:PlanStatus=PlanStatus.PENDING, val followUp:String?=null)
+@Serializable data class ActionPlan(val id:String="", val contactId:String?=null, val chosenReply:String="", val wasEdited:Boolean=false, val status:PlanStatus=PlanStatus.PENDING, val followUp:String?=null,
+    val sourceAnswerId:String?=null, val sourceRequestId:String?=null, val conversationId:String="",
+    val inputRevision:Long=0, val conversationRevision:Long=0, val sourceRevision:Long=0,
+    val consentVersion:Long=0, val learningAuthorized:Boolean=false)
 @Serializable data class NicknameMapping(val id:String="", val contactId:String?=null, val original:String="", val replacement:String="", val sourceRevision:Long=0)
 @Serializable data class ConsentState(val enabled:Boolean=false, val paused:Boolean=false, val consentVersion:Long=0, val policyVersion:String="1", val updatedAt:Long=0)
 

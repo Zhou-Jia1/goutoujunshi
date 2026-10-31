@@ -51,6 +51,33 @@ class ModelSettingsTest {
     private suspend fun await(predicate: () -> Boolean) = withTimeout(3000) { while (!predicate()) yield() }
     private val completion = AnalysisChunk.Completed(StructuredAnswer(reply = listOf("synthetic response")))
 
+    @Test fun everyRewriteAndSceneChangeNeedsFreshActualPreview() = runBlocking {
+        val f=Fixture()
+        try {
+            f.live(); f.controller.editDraft("虚构输入"); f.controller.preparePreview()
+            await { f.controller.state.value.preview != null }; f.controller.analyze()
+            await { f.lives.single().requests.size == 1 }; f.lives.single().output.send(completion)
+            await { f.controller.state.value.answer != null }
+            val origin=f.controller.state.value.conversation!!.id
+            val first=f.controller.state.value.answer!!
+            f.controller.rewrite(origin,first.id,Tone.FORMAL,0.7f)
+            await { f.controller.state.value.preview != null && f.controller.state.value.currentRequest == null }
+            assertEquals(1,f.lives.single().requests.size)
+            val body=f.controller.state.value.outboundBody
+            assertEquals(CompletionBody.encode(f.repo.snapshot.saved.connection(),f.controller.state.value.preview!!),body)
+            f.controller.analyze();await { f.lives.single().requests.size==2 }
+            assertEquals(RequestMode.REWRITE_REPLY,f.lives.single().requests[1].mode)
+            f.lives.single().output.send(completion);await { f.controller.state.value.answer != null }
+            val second=f.controller.state.value.answer!!
+            f.controller.changeScene(origin,second.id,RelationType.PARENT,Goal.COMFORT,"high")
+            await { f.controller.state.value.preview != null && f.controller.state.value.answer == null }
+            assertEquals(2,f.lives.single().requests.size)
+            f.controller.analyze();await { f.lives.single().requests.size==3 }
+            assertEquals(Goal.COMFORT,f.lives.single().requests[2].goal)
+            assertTrue(f.demo.requests.isEmpty())
+        } finally { f.close() }
+    }
+
     @Test fun liveRequiresPreviewAndBodyMatchesFrozenAssemblerWithoutFallback() = runBlocking {
         val f = Fixture()
         try {

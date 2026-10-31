@@ -39,6 +39,7 @@ interface CounselPersistence {
     suspend fun discardMessage(contact: Contact, message: Message)
     suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String { error("Import persistence unavailable") }
     suspend fun saveRun(contact: Contact, run: AnalysisRun) {}
+    suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) { error("Feedback persistence unavailable") }
     suspend fun clearAll(): Boolean
     suspend fun redactionProfile(contactId: String): RedactionProfile = RedactionProfile()
     suspend fun saveRedactionProfile(contactId: String, expected: Long, profile: RedactionProfile) { error("Privacy persistence unavailable") }
@@ -87,6 +88,7 @@ class EncryptedCounselPersistence(
     override suspend fun saveRun(contact: Contact, run: AnalysisRun) {
         TimelineRepository(checkNotNull(session)).saveCurrentRun(run, contact.sourceRevision)
     }
+    override suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) = PlanRepository(checkNotNull(session)).saveFeedback(plan, privacyRevision)
     override suspend fun clearAll(): Boolean {
         try { return store.clearAll(temporary).isEmpty() } finally { session = null }
     }
@@ -137,6 +139,7 @@ class CounselController(
         data object Initialize : Recovery
         data class Load(val contact: Contact) : Recovery
         data object SaveDraft : Recovery
+        data class Feedback(val origin: String?, val answerId: String, val edited: String?) : Recovery
         data class Analysis(val request: AnalysisRequest) : Recovery
         data class Checkpoint(val request: AnalysisRequest, val code: String, val retryable: Boolean) : Recovery
         data class Complete(val request: AnalysisRequest, val token: Long, val answer: StructuredAnswer) : Recovery
@@ -286,6 +289,7 @@ class CounselController(
                 it.requestId == latestUser?.requestId && latestUser?.text == saved.draft
         }
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
+        val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val profile = persistence.redactionProfile(contact.id)
         val resumable = saved.runs.lastOrNull { run ->
             val r = run.requestSnapshot
@@ -305,13 +309,18 @@ class CounselController(
             dirtyDraft = false
             ledger = AnalysisLedger(runs = saved.runs.map { if (it.requestId == resumable?.requestId) resumable else it }, messages = saved.messages)
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
-                conversation = saved.conversation, draft = saved.draft, relationType = contact.relationType,
-                messages = saved.messages, evidence = saved.evidence, answer = answer, draftSaved = true, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
+                conversation = saved.conversation, draft = saved.draft,
+                relationType = answerRequest?.manualRelation ?: answer?.scene?.relationType ?: contact.relationType,
+                goal = answerRequest?.manualGoal ?: answer?.scene?.goal ?: Goal.REPLY,
+                manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
+                formality = answerRequest?.manualFormality ?: answer?.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: "medium",
+                messages = saved.messages, evidence = saved.evidence, answer = answer, answerSourceRevision = answerRequest?.sourceRevision, answerRequest = answerRequest, answerConfigRevision = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.configRevision, draftSaved = true, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
                 modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile))
             recovery = resumable?.requestSnapshot?.let { r ->
                 inputRevision = r.inputRevision
                 set(state.value.copy(relationType = r.relationType ?: contact.relationType, goal = r.goal ?: Goal.REPLY,
                     tone = r.tone ?: Tone.NATURAL, emotion = r.emotionLevel, styleBias = r.styleBias,
+                    manualRelation = r.manualRelation, manualGoal = r.manualGoal, manualFormality = r.manualFormality, formality = r.formality,
                     error = CounselError("INTERRUPTED", true), currentRequest = r, draftSaved = true, safety = resumable.highestSafety))
                 Recovery.Analysis(r)
             }
@@ -383,8 +392,8 @@ class CounselController(
     /** Pasted text is a user statement, never confirmed dialogue evidence. */
     fun pasteText(text: String) = editDraft(text)
     fun pasteText(text: String, stamp: DraftEditStamp) = editDraft(text, stamp)
-    fun setRelation(value: RelationType) = enqueue(true) { edit { it.copy(relationType = value) } }
-    fun setGoal(value: Goal) = enqueue(true) { edit { it.copy(goal = value) } }
+    fun setRelation(value: RelationType) = enqueue(true) { edit { it.copy(relationType = value, manualRelation = value) } }
+    fun setGoal(value: Goal) = enqueue(true) { edit { it.copy(goal = value, manualGoal = value) } }
     fun setEmotion(value: Int?) = enqueue(true) { edit { it.copy(emotion = value?.coerceIn(0, 10)) } }
     fun setStyleBias(value: Float) = enqueue(true) { edit { it.copy(styleBias = if (value.isFinite()) value.coerceIn(0f, 1f) else 0.5f) } }
     fun setTone(value: Tone) = enqueue(true) { edit { it.copy(tone = value) } }
@@ -404,15 +413,87 @@ class CounselController(
         val current = state.value
         val conversation = checkNotNull(current.conversation)
         return AnalysisRequest(requestId = UUID.randomUUID().toString(), inputRevision = inputRevision,
-            contactId = current.currentContact?.id, relationType = current.relationType, goal = current.goal,
+            contactId = current.currentContact?.id,
+            relationType = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).relationType,
+            goal = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).goal, formality = current.formality,
+            manualRelation = current.manualRelation, manualGoal = current.manualGoal, manualFormality = current.manualFormality,
             userText = current.draft, emotionLevel = current.emotion, styleBias = current.styleBias, tone = current.tone,
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
             redactionProfile = current.redactionProfile,
             evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
+    private fun ordinaryAllowed() = SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
+    private suspend fun answerSourceCurrent(): Boolean {
+        val current = state.value
+        if (!current.hasCurrentAnswerSource()) return false
+        val source = current.messages.last { it.role == MessageRole.ASSISTANT && it.requestId == current.answerRequest?.requestId }
+        val contact = current.currentContact
+        val stored = if (contact == null) null else {
+            val owner = persistence.contacts().firstOrNull { it.id == contact.id } ?: return false
+            if (owner.sourceRevision != contact.sourceRevision) return false
+            persistence.loadOrCreate(contact)
+        }
+        val run = (stored?.runs ?: ledger.runs).lastOrNull { it.requestId == source.requestId } ?: return false
+        val original = run.requestSnapshot ?: return false
+        if (run.inputRevision != original.inputRevision || run.conversationId != original.conversationId ||
+            run.conversationRevision != original.conversationRevision || run.contactId != original.contactId ||
+            run.mode != original.mode || run.parentAnswerId != original.parentAnswerId) return false
+        if (!AnswerSourcePolicy.matches(original, run.configRevision, current.conversation, contact?.id,
+            contact?.sourceRevision ?: 0, current.draft, current.evidence, current.redactionProfile.revision, settings.saved.revision)) return false
+        if (stored == null) return true
+        return stored.messages.any { it.id == source.id && it.answerJson == source.answerJson } &&
+            stored.conversation == current.conversation && stored.draft == current.draft && stored.evidence == current.evidence &&
+            persistence.redactionProfile(contact!!.id).revision == original.redactionProfile.revision
+    }
+    fun changeScene(origin: String?, answerId: String, relation: RelationType, goal: Goal, formality: String) = enqueueFrom(origin) { submissionEpoch ->
+        if (!ordinaryAllowed() || state.value.answer?.id != answerId || state.value.streaming || !answerSourceCurrent()) return@enqueueFrom
+        if (epoch.get() != submissionEpoch) return@enqueueFrom
+        val original = checkNotNull(state.value.answer)
+        epoch.incrementAndGet()
+        edit { it.copy(relationType = relation, manualRelation = relation, goal = goal, manualGoal = goal, formality = formality.takeIf { f -> f in setOf("low", "medium", "high") } ?: "medium", manualFormality = formality.takeIf { f -> f in setOf("low", "medium", "high") } ?: "medium") }
+        previewRequest = request().copy(parentAnswerId = answerId, originalAnswer = original)
+        if (settings.saved.live) preparePreview(origin) else analyze(origin)
+    }
+    fun rewrite(origin: String?, answerId: String, tone: Tone, bias: Float) = enqueueFrom(origin) { submissionEpoch ->
+        val original = state.value.answer ?: return@enqueueFrom
+        if (original.id != answerId || !ordinaryAllowed() || state.value.streaming || state.value.error != null || !answerSourceCurrent()) return@enqueueFrom
+        if (epoch.get() != submissionEpoch) return@enqueueFrom
+        val operationEpoch = epoch.incrementAndGet()
+        inputRevision++
+        invalidateRun()
+        val snapshot = request().copy(mode = RequestMode.REWRITE_REPLY, purpose = OutboundPurpose.REPLY_REWRITE,
+            parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = bias.coerceIn(0f, 1f))
+        if (settings.saved.live) {
+            val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
+            if (epoch.get() != operationEpoch || state.value.conversation?.id != origin) return@enqueueFrom
+            previewRequest = snapshot
+            set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared)))
+        } else start(snapshot)
+    }
+    fun feedback(origin: String?, answerId: String, edited: String? = null) = enqueueFrom(origin) { operationEpoch ->
+        val current = state.value
+        val answer = current.answer ?: return@enqueueFrom
+        if (!ordinaryAllowed() || answer.id != answerId || current.streaming || (current.error != null && recovery !is Recovery.Feedback) || !answerSourceCurrent()) return@enqueueFrom
+        if (epoch.get() != operationEpoch) return@enqueueFrom
+        val source = current.messages.lastOrNull { it.role == MessageRole.ASSISTANT && it.answerJson?.let { raw -> runCatching { json.decodeFromString(StructuredAnswer.serializer(), raw).id }.getOrNull() } == answerId } ?: return@enqueueFrom
+        val plan = ActionPlan(id = "feedback:${source.id}:${if (edited == null) "sent" else java.security.MessageDigest.getInstance("SHA-256").digest(edited.toByteArray()).joinToString("") { "%02x".format(it) }}", contactId = current.currentContact?.id,
+            chosenReply = edited ?: answer.reply.joinToString("\n"), wasEdited = edited != null, status = if (edited == null) PlanStatus.SENT else PlanStatus.PENDING,
+            sourceAnswerId = source.id, sourceRequestId = source.requestId, conversationId = current.conversation!!.id,
+            inputRevision = ledger.runs.firstOrNull { it.requestId == source.requestId }?.inputRevision ?: inputRevision, conversationRevision = current.conversation.revision, sourceRevision = current.currentContact?.sourceRevision ?: 0)
+        if (plan.chosenReply.isBlank()) return@enqueueFrom
+        try {
+            if (current.currentContact != null) persistence.saveFeedback(current.currentContact, plan, current.redactionProfile.revision)
+            else { val lease = checkNotNull(credential); val session = checkNotNull(temporary.get(lease)); check(temporary.put(lease, session.copy(plans = session.plans.filterNot { it.id == plan.id } + plan))) }
+            if (epoch.get() == operationEpoch) { recovery = null; set(state.value.copy(feedbackSaved = true, error = null)) }
+        } catch (_: Exception) {
+            recovery = Recovery.Feedback(origin, answerId, edited)
+            set(state.value.copy(feedbackSaved = false, error = CounselError("STORAGE_UNAVAILABLE", true)))
+        }
+    }
     fun preparePreview() = preparePreview(state.value.conversation?.id)
-    fun preparePreview(originConversationId: String?) = enqueueFrom(originConversationId) preview@{
+    fun preparePreview(originConversationId: String?) = enqueueFrom(originConversationId) preview@{ operationEpoch ->
+        if (!ordinaryAllowed()) return@preview
         if (state.value.redactionError) return@preview
         if (importPending || state.value.loading || state.value.conversation == null) return@preview
         if (state.value.streaming) return@preview
@@ -424,6 +505,7 @@ class CounselController(
             // Preview belongs to the next send. Only retry may reuse a failed/cancelled run.
             val snapshot = previewRequest ?: interrupted ?: request()
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
+            if (epoch.get() != operationEpoch) return@preview
             previewRequest = snapshot
             set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared), error = null))
             recovery = null
@@ -432,6 +514,7 @@ class CounselController(
     }
     fun analyze() = analyze(state.value.conversation?.id)
     fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{
+        if (!ordinaryAllowed()) return@analyze
         if (state.value.redactionError) return@analyze
         if (state.value.testingConnection) return@analyze
         if (importPending || state.value.loading || state.value.conversation == null) return@analyze
@@ -448,6 +531,7 @@ class CounselController(
     fun retry() = enqueue {
         if (state.value.streaming || state.value.error?.retryable != true) return@enqueue
         when (val pending = recovery) {
+            is Recovery.Feedback -> feedback(pending.origin, pending.answerId, pending.edited)
             Recovery.Initialize -> initialize()
             is Recovery.Load -> loadContact(pending.contact)
             Recovery.SaveDraft -> flushDraft()
@@ -576,10 +660,10 @@ class CounselController(
                 val conversationRevision = checkNotNull(state.value.conversation).revision
                 val highestAnswer = chunk.answer.copy(safety = state.value.safety.upgrade(chunk.answer.safety))
                 val displayAnswer = state.value.preview?.let { SafeAliasRestorer.restore(highestAnswer, it) } ?: highestAnswer
-                val answer = AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return
+                val answer = (AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return).let { it.copy(id = if (request.mode == RequestMode.REWRITE_REPLY || it.id.isBlank()) "answer:${request.requestId}" else it.id) }
                 set(state.value.copy(safety = state.value.safety.upgrade(answer.safety)))
                 val completedLedger = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
-                val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
+                val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(answerJson = json.encodeToString(StructuredAnswer.serializer(), answer), providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
                 val message = next.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT } ?: return
                 if (!isCurrent(request, token)) return
                 recovery = Recovery.Complete(request, token, highestAnswer)
@@ -602,7 +686,10 @@ class CounselController(
                 waitingJob?.cancel()
                 frozen = null
                 recovery = null
-                set(state.value.copy(answer = answer, messages = ledger.messages, streaming = false, error = null))
+                set(state.value.copy(answer = answer, answerSourceRevision = request.sourceRevision, answerRequest = request, answerConfigRevision = settings.saved.revision, messages = ledger.messages, streaming = false, error = null, feedbackSaved = false,
+                    relationType = state.value.manualRelation ?: answer.scene?.relationType ?: state.value.relationType,
+                    goal = state.value.manualGoal ?: answer.scene?.goal ?: state.value.goal,
+                    formality = state.value.manualFormality ?: answer.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: state.value.formality, styleBias = request.styleBias, tone = request.tone ?: state.value.tone))
             }
         }
     }

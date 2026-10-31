@@ -23,10 +23,18 @@ data class CounselState(
     val draftEditAck: DraftEditStamp? = null,
     val relationType: RelationType = RelationType.ACQUAINTANCE,
     val goal: Goal = Goal.REPLY,
+    val manualRelation: RelationType? = null,
+    val manualGoal: Goal? = null,
+    val formality: String = "medium",
+    val manualFormality: String? = null,
+    val feedbackSaved: Boolean = false,
     val emotion: Int? = null,
     val styleBias: Float = 0.5f,
     val tone: Tone = Tone.NATURAL,
     val answer: StructuredAnswer? = null,
+    val answerSourceRevision: Long? = null,
+    val answerRequest: AnalysisRequest? = null,
+    val answerConfigRevision: String? = null,
     val safety: SafetyLevel = SafetyLevel.NONE,
     val lockState: LockState = LockState(),
     val messages: List<Message> = emptyList(),
@@ -47,3 +55,18 @@ data class CounselState(
     val redactionProfile: RedactionProfile = RedactionProfile(),
     val redactionError: Boolean = false,
 )
+
+/** Also used by the UI: invalid historic answers have no source-dependent actions or private modals. */
+fun CounselState.hasCurrentAnswerSource(): Boolean {
+    val original = answerRequest ?: return false
+    val answerId = answer?.id ?: return false
+    if (!AnswerSourcePolicy.matches(original, answerConfigRevision, conversation, currentContact?.id,
+        currentContact?.sourceRevision ?: 0, draft, evidence, redactionProfile.revision, modelSettings.saved.revision)) return false
+    return messages.any { message -> message.role == MessageRole.ASSISTANT && message.status == MessageStatus.COMPLETED &&
+        message.conversationId == conversation?.id && message.contactId == currentContact?.id && message.requestId == original.requestId &&
+        message.answerJson?.let { raw -> runCatching { kotlinx.serialization.json.Json.decodeFromString(StructuredAnswer.serializer(), raw).id == answerId }.getOrDefault(false) } == true }
+}
+
+/** Process-local modal ownership; changing any input authority discards edits and selected source refs. */
+fun CounselState.answerModalStamp(): List<Any?> = listOf(conversation, currentContact?.id, currentContact?.sourceRevision,
+    redactionProfile.revision, draft, evidence, modelSettings.saved.revision, answer?.id, answerRequest, answerConfigRevision)

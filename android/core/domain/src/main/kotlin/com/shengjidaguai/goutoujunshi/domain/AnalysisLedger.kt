@@ -2,6 +2,8 @@ package com.shengjidaguai.goutoujunshi.domain
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.security.MessageDigest
 
 @Serializable data class AnalysisLedger(val runs:List<AnalysisRun> = emptyList(),val messages:List<Message> = emptyList()) {
@@ -41,12 +43,21 @@ import java.security.MessageDigest
             run.mode == request.mode &&
             run.contactId == request.contactId &&
             run.parentAnswerId == request.parentAnswerId &&
-            run.operationFingerprint == operationFingerprint(request)
+            (run.operationFingerprint == operationFingerprint(request) || legacyOperationMatches(run, request))
+
+    /** T27 snapshots predate scene controls. Accept only their exact canonical hash, never a changed operation. */
+    private fun legacyOperationMatches(run: AnalysisRun, request: AnalysisRequest): Boolean {
+        if (request.formality != "medium" || request.manualRelation != null || request.manualGoal != null || request.manualFormality != null) return false
+        val fields = Json { encodeDefaults = true }.encodeToJsonElement(AnalysisRequest.serializer(), request).jsonObject
+        val legacy = JsonObject(fields.filterKeys { it !in setOf("formality", "manualRelation", "manualGoal", "manualFormality") }).toString()
+        return run.operationFingerprint == hash(legacy)
+    }
 
     /** Hash an immutable serialized snapshot, including every nested request field and default. */
     private fun operationFingerprint(request: AnalysisRequest): String {
         val snapshot = Json { encodeDefaults = true }.encodeToString(AnalysisRequest.serializer(), request)
-        return MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray(Charsets.UTF_8))
-            .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+        return hash(snapshot)
     }
+    private fun hash(snapshot: String): String = MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray(Charsets.UTF_8))
+            .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
 }
