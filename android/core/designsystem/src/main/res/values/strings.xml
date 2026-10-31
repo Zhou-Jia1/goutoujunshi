@@ -30,4 +30,5 @@
     <string name="ds_later">等你平静一点再看</string>
     <string name="ds_police">中国大陆：110</string><string name="ds_ambulance">中国大陆：120</string>
     <string name="ds_police_number" translatable="false">110</string><string name="ds_ambulance_number" translatable="false">120</string>
+    <string name="ds_sensitive_input_label">API Key（仅显示圆点）</string>
 </resources>

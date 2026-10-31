@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.*
+import androidx.compose.foundation.text.input.TextFieldState
+import com.shengjidaguai.goutoujunshi.data.network.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -136,10 +138,20 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 { id -> if (id == null) actions.newTemporary() else actions.selectContact(id) }, { createContact = true })
         }
         item { Box(Modifier.testTag("model-status")) {
-            ModelStatusPill(if (state.demo) ModelStatus.DEMO else ModelStatus.LIVE) { note = R.string.demo_explanation }
+            ModelStatusPill(when {
+                state.demo -> ModelStatus.DEMO
+                state.modelSettings.maskedKey == null -> ModelStatus.NOT_CONFIGURED
+                state.error?.code in setOf("NETWORK", "FIRST_PACKET_TIMEOUT", "STREAM_TIMEOUT") -> ModelStatus.OFFLINE
+                else -> ModelStatus.LIVE
+            }) { note = when {
+                state.demo -> R.string.demo_explanation
+                state.modelSettings.maskedKey == null -> R.string.model_not_configured_notice
+                state.error?.code in setOf("NETWORK", "FIRST_PACKET_TIMEOUT", "STREAM_TIMEOUT") -> R.string.model_error_network
+                else -> R.string.live_explanation
+            } }
         } }
         if (state.currentContact == null) item { BodyText(stringResource(R.string.temporary_explanation), secondary = true) }
-        item { BodyText(stringResource(R.string.demo_explanation), secondary = true) }
+        item { BodyText(stringResource(if (state.demo) R.string.demo_explanation else R.string.live_explanation), secondary = true) }
         if (state.loading) item { ThinkingIndicator(ThinkingStage.LISTENING, false) }
         item {
             UploadHeroButton({ note = R.string.import_ocr_pending }, actions.importFile, ::paste)
@@ -176,7 +188,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         val partialReply = state.partial[SectionId.REPLY]?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
         if (answer != null || partialReply.isNotEmpty()) item {
             JunshiColumn(Modifier.testTag("counsel-answer")) {
-                if (state.demo) DemoBadge()
+                if (state.answerDemo) DemoBadge()
                 val verdict = answer?.verdict ?: state.partial[SectionId.VERDICT].orEmpty()
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
@@ -198,15 +210,17 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             Box(Modifier.testTag("counsel-composer")) {
                 Composer(editor.text, ::editDraft, if (state.evidence.isEmpty()) emptyList() else listOf(AttachmentModel("imports", stringResource(R.string.import_ready, state.evidence.sumOf { it.lines.size }))), state.emotion, actions.setEmotion, state.streaming,
                     { source -> if (source == AttachSource.PASTE) paste() else actions.importFile() },
-                    { if (canAnalyze && origin != null) { flushDisplayedDraft(); actions.analyze(origin) } }, actions.stop)
+                    { if (canAnalyze && origin != null) { flushDisplayedDraft(); if (!state.demo) { actions.preparePreview(origin); previewOpen = true } else actions.analyze(origin) } }, actions.stop)
             }
         }
     }
     if (createContact) CreateContactDialog(actions.createContact) { createContact = false }
     note?.let { message -> ContentDialog(stringResource(R.string.app_name), stringResource(R.string.close), { note = null }) { BodyText(stringResource(message)) } }
-    if (previewOpen) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false }) {
-        BodyText(stringResource(R.string.preview_demo_notice))
-        state.preview?.let { preview -> BodyText(preview.system + "\n\n" + preview.user) }
+    if (previewOpen) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false },
+        if (!state.demo && state.outboundBody != null && origin != null) stringResource(R.string.live_send) to { actions.analyze(origin); previewOpen = false } else null) {
+        BodyText(stringResource(if (state.demo) R.string.preview_demo_notice else R.string.live_scope))
+        if (!state.demo) BodyText(runCatching { state.modelSettings.saved.connection().safeDestination() }.getOrDefault(""))
+        state.preview?.let { preview -> BodyText(state.outboundBody ?: (preview.system + "\n\n" + preview.user)) }
             ?: BodyText(stringResource(if (state.error == null) R.string.preparing_preview else errorLabel(state.error!!.code)))
     }
 }
@@ -246,20 +260,76 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 }
 
 @Composable fun SettingsScreen(viewModel: CounselViewModel) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    ModelSettingsContent(state, viewModel::saveModelSettings, viewModel::testModelConnection,
+        viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize)
+}
+
+@Composable fun ModelSettingsContent(state: CounselState,
+    onSave: (SavedModelSettings, String?, Boolean) -> Unit, onTest: () -> Unit,
+    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}) {
     var confirmClear by remember { mutableStateOf(false) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
+    val snapshot = state.modelSettings
+    val defaults = snapshot.saved.takeIf { it.baseUrl.isNotBlank() } ?: ModelPresets.openAi.let { SavedModelSettings(false, it.baseUrl, it.model, it.providerLabel) }
+    var live by remember(snapshot) { mutableStateOf(defaults.live) }
+    var base by remember(snapshot) { mutableStateOf(defaults.baseUrl) }
+    var model by remember(snapshot) { mutableStateOf(defaults.model) }
+    var label by remember(snapshot) { mutableStateOf(defaults.label) }
+    // Never use rememberTextFieldState/rememberSaveable: secret must not enter SavedState.
+    val key = remember(snapshot) { TextFieldState() }
+    DisposableEffect(key) { onDispose { key.edit { replace(0, length, "") } } }
+    val dirty = live != snapshot.saved.live || base != defaults.baseUrl || model != defaults.model || label != defaults.label || key.text.isNotEmpty()
+    LazyColumn(Modifier.fillMaxSize().testTag("model-settings"), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { JunshiTopBar(stringResource(R.string.nav_me)) }
-        item { EmptyState(Illustration.SHIELD, stringResource(R.string.local_privacy_title), stringResource(R.string.local_privacy_body)) }
-        item { BodyText(stringResource(R.string.demo_explanation)) }
-        item { BodyText(stringResource(R.string.model_next_stage)) }
+        item { BodyText(stringResource(R.string.live_explanation)) }
+        item { ChoiceField(stringResource(R.string.model_mode), stringResource(if (live) R.string.model_live else R.string.model_demo), listOf(
+            stringResource(R.string.model_demo) to { live = false }, stringResource(R.string.model_live) to { live = true })) }
+        item { ChoiceField(stringResource(R.string.model_preset), label, listOf(
+            stringResource(R.string.preset_openai) to { base = ModelPresets.openAi.baseUrl; model = ModelPresets.openAi.model; label = ModelPresets.openAi.providerLabel },
+            stringResource(R.string.preset_deepseek) to { base = ModelPresets.deepSeek.baseUrl; model = ModelPresets.deepSeek.model; label = ModelPresets.deepSeek.providerLabel },
+            stringResource(R.string.preset_qwen) to { base = ModelPresets.qwen.baseUrl; model = ModelPresets.qwen.model; label = ModelPresets.qwen.providerLabel },
+            stringResource(R.string.preset_custom) to { label = "" })) }
+        item { BodyText(stringResource(R.string.model_workspace_hint), secondary = true) }
+        item { FormTextField(base, { base = it }, stringResource(R.string.model_base)) }
+        item { FormTextField(model, { model = it }, stringResource(R.string.model_name)) }
+        item { SensitiveTextField(key, stringResource(R.string.model_key)) }
+        item { BodyText(snapshot.maskedKey?.let { stringResource(R.string.model_key_saved, it) } ?: stringResource(R.string.model_key_missing)) }
+        item { BodyText(stringResource(R.string.model_key_origin), secondary = true) }
+        item { PrimaryButton(stringResource(R.string.model_save), {
+            onSave(SavedModelSettings(live, base.trim(), model.trim(), label), key.text.toString().takeIf { it.isNotBlank() }, false)
+            key.edit { replace(0, length, "") }
+        }) }
+        item { SecondaryButton(stringResource(R.string.model_remove_key), {
+            key.edit { replace(0, length, "") }; onSave(SavedModelSettings(live, base.trim(), model.trim(), label), null, true)
+        }) }
+        item { BodyText(stringResource(R.string.model_test_scope), secondary = true) }
+        item { SecondaryButton(stringResource(if (state.testingConnection) R.string.model_test_cancel else R.string.model_test), {
+            if (state.testingConnection) onCancel() else if (!dirty && snapshot.saved.live) onTest()
+        }) }
+        if (dirty) item { BodyText(stringResource(R.string.model_save_first)) }
+        state.connectionResult?.let { code -> item { BodyText(stringResource(if (code == "SUCCESS") R.string.model_test_success else errorLabel(code))) } }
         item { SecondaryButton(stringResource(R.string.clear_all), { confirmClear = true }) }
-        item { SecondaryButton(stringResource(R.string.initialize_store), viewModel::initialize) }
+        item { SecondaryButton(stringResource(R.string.initialize_store), onInitialize) }
     }
     if (confirmClear) DangerConfirmDialog(stringResource(R.string.clear_all), stringResource(R.string.clear_all_consequence),
-        stringResource(R.string.confirm_clear), { viewModel.clearAll(); confirmClear = false }, { confirmClear = false })
+        stringResource(R.string.confirm_clear), {
+            key.edit { replace(0, length, "") }
+            live = false; base = ModelPresets.openAi.baseUrl; model = ModelPresets.openAi.model; label = ModelPresets.openAi.providerLabel
+            onClear(); confirmClear = false
+        }, { confirmClear = false })
 }
 
 fun errorLabel(code: String): Int = when (code) {
+    "SETTINGS_UNAVAILABLE" -> R.string.model_error_settings
+    "CONFIG_INVALID" -> R.string.model_error_config
+    "KEY_MISSING", "KEY_INVALID" -> R.string.model_error_key
+    "HTTP_401", "HTTP_403" -> R.string.model_error_auth
+    "HTTP_429" -> R.string.model_error_limit
+    "HTTP_500", "HTTP_502", "HTTP_503", "HTTP_504" -> R.string.model_error_server
+    "FIRST_PACKET_TIMEOUT", "STREAM_TIMEOUT" -> R.string.model_error_timeout
+    "NETWORK", "STREAM_INTERRUPTED" -> R.string.model_error_network
+    "NOT_SSE", "INVALID_JSON", "EMPTY_RESPONSE", "PROVIDER_REJECTED", "PROVIDER_ERROR" -> R.string.model_error_protocol
+    "PREVIEW_REQUIRED" -> R.string.model_error_preview
     "CONTACT_ALIAS_REQUIRED" -> R.string.error_alias
     "INPUT_REQUIRED" -> R.string.error_input
     "PROMPT_UNAVAILABLE" -> R.string.error_prompt

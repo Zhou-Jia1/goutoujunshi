@@ -38,6 +38,7 @@ dependencies {
     implementation(libs.navigation)
     implementation(libs.coroutines.android)
     implementation(libs.serialization)
+    implementation(libs.okhttp)
     implementation(libs.hilt)
     ksp(libs.hilt.compiler)
     debugImplementation(libs.compose.tooling)

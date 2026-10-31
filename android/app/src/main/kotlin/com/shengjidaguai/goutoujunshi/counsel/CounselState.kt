@@ -1,6 +1,7 @@
 package com.shengjidaguai.goutoujunshi.counsel
 
 import com.shengjidaguai.goutoujunshi.domain.*
+import com.shengjidaguai.goutoujunshi.data.network.ModelSettingsSnapshot
 
 data class CounselError(val code: String, val retryable: Boolean = false)
 /** Process-local input acknowledgement, never serialized or restored from storage. */
@@ -28,6 +29,11 @@ data class CounselState(
     val error: CounselError? = null,
     val modelStatus: ProviderKind = ProviderKind.DEMO,
     val demo: Boolean = true,
+    val answerDemo: Boolean = true,
     val preview: PreparedPrompt? = null,
+    val modelSettings: ModelSettingsSnapshot = ModelSettingsSnapshot(),
+    val testingConnection: Boolean = false,
+    val connectionResult: String? = null,
+    val outboundBody: String? = null,
     val currentRequest: AnalysisRequest? = null,
 )

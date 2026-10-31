@@ -2,6 +2,9 @@ package com.shengjidaguai.goutoujunshi.designsystem
 
 import android.content.res.Configuration
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -516,5 +519,32 @@ internal fun PreviewContentDialog(dark: Boolean = isSystemInDarkTheme(), calm: B
     JunshiTheme(darkTheme = dark, calm = calm, fontScaleLevel = fontScaleLevel) {
         val t = stringResource(R.string.ds_empty_title)
         Surface { ContentDialog(t, t, {}) { BodyText(t) } }
+    }
+}
+
+@Preview(name = "Sensitive Light", showBackground = true)
+@Preview(name = "Sensitive Dark", uiMode = Configuration.UI_MODE_NIGHT_YES, showBackground = true)
+@Composable
+internal fun PreviewSensitiveTextField(dark: Boolean = isSystemInDarkTheme(), calm: Boolean = false,
+    fontScaleLevel: FontScaleLevel = FontScaleLevel.Standard) {
+    JunshiTheme(darkTheme = dark, calm = calm, fontScaleLevel = fontScaleLevel) {
+        val state = androidx.compose.runtime.remember { androidx.compose.foundation.text.input.TextFieldState("synthetic-preview-key") }
+        Surface {
+            Column(Modifier.padding(JunshiTheme.spacing.l)) {
+                SensitiveTextField(state, stringResource(R.string.ds_sensitive_input_label))
+            }
+        }
+    }
+}
+
+@Preview(name = "Sensitive Calm", showBackground = true)
+@Composable internal fun PreviewSensitiveTextFieldCalm() { PreviewSensitiveTextField(calm = true) }
+
+@Preview(name = "Sensitive Effective 260%", showBackground = true)
+@Composable internal fun PreviewSensitiveTextFieldFont260() {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides
+        androidx.compose.ui.unit.Density(density.density, 2f)) {
+        PreviewSensitiveTextField(fontScaleLevel = FontScaleLevel.ExtraLarge)
     }
 }
