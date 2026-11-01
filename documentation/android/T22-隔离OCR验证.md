@@ -1,5 +1,26 @@
 # T22 · 隔离 OCR 技术验证（未通过，工作包未完成）
 
+## 负责人决定与 PaddleOCR 恢复准备
+
+负责人已明确选择“改用 PaddleOCR 端侧方案，继续坚持不发送统计指标”。引擎选择门禁已解除；下文 ML Kit 失败与待选择措辞为历史实验记录，不再等待重复确认。PaddleOCR 尚未完成设备验证，不能据此声称 T22 完成。
+
+已下载到工作区工具目录、尚未接入生产或提交的具体资产：
+
+| 资产 | 固定版本 / 来源 | 字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| 官方 SDK 源码 | PaddlePaddle/PaddleOCR `dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf`，仅 `deploy/ppocr-android/ppocr-sdk` | — | commit 固定 |
+| ONNX Runtime Android AAR | Maven Central `com.microsoft.onnxruntime:onnxruntime-android:1.21.1` | 27944395 | `30e594a4b9246fe3ca25768570e90f71e6d33ceb7b7dd72f92dcd7c267611d3f` |
+| 官方 OpenCV AAR，候选 | Maven Central `org.opencv:opencv:4.14.0` | 123380341 | `6d11b40f6a54113dafe8540b1237b637193cb21e83deb11bc53d6757d35d494d` |
+| v5 mobile 检测 ONNX | [官方模型](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/tree/e6f4fa85f00e168c862bc462aebca69eef9b3d3d) | 4826518 | `a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d` |
+| v5 mobile 识别 ONNX | [官方模型](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/tree/ed152b8b495f84de93cda5709d768548a9127622) | 16534782 | `da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092` |
+| 对应识别字典配置 | 同一识别模型 revision 的 `inference.yml` | 148345 | `5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e` |
+
+具体 AAR 已逐个读取 ELF PT_LOAD 对齐：官方示例的 QuickBird OpenCV 4.5.3 所有 ABI 原生库均为 4096；不采用其作为当前目标版本的正式依赖。候选官方 OpenCV 4.14.0 的 arm64-v8a / x86_64 的 `libopencv_java4.so` 和 `libc++_shared.so` 均为 16384，ORT 1.21.1 的同两种 ABI 两份 so 均为 16384。此结果只证明 ELF 对齐与 ABI 存在；尚未验证 APK ZIP 对齐、系统加载、16KB 设备、完整推理和中端机性能。32 位库的对齐单独记录，不把 64 位结果推广为所有 ABI。
+
+模型下载使用固定 revision 的官方 Hugging Face 镜像；检测模型 SHA-256 已与该 revision 的上游 LFS OID 相符。BOS 检测包读取停滞后已只停止本任务下载进程；已完成文件保留，没有把不完整 `.part` 当作模型。ORT LICENSE / ThirdPartyNotices 与 OpenCV 对应 tag 的 LICENSE 已下载待整理，AAR 本身未找到 NOTICE 路径，仍需收集具体原生库第三方声明。
+
+实施先后：先在独立 OCR 模块中固定官方 SDK / 模型 / 校验清单；只允许服务在无网络权限的 isolatedProcess 加载，禁止主进程初始化引擎；先通过六图端侧推理与网络权限断言，再接导入排序、分块/去重、低置信度核对、说话人确认和统一预览。未通过时保留粘贴退路，展示静态错误，不输出截图或识别原文日志。与 T43 的构建严格串行，不启动第二个 Gradle，不操作用户 emulator-5556。
+
 本草稿 PR 当前只提交技术评估文档。下述隔离服务、设备测试、六张合成图及生成脚本保留在本机 WIP，不属于当前文档提交；尚未把任何 OCR SDK 接入主开发链。负责人选择引擎后，再提交实际实现与完整验收，不把失败实验标为已完成功能。
 
 2026-10-31，当前仅完成隐私约束下的阻断性技术验证。**不能宣称 T22 已实现、六图端到端通过、纯离线可用或达到性能门槛。** 应用保留粘贴导入，并说明识别组件在无网络权限的隔离进程中不可用；未接通普通进程 ML Kit，也未切换 PaddleOCR。
