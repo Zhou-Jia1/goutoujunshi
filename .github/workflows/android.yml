@@ -30,6 +30,7 @@ jobs:
       - run: python scripts/validate_skill.py
       - run: python scripts/validate_android_knowledge.py && python scripts/validate_evals.py
       - run: python scripts/check_android_boundaries.py
+      - run: python scripts/validate_paddle_assets.py
       - run: chmod +x gradlew && ./gradlew lint test assembleDebug
         working-directory: android
       - run: ./gradlew :core:designsystem:verifyRoborazziDebug :app:verifyRoborazziDebug
