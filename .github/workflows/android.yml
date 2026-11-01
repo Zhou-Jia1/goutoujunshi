@@ -30,6 +30,7 @@ jobs:
       - run: python scripts/validate_skill.py
       - run: python scripts/validate_android_knowledge.py && python scripts/validate_evals.py
       - run: python scripts/check_android_boundaries.py
+      - run: python scripts/validate_paddle_assets.py
       - run: chmod +x gradlew && ./gradlew lint test assembleDebug
         working-directory: android
       - run: ./gradlew :core:designsystem:verifyRoborazziDebug :app:verifyRoborazziDebug
@@ -78,6 +79,7 @@ jobs:
             python3 ../scripts/smoke_android_m1.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
             python3 ../scripts/smoke_android_import.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
             python3 ../scripts/smoke_android_model_settings.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
+            python3 ../scripts/smoke_android_ocr.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:

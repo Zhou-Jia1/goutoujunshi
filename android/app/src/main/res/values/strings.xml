@@ -257,4 +257,24 @@
     <string name="memory_saved_read_pending">记忆已保存，正在读取本机状态。</string>
     <string name="memory_saved_read_failed">记忆已保存，但本机状态暂时没读到。重试读取不会重新授权、写入或调用模型。</string>
     <string name="memory_retry_read">重试读取已保存的记忆</string>
+    <string name="ocr_order">按聊天先后排序。长按拖动图片可调整顺序，也可以使用上移、下移。</string>
+    <string name="ocr_image_number">图片 %1$d</string>
+    <string name="ocr_up">上移</string>
+    <string name="ocr_down">下移</string>
+    <string name="ocr_start">在本机识别图片</string>
+    <string name="ocr_side">哪边是我？请确认一次，本次导入会沿用。居中文字和群聊昵称请逐行核对。</string>
+    <string name="ocr_left_me">左边是我</string>
+    <string name="ocr_right_me">右边是我</string>
+    <string name="ocr_excluded">建议忽略：界面文字或相邻图片重复内容。可以恢复。</string>
+    <string name="ocr_restore">恢复这一行</string>
+    <string name="ocr_exclude">忽略这一行</string>
+    <string name="ocr_low">这一行识别把握较低，请点开核对文字和说话人。</string>
+    <string name="ocr_reviewed">已核对这一行</string>
+    <string name="ocr_unavailable">本机识别组件暂时不可用。可以重试，或关闭后粘贴聊天文字。</string>
+    <string name="ocr_timeout">本机识别超时了。可以重试，或关闭后粘贴文字。</string>
+    <string name="ocr_limit">图片超过本机识别限制，请选较小的图片，或粘贴文字。</string>
+    <string name="ocr_empty">暂时没识别到文字，请检查图片，或粘贴文字。</string>
+    <string name="ocr_read">暂时无法读取图片，请重新选择，或粘贴文字。</string>
+    <string name="ocr_suggested_left">建议左侧 · 待确认</string>
+    <string name="ocr_suggested_right">建议右侧 · 待确认</string>
 </resources>

@@ -1,0 +1,86 @@
+{
+  "sdk": {
+    "repository": "https://github.com/PaddlePaddle/PaddleOCR",
+    "commit": "dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf",
+    "sourceRoot": "deploy/ppocr-android/ppocr-sdk/src/main/java",
+    "upstreamSha256": {
+      "com/paddle/ocr/engine/DetectionEngine.kt": "b99dfce96cc2819e28a068e535fd096185b4abf41d1038079bf6836c8a1a985a",
+      "com/paddle/ocr/engine/OCREngine.kt": "ad235c1c01522fa41729d58d5a9405ffaff3ad6f391e920cb6a942ef78256446",
+      "com/paddle/ocr/engine/OCREngineResult.kt": "6f1b7853dfc5b2ba1a70cb1d77518a10bbff45d71f3a689105f675c4d3be9a7a",
+      "com/paddle/ocr/engine/ORTSessionManager.kt": "edc1b780d5277bcef93d052f3f1bddcad49830dcfa0a3b13ae63e18300e6f394",
+      "com/paddle/ocr/engine/RecognitionEngine.kt": "00e683a56ec2741a0daca0ff8f2ceb001ae690f30e03dc6118cd49828b747396",
+      "com/paddle/ocr/EngineConfig.kt": "886b7ef3dd4600ff92ff77c44643ce800e3f0da2d74de43112dbd79648ecdcda",
+      "com/paddle/ocr/model/ModelConfig.kt": "e64e9262839b9e4da57d00a5cfef7ab3f81dcb5be1b96f47c4067449f306ddf0",
+      "com/paddle/ocr/model/OCRBox.kt": "4db761a2e541db9145ba9512c4a5e8719ee70b09e241616525afcbf61abbcbc9",
+      "com/paddle/ocr/model/OCRError.kt": "e360a2aa3580692d6ef8d98c9a740260566d5731f5f20f3633feadd55337fe6e",
+      "com/paddle/ocr/model/OCRResult.kt": "0f492da6f396886ad68c5d0dc09a853715e50e1c23cd9f4c1fbbde7eedbb5264",
+      "com/paddle/ocr/model/OCRRunResult.kt": "ba90ee5a89fa3bba36e4325dd1ed1b18e90e6c10401eb00df29937bfadccbed4",
+      "com/paddle/ocr/PaddleOCR.kt": "961945f4532b6339d20afa8415f8e6e289eeef20d2e142f67d37cc35b9310ede",
+      "com/paddle/ocr/PaddleOCRConfig.kt": "ebe53f5f21e127857b7b947995a19b5baa966d996104daa5c36ac5c07affa7d5",
+      "com/paddle/ocr/postprocess/BoxSorter.kt": "d298db1421a7a0250db3c76627f640c13cccd66e4c6960116286a3b2399f7ccc",
+      "com/paddle/ocr/postprocess/CTCDecoder.kt": "ae5ee6c3bd3e5993e80f20f2e35e90c7b50801d0b84fd9caff74966af4337a1f",
+      "com/paddle/ocr/postprocess/DBPostProcessor.kt": "53923f88a025a4810d009223a79d15e9e27200673f40722ff0f9e105d2b12276",
+      "com/paddle/ocr/postprocess/PolygonUnclip.kt": "bc575aba1d0f7618473b87c64ca0a7d0219d3bbfe57f356fd2a51d1cc2703cdd",
+      "com/paddle/ocr/postprocess/QuadGeometry.kt": "936674693f20b2120663fb33576a6ee9264c44b28e2a1e3a01dbab0d6023ded5",
+      "com/paddle/ocr/postprocess/QuadTextCrop.kt": "49f8889430ca8aeda4ef5e90f8de4b0e695696de64fdd97d8ed7421d21198109",
+      "com/paddle/ocr/preprocess/DetPreprocessor.kt": "9e16244a57d8d8be5aba3eff85c676d0b08282f396868fa244bf35dd572dcff8",
+      "com/paddle/ocr/preprocess/RecPreprocessor.kt": "edf40bd7e4cec5411a92dda05291cff524794f00bf63615f82e184b54dee9fab",
+      "com/paddle/ocr/util/BitmapUtils.kt": "66b5771266ad5166453b428d01ea707efcc56e076c7d4813347d672629e2330c",
+      "com/paddle/ocr/util/ImageUtils.kt": "205fd17a1dcfacdbbc8f5bb76e059aba7c0fffecfaff443812a1960272ecfbbe",
+      "com/paddle/ocr/util/MathUtils.kt": "7465d79388376ccbbd4c575d1c03fe4524877db79cf92e74d3c35d1b7e22efd8",
+      "com/paddle/ocr/util/OpenCVUtils.kt": "ed3fd0918df9ccff85c6f2da3ea22a1cabe31d1cd68f11a3a3c1915a758bb5f5",
+      "com/paddle/ocr/util/YamlUtils.kt": "d61f540ed2420dea704dc381d91eb5e154191817745a8ecb2f1e712d58938f1a"
+    },
+    "patches": [
+      "OpenCVUtils.kt: remove native exception logging; algorithm unchanged"
+    ],
+    "vendoredSha256": {
+      "com/paddle/ocr/engine/DetectionEngine.kt": "b99dfce96cc2819e28a068e535fd096185b4abf41d1038079bf6836c8a1a985a",
+      "com/paddle/ocr/engine/OCREngine.kt": "ad235c1c01522fa41729d58d5a9405ffaff3ad6f391e920cb6a942ef78256446",
+      "com/paddle/ocr/engine/OCREngineResult.kt": "6f1b7853dfc5b2ba1a70cb1d77518a10bbff45d71f3a689105f675c4d3be9a7a",
+      "com/paddle/ocr/engine/ORTSessionManager.kt": "edc1b780d5277bcef93d052f3f1bddcad49830dcfa0a3b13ae63e18300e6f394",
+      "com/paddle/ocr/engine/RecognitionEngine.kt": "00e683a56ec2741a0daca0ff8f2ceb001ae690f30e03dc6118cd49828b747396",
+      "com/paddle/ocr/EngineConfig.kt": "886b7ef3dd4600ff92ff77c44643ce800e3f0da2d74de43112dbd79648ecdcda",
+      "com/paddle/ocr/model/ModelConfig.kt": "e64e9262839b9e4da57d00a5cfef7ab3f81dcb5be1b96f47c4067449f306ddf0",
+      "com/paddle/ocr/model/OCRBox.kt": "4db761a2e541db9145ba9512c4a5e8719ee70b09e241616525afcbf61abbcbc9",
+      "com/paddle/ocr/model/OCRError.kt": "e360a2aa3580692d6ef8d98c9a740260566d5731f5f20f3633feadd55337fe6e",
+      "com/paddle/ocr/model/OCRResult.kt": "0f492da6f396886ad68c5d0dc09a853715e50e1c23cd9f4c1fbbde7eedbb5264",
+      "com/paddle/ocr/model/OCRRunResult.kt": "ba90ee5a89fa3bba36e4325dd1ed1b18e90e6c10401eb00df29937bfadccbed4",
+      "com/paddle/ocr/PaddleOCR.kt": "961945f4532b6339d20afa8415f8e6e289eeef20d2e142f67d37cc35b9310ede",
+      "com/paddle/ocr/PaddleOCRConfig.kt": "ebe53f5f21e127857b7b947995a19b5baa966d996104daa5c36ac5c07affa7d5",
+      "com/paddle/ocr/postprocess/BoxSorter.kt": "d298db1421a7a0250db3c76627f640c13cccd66e4c6960116286a3b2399f7ccc",
+      "com/paddle/ocr/postprocess/CTCDecoder.kt": "ae5ee6c3bd3e5993e80f20f2e35e90c7b50801d0b84fd9caff74966af4337a1f",
+      "com/paddle/ocr/postprocess/DBPostProcessor.kt": "53923f88a025a4810d009223a79d15e9e27200673f40722ff0f9e105d2b12276",
+      "com/paddle/ocr/postprocess/PolygonUnclip.kt": "bc575aba1d0f7618473b87c64ca0a7d0219d3bbfe57f356fd2a51d1cc2703cdd",
+      "com/paddle/ocr/postprocess/QuadGeometry.kt": "936674693f20b2120663fb33576a6ee9264c44b28e2a1e3a01dbab0d6023ded5",
+      "com/paddle/ocr/postprocess/QuadTextCrop.kt": "49f8889430ca8aeda4ef5e90f8de4b0e695696de64fdd97d8ed7421d21198109",
+      "com/paddle/ocr/preprocess/DetPreprocessor.kt": "9e16244a57d8d8be5aba3eff85c676d0b08282f396868fa244bf35dd572dcff8",
+      "com/paddle/ocr/preprocess/RecPreprocessor.kt": "edf40bd7e4cec5411a92dda05291cff524794f00bf63615f82e184b54dee9fab",
+      "com/paddle/ocr/util/BitmapUtils.kt": "66b5771266ad5166453b428d01ea707efcc56e076c7d4813347d672629e2330c",
+      "com/paddle/ocr/util/ImageUtils.kt": "205fd17a1dcfacdbbc8f5bb76e059aba7c0fffecfaff443812a1960272ecfbbe",
+      "com/paddle/ocr/util/MathUtils.kt": "7465d79388376ccbbd4c575d1c03fe4524877db79cf92e74d3c35d1b7e22efd8",
+      "com/paddle/ocr/util/OpenCVUtils.kt": "53b7ece79141c8130c0e4901c55a68977c961bb37ddcfb25626a6dbebcb36ee6",
+      "com/paddle/ocr/util/YamlUtils.kt": "d61f540ed2420dea704dc381d91eb5e154191817745a8ecb2f1e712d58938f1a"
+    }
+  },
+  "models": {
+    "det.onnx": {
+      "sha256": "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d",
+      "bytes": 4826518
+    },
+    "rec.onnx": {
+      "sha256": "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092",
+      "bytes": 16534782
+    },
+    "rec.yml": {
+      "sha256": "5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e",
+      "bytes": 148345
+    }
+  },
+  "detectionRevision": "e6f4fa85f00e168c862bc462aebca69eef9b3d3d",
+  "recognitionRevision": "ed152b8b495f84de93cda5709d768548a9127622",
+  "runtime": {
+    "onnxruntime": "1.21.1",
+    "opencv": "org.opencv:opencv:4.14.0"
+  }
+}

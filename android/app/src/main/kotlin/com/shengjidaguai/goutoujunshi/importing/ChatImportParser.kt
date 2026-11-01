@@ -10,7 +10,10 @@ import kotlinx.serialization.json.*
 const val MAX_IMPORT_BYTES = 2 * 1024 * 1024
 const val MAX_IMPORT_ROWS = 2000
 
-data class ImportRow(val name: String = "", val text: String, val sentAt: String? = null, val speaker: Speaker? = null)
+data class ImportRow(val name: String = "", val text: String, val sentAt: String? = null, val speaker: Speaker? = null,
+    val id: String = java.util.UUID.randomUUID().toString(), val imageId: String? = null,
+    val side: com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide? = null, val ocrConfidence: Float? = null,
+    val excluded: Boolean = false, val reviewed: Boolean = false, val exclusionOverride: Boolean? = null)
 data class ParsedImport(val rows: List<ImportRow>, val unknownJson: Boolean = false)
 
 /** Strict UTF-8 and bounded streams: no file copies, charset guessing or silent replacement. */

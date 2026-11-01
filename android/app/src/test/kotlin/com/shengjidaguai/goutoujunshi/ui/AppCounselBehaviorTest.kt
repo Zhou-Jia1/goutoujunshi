@@ -237,11 +237,12 @@ class AppCounselBehaviorTest {
         compose.runOnIdle { assertEquals(0, sends); assertEquals(0, previews) }
     }
 
-    @Test fun screenshotEntryExplainsNextStageWithoutImporting() {
-        compose.setContent { JunshiTheme { Surface { CounselContent(syntheticCounselState("empty"), CounselUiActions()) } } }
+    @Test fun screenshotEntryDispatchesPickerWithoutImporting() {
+        var picks=0
+        compose.setContent { JunshiTheme { Surface { CounselContent(syntheticCounselState("empty"), CounselUiActions(importImages={ picks++ })) } } }
         compose.onNodeWithTag("counsel-list").performScrollToNode(hasText(text(DsR.string.ds_screenshots)))
         compose.onNodeWithText(text(DsR.string.ds_screenshots)).performClick()
-        compose.onNodeWithText(text(R.string.import_ocr_pending)).assertIsDisplayed()
+        compose.runOnIdle { assertEquals(1,picks) }
     }
 
     @Test fun contactSwitcherOffersExplicitTemporarySession() {
