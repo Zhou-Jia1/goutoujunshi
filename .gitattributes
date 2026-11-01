@@ -1,0 +1,3 @@
+# Model configuration is pinned by its exact upstream SHA-256 on every host.
+android/core/data/src/main/assets/ocr/paddle/rec.yml -text
+android/core/data/src/main/assets/ocr/paddle/*.onnx binary
