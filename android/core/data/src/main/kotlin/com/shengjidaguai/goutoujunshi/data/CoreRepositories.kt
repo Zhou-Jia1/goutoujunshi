@@ -63,6 +63,7 @@ class ConversationRepository(private val session: DataSession) {
             if (it.payload != encode(retained)) { deleteAnswerSamples(message.id); invalidateAndRecompute() }
         }
         put(MessageRow(message.id, contactId, message.conversationId, encode(retained)))
+        pruneDerivedMemories()
     }
     suspend fun messages(contactId: String, conversationId: String): List<Message> = session.transaction {
         messages(contactId, conversationId).map { decode(it.payload) }

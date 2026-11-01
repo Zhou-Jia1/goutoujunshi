@@ -5,6 +5,7 @@ Never run it on a personal device or an app containing data you want to keep.
 """
 import argparse
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from smoke_android_m1 import APP, Device, require, validate_apk
@@ -13,6 +14,18 @@ from smoke_android_import import click_ready, find_text, labels
 FAKE_KEY = "sk-synthetic-t24-1234"
 MASK = "已保存：••••1234"
 MISSING = "尚未保存 API Key"
+
+
+def empty_clear_confirmation():
+    resources = Path(__file__).resolve().parents[1] / 'android/app/src/main/res/values/strings.xml'
+    node = ET.parse(resources).getroot().find("string[@name='memory_full_clear']")
+    require(node is not None, 'Expected counted clear confirmation resource is missing')
+    template = ''.join(node.itertext())
+    require(sorted(re.findall(r'%(\d+)\$d', template)) == ['1', '2', '3'],
+            'Unexpected destructive confirmation format')
+    text = re.sub(r'%[123]\$d', '0', template)
+    require('%' not in text, 'Unresolved destructive confirmation format')
+    return text
 
 
 def open_settings(device, restart=False):
@@ -24,7 +37,10 @@ def clear_fixtures(device):
     open_settings(device, restart=True)
     find_text(device, "清除全部本机资料", scroll=True)
     click_ready(device, "清除全部本机资料")
-    device.click("清除全部资料")
+    # A fixture cleanup never authorizes deletion of a newly nonempty data scope.
+    empty_scope = empty_clear_confirmation()
+    find_text(device, empty_scope, scroll=True)
+    device.click(empty_scope)
     find_text(device, "清除后重新开始", scroll=True)
     click_ready(device, "清除后重新开始")
 

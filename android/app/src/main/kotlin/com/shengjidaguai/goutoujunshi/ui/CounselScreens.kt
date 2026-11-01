@@ -88,6 +88,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 @Composable fun CounselScreen(viewModel: CounselViewModel, openSettings: () -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val importing by viewModel.imports.state.collectAsStateWithLifecycle()
+    val memory by viewModel.memory.collectAsStateWithLifecycle()
+    val shownMemory=memory
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importFile) }
     CounselContent(state, CounselUiActions(
         rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
@@ -100,10 +102,15 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         openSettings = openSettings,
         importFile = { files.launch(arrayOf("text/plain", "application/json")) },
         saveRedactionProfile = viewModel::saveRedactionProfile,
-    ), importing != null)
+    ), importing != null, memoryPaused=memory.consent.paused, resumeMemory={ shownMemory.receipt?.let { viewModel.setMemoryEnabled(true,false,it) } }) {
+        MemoryInline(shownMemory.copy(snapshot=shownMemory.snapshot.copy(consent=shownMemory.consent.copy(paused=false))),viewModel::acceptMemory,viewModel::declineMemory,{ receipt -> viewModel.setMemoryEnabled(true,false,receipt) }, {
+            val owner=shownMemory.ownerId; val stamp=shownMemory.receipt; val id=shownMemory.notice?.operationId
+            if(owner!=null && stamp!=null && id!=null) viewModel.undoMemory(owner,id,stamp)
+        })
+    }
 }
 
-@Composable fun CounselContent(state: CounselState, actions: CounselUiActions, importing: Boolean = false) {
+@Composable fun CounselContent(state: CounselState, actions: CounselUiActions, importing: Boolean = false, memoryPaused: Boolean = false, resumeMemory: () -> Unit = {}, memoryContent: (@Composable () -> Unit)? = null) {
     if (!state.lockState.canDisplaySensitiveContent) {
         EmptyState(Illustration.SHIELD, stringResource(R.string.counsel_locked), null)
         return
@@ -162,6 +169,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     }
     LazyColumn(Modifier.fillMaxSize().testTag("counsel-list"), contentPadding = PaddingValues(JunshiTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
+        if(memoryPaused) item { SecondaryButton(stringResource(R.string.memory_paused),resumeMemory) }
         item { JunshiTopBar(stringResource(R.string.nav_counsel)) }
         item {
             ContactSwitcher(ContactChipModel(state.currentContact?.id, state.currentContact?.alias ?: stringResource(R.string.temporary_title)),
@@ -264,6 +272,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         if (presentation.showOrdinaryStrategy && state.currentRequest?.purpose != OutboundPurpose.LONG_RECORD_SUMMARY && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
             BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))
         }
+        if(memoryContent!=null && presentation.showOrdinaryStrategy) item { memoryContent() }
         state.error?.let { error -> item {
             if (error.code == "NETWORK") BodyText(stringResource(
                 if (state.currentContact == null) R.string.error_network_temporary
@@ -343,6 +352,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val details by viewModel.details.collectAsStateWithLifecycle()
     DisposableEffect(Unit) { onDispose { viewModel.closeContactDetails() } }
     var creating by remember { mutableStateOf(false) }
+    var memoryOwner by remember(details.ownerId) { mutableStateOf<String?>(null) }
+    if(memoryOwner!=null) {
+        androidx.activity.compose.BackHandler { memoryOwner=null }
+        MemoryScreen(viewModel,memoryOwner,{ memoryOwner=null }); return
+    }
     if (!state.lockState.canDisplaySensitiveContent) {
         EmptyState(Illustration.SHIELD, stringResource(R.string.counsel_locked), null)
         return
@@ -351,7 +365,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         androidx.activity.compose.BackHandler { viewModel.closeContactDetails() }
         ContactDetailContent(details, viewModel::closeContactDetails, viewModel::openContactDetails,
             viewModel::editContact, viewModel::deleteContact, viewModel::undoContactEdit,
-            { id -> viewModel.selectContact(id); viewModel.closeContactDetails(); onOpen() })
+            { id -> viewModel.selectContact(id); viewModel.closeContactDetails(); onOpen() }, { id -> memoryOwner=id })
     } else {
         ContactsContent(state.contacts, { creating = true }, viewModel::openContactDetails,
             { viewModel.newTemporary(); onOpen() })
@@ -376,13 +390,21 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 
 @Composable fun SettingsScreen(viewModel: CounselViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var memories by remember { mutableStateOf(false) }
+    if(memories) {
+        androidx.activity.compose.BackHandler { memories=false }
+        MemoryScreen(viewModel,null,{ memories=false }); return
+    }
+    val memory by viewModel.memoryPage.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { viewModel.openMemory(null) }
     ModelSettingsContent(state, viewModel::saveModelSettings, viewModel::testModelConnection,
-        viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize)
+        viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize,
+        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null)
 }
 
 @Composable fun ModelSettingsContent(state: CounselState,
     onSave: (SavedModelSettings, String?, Boolean) -> Unit, onTest: () -> Unit,
-    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}) {
+    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null) {
     var confirmClear by remember { mutableStateOf(false) }
     val snapshot = state.modelSettings
     val defaults = snapshot.saved.takeIf { it.baseUrl.isNotBlank() } ?: ModelPresets.openAi.let { SavedModelSettings(false, it.baseUrl, it.model, it.providerLabel) }
@@ -396,6 +418,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val dirty = live != snapshot.saved.live || base != defaults.baseUrl || model != defaults.model || label != defaults.label || key.text.isNotEmpty()
     LazyColumn(Modifier.fillMaxSize().testTag("model-settings"), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { JunshiTopBar(stringResource(R.string.nav_me)) }
+        if(openMemory!=null) item { SecondaryButton(stringResource(R.string.memory_title),openMemory) }
         item { BodyText(stringResource(R.string.live_explanation)) }
         item { ChoiceField(stringResource(R.string.model_mode), stringResource(if (live) R.string.model_live else R.string.model_demo), listOf(
             stringResource(R.string.model_demo) to { live = false }, stringResource(R.string.model_live) to { live = true })) }
@@ -423,11 +446,13 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         }) }
         if (dirty) item { BodyText(stringResource(R.string.model_save_first)) }
         state.connectionResult?.let { code -> item { BodyText(stringResource(if (code == "SUCCESS") R.string.model_test_success else errorLabel(code))) } }
-        item { SecondaryButton(stringResource(R.string.clear_all), { confirmClear = true }) }
+        item { SecondaryButton(stringResource(R.string.clear_all), { if(openMemory==null || dataCounts!=null) confirmClear = true }) }
+        if(openMemory!=null && dataCounts==null) item { BodyText(stringResource(R.string.memory_loading)) }
         item { SecondaryButton(stringResource(R.string.initialize_store), onInitialize) }
     }
-    if (confirmClear) DangerConfirmDialog(stringResource(R.string.clear_all), stringResource(R.string.clear_all_consequence),
-        stringResource(R.string.confirm_clear), {
+    val clearText=dataCounts?.let { stringResource(R.string.memory_full_clear,it.first,it.second,it.third) }
+    if (confirmClear) DangerConfirmDialog(stringResource(R.string.clear_all), clearText ?: stringResource(R.string.clear_all_consequence),
+        clearText ?: stringResource(R.string.confirm_clear), {
             key.edit { replace(0, length, "") }
             live = false; base = ModelPresets.openAi.baseUrl; model = ModelPresets.openAi.model; label = ModelPresets.openAi.providerLabel
             onClear(); confirmClear = false

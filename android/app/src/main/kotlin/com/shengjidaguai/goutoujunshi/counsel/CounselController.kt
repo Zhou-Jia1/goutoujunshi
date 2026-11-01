@@ -29,6 +29,15 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
+    suspend fun memorySnapshot(owner: String?): MemorySnapshot = MemorySnapshot()
+    suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { error("Memory unavailable") }
+    suspend fun memoryDecline(owner: String, stamp: WriteStamp, until: Long, onAuthorized: () -> Unit) { error("Memory unavailable") }
+    suspend fun memoryApprove(owner: String, proposal: MemoryProposal, stamp: WriteStamp, operationId: String, onAuthorized: () -> Unit): MemoryOperation { error("Memory unavailable") }
+    suspend fun memoryProposal(owner: String, proposal: MemoryProposal, stamp: WriteStamp): MemoryOperation { error("Memory unavailable") }
+    suspend fun memoryEdit(owner: String, entry: MemoryEntry, stamp: WriteStamp, operationId: String): MemoryOperation { error("Memory unavailable") }
+    suspend fun memoryDelete(owner: String, id: String, stamp: WriteStamp, wrong: Boolean) { error("Memory unavailable") }
+    suspend fun memoryUndo(owner: String, id: String, stamp: WriteStamp) { error("Memory unavailable") }
+    suspend fun clearMemories(authority: MemoryClearAuthority, onAuthorized: () -> Unit) { error("Memory unavailable") }
     suspend fun initialize()
     suspend fun contacts(): List<Contact>
     suspend fun createContact(contact: Contact)
@@ -57,6 +66,17 @@ class EncryptedCounselPersistence(
     private var session: DataSession? = null
     private fun contactsRepo() = ContactRepository(checkNotNull(session))
     private fun conversationsRepo() = ConversationRepository(checkNotNull(session))
+    private fun memoryRepo() = MemoryRepository(checkNotNull(session))
+    override suspend fun memorySnapshot(owner: String?) = memoryRepo().snapshot(owner)
+    override suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { ConsentRepository(checkNotNull(session)).update(enabled, paused, expected=stamp,expectedClear=if(!enabled) requireNotNull(clearAuthority) else null,onAuthorized=onAuthorized) }
+    override suspend fun memoryDecline(owner: String, stamp: WriteStamp, until: Long, onAuthorized: () -> Unit) { ConsentRepository(checkNotNull(session)).recordDecline(owner,stamp,until,onAuthorized) }
+    override suspend fun memoryApprove(owner: String, proposal: MemoryProposal, stamp: WriteStamp, operationId: String, onAuthorized: () -> Unit): MemoryOperation =
+        memoryRepo().approveProposal(owner,proposal,stamp,operationId,onAuthorized)
+    override suspend fun memoryProposal(owner: String, proposal: MemoryProposal, stamp: WriteStamp) = memoryRepo().applyProposal(owner, proposal, stamp)
+    override suspend fun memoryEdit(owner: String, entry: MemoryEntry, stamp: WriteStamp, operationId: String) = memoryRepo().apply(owner, entry, stamp,operationId=operationId)
+    override suspend fun memoryDelete(owner: String, id: String, stamp: WriteStamp, wrong: Boolean) { if(wrong) memoryRepo().markWrong(owner,id,stamp) else memoryRepo().delete(owner,id,stamp) }
+    override suspend fun memoryUndo(owner: String, id: String, stamp: WriteStamp) { memoryRepo().undoLatest(owner,stamp,id) }
+    override suspend fun clearMemories(authority: MemoryClearAuthority, onAuthorized: () -> Unit) { memoryRepo().clear(authority,onAuthorized) }
     override suspend fun initialize() { session = store.open() }
     override suspend fun contacts() = contactsRepo().list()
     override suspend fun createContact(contact: Contact) { contactsRepo().save(contact) }
@@ -117,7 +137,293 @@ class CounselController(
     private val liveProvider: ((SavedModelSettings) -> AnalysisProvider)? = null,
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val wallClockMillis: () -> Long = { System.currentTimeMillis() },
+    private val memoryNoticeDelay: suspend (Long) -> Unit = { delay(it) },
 ) {
+    private val memoryDisplay=MemoryDisplayCoordinator(scope,{ task -> enqueue { task() } },memoryNoticeDelay)
+    private val mutableMemory get()=memoryDisplay.inline
+    val memory: StateFlow<MemoryUiState> = memoryDisplay.inline.asStateFlow()
+    private val mutableMemoryPage get()=memoryDisplay.page
+    val memoryPage: StateFlow<MemoryUiState> = memoryDisplay.page.asStateFlow()
+    private val memoryEpoch get()=memoryDisplay.routeEpoch
+    private var pendingMemory: Pair<AnalysisRequest, MemoryProposal>? = null
+    private var proposalStamp: WriteStamp? = null
+    private var pendingMemoryStamp: WriteStamp? = null
+    private data class ApprovalFinish(val owner: String,val request: AnalysisRequest,val token: Long,
+        val operation: String,val summary: String,val receipt: MemoryUiReceipt)
+    private var approvalFinish: ApprovalFinish?=null
+    private fun displayed(view: MemoryUiState, channel: String, requestId: String? = null): MemoryUiState {
+        val stamp=view.snapshot.stamp ?: return view.copy(receipt=null)
+        if(view.loading) return view.copy(receipt=null)
+        return view.copy(receipt=MemoryUiReceipt(UUID.randomUUID().toString(),channel,view.ownerId,stamp,requestId,view.consentProposal,view.undoOperationId,view.snapshot.clearAuthority))
+    }
+    private fun currentDisplay(receipt: MemoryUiReceipt, allowPending: Boolean = false): Boolean {
+        val view=if(receipt.channel=="inline") memory.value else if(receipt.channel=="page") memoryPage.value else return false
+        return view.receipt==receipt && view.ownerId==receipt.owner && view.snapshot.stamp==receipt.stamp && !view.loading && (allowPending || !view.pendingOperation) && state.value.lockState.canDisplaySensitiveContent
+    }
+    private fun operationCurrent(owner: String?, id: String): Boolean =
+        (memory.value.ownerId==owner && memory.value.activeOperation==id) || (memoryPage.value.ownerId==owner && memoryPage.value.activeOperation==id)
+    fun closeMemory() = synchronized(intentLock) {
+        memoryEpoch.incrementAndGet()
+        mutableMemoryPage.value=MemoryUiState()
+    }
+    private fun clearInlineMemory() {
+        closeMemory();pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null;memoryDisplay.cancelNotice()
+        mutableMemory.value=MemoryUiState(snapshot=MemorySnapshot(consent=memory.value.consent))
+    }
+    fun openMemory(owner: String?) {
+        val token=memoryEpoch.incrementAndGet()
+        mutableMemoryPage.value=MemoryUiState(owner,MemorySnapshot(consent=memory.value.consent),loading=true)
+        enqueue {
+            try {
+                val snapshot=persistence.memorySnapshot(owner)
+                val contacts=persistence.contacts()
+                var count=0; var imports=0
+                contacts.forEach { contact ->
+                    val detail=persistence.contactDetails(contact)
+                    count+=detail.memories.size; imports+=detail.imports.size
+                }
+                synchronized(intentLock) { if(memoryEpoch.get()==token && state.value.lockState.canDisplaySensitiveContent)
+                    mutableMemoryPage.value=displayed(MemoryUiState(owner,snapshot,totalMemories=snapshot.clearAuthority?.memoryCount ?: count,totalImports=snapshot.clearAuthority?.importCount ?: imports),"page") }
+            } catch (_: Exception) { if(memoryEpoch.get()==token) mutableMemoryPage.value=memoryPage.value.copy(failed=true,loading=false,pendingOperation=false) }
+        }
+    }
+    private fun revokeMemoryAuthority(owner: String? = null, preserveAnswer: Boolean = false, preserveEditor: Boolean = false): String = synchronized(intentLock) {
+        val operation=UUID.randomUUID().toString()
+        val affectsCurrent=owner==null || state.value.currentContact?.id==owner
+        if(affectsCurrent) { epoch.incrementAndGet(); stream?.cancel() }; memoryEpoch.incrementAndGet()
+        if(affectsCurrent) {
+            pendingMemory=null; pendingMemoryStamp=null; approvalFinish=null; memoryDisplay.cancelNotice(); proposalStamp=null
+            mutableMemory.value=memory.value.copy(consentProposal=null,notice=null,receipt=null,activeOperation=operation,approvalFinishing=false,pendingOperation=false)
+        }
+        if(owner==null || memoryPage.value.ownerId==owner) mutableMemoryPage.value=if(preserveEditor) memoryPage.value.copy(activeOperation=operation,pendingOperation=true,failed=false) else MemoryUiState(ownerId=memoryPage.value.ownerId,loading=true,activeOperation=operation)
+        if(affectsCurrent) set(if(preserveAnswer) state.value.copy(preview=null,currentRequest=null,outboundBody=null) else state.value.copy(answer=null,answerRequest=null,preview=null,currentRequest=null,outboundBody=null))
+        operation
+    }
+    private suspend fun refreshMemory(owner: String?) {
+        val routeToken=memoryEpoch.get()
+        val authorityToken=epoch.get()
+        val snapshot=persistence.memorySnapshot(owner)
+        if(memoryPage.value.ownerId==owner) {
+            var count=0;var imports=0
+            persistence.contacts().forEach { contact -> val detail=persistence.contactDetails(contact);count+=detail.memories.size;imports+=detail.imports.size }
+            if(memoryEpoch.get()==routeToken && memoryPage.value.ownerId==owner)
+                mutableMemoryPage.value=displayed(memoryPage.value.copy(snapshot=snapshot,failed=false,loading=false,pendingOperation=false,totalMemories=snapshot.clearAuthority?.memoryCount ?: count,totalImports=snapshot.clearAuthority?.importCount ?: imports),"page")
+        }
+        if(epoch.get()==authorityToken && state.value.currentContact?.id==owner) {
+            mutableMemory.value=displayed(memory.value.copy(ownerId=owner,snapshot=snapshot,failed=false,loading=false,pendingOperation=false),"inline")
+            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,snapshot),memoryRetention=MemoryPresentation.retention(owner,snapshot)))
+        }
+    }
+    private fun memoryFailed(owner: String?, operation: String) {
+        if(memoryPage.value.ownerId==owner && memoryPage.value.activeOperation==operation) mutableMemoryPage.value=memoryPage.value.copy(failed=true,loading=false,pendingOperation=false)
+        if(memory.value.ownerId==owner && memory.value.activeOperation==operation) mutableMemory.value=memory.value.copy(failed=true,pendingOperation=false)
+    }
+    fun setMemoryEnabled(enabled: Boolean, paused: Boolean, receipt: MemoryUiReceipt) {
+        val submitted=synchronized(intentLock) { if(!currentDisplay(receipt)) return;epoch.get() }
+        enqueue {
+            var operation: String?=null
+            try {
+                persistence.memoryConsent(enabled,paused,receipt.stamp,receipt.clearAuthority) {
+                    synchronized(intentLock) {
+                        check(epoch.get()==submitted && currentDisplay(receipt)) { "Stale consent UI" }
+                        operation=revokeMemoryAuthority()
+                    }
+                }
+                invalidateRun();summaries=emptyList()
+                refreshMemory(state.value.currentContact?.id); if(memoryPage.value.ownerId!=state.value.currentContact?.id) refreshMemory(memoryPage.value.ownerId)
+            } catch (_: Exception) { operation?.let { memoryFailed(receipt.owner,it) } }
+        }
+    }
+    fun declineMemory(receipt: MemoryUiReceipt) {
+        val owner=receipt.owner ?: return
+        val (pending,submitted)=synchronized(intentLock) {
+            if(!currentDisplay(receipt,allowPending=true) || receipt.channel!="inline" || receipt.requestId!=pendingMemory?.first?.requestId || receipt.proposal!=pendingMemory?.second || receipt.stamp!=pendingMemoryStamp) return
+            if(memory.value.pendingOperation) {
+                epoch.incrementAndGet()
+                mutableMemory.value=memory.value.copy(pendingOperation=false,activeOperation=null)
+            }
+            (pendingMemory ?: return) to epoch.get()
+        }
+        enqueue {
+            var operation: String?=null
+            try {
+                persistence.memoryDecline(owner,receipt.stamp,wallClockMillis()+30L*24*60*60*1000) {
+                    synchronized(intentLock) {
+                        check(epoch.get()==submitted && currentDisplay(receipt) && state.value.answerRequest==pending.first && state.value.currentContact?.id==owner) { "Stale decline UI" }
+                        operation=revokeMemoryAuthority(preserveAnswer=true)
+                    }
+                }
+                invalidateRun(); summaries=emptyList();refreshMemory(owner)
+            } catch (_: Exception) {
+                operation?.let { memoryFailed(owner,it) }
+                // The approval may already have committed before this decline linearized.
+                // Reveal its existing receipt; never turn an old decline into withdrawal.
+                if(operation==null && synchronized(intentLock) { epoch.get()==submitted && currentDisplay(receipt) }) {
+                    val live=runCatching { persistence.memorySnapshot(owner) }.getOrNull()
+                    synchronized(intentLock) {
+                        if(live!=null && live.consent.enabled && epoch.get()==submitted && currentDisplay(receipt)) {
+                            pendingMemory=null;pendingMemoryStamp=null
+                            mutableMemory.value=displayed(MemoryUiState(owner,live),"inline")
+                            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,live),memoryRetention=MemoryPresentation.retention(owner,live)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    private fun finishCurrent(ticket: ApprovalFinish): Boolean = approvalFinish===ticket && epoch.get()==ticket.token &&
+        state.value.currentContact?.id==ticket.owner && state.value.answerRequest==ticket.request &&
+        state.value.lockState.canDisplaySensitiveContent && memory.value.ownerId==ticket.owner && memory.value.activeOperation==ticket.operation
+    private suspend fun finishApproval(ticket: ApprovalFinish) {
+        if(!synchronized(intentLock) { finishCurrent(ticket) }) return
+        try {
+            refreshMemory(ticket.owner)
+            synchronized(intentLock) {
+                if(!finishCurrent(ticket)) return@synchronized
+                approvalFinish=null
+                mutableMemory.value=memory.value.copy(approvalFinishing=false,pendingOperation=false,failed=false,consentProposal=null)
+                if(memory.value.snapshot.operationId==ticket.operation) showMemoryNotice(ticket.summary,ticket.operation,ticket.owner)
+            }
+        } catch (_: Exception) {
+            synchronized(intentLock) {
+                if(finishCurrent(ticket)) mutableMemory.value=memory.value.copy(receipt=ticket.receipt,approvalFinishing=true,pendingOperation=false,failed=true,consentProposal=null)
+            }
+        }
+    }
+    fun acceptMemory(receipt: MemoryUiReceipt) {
+        val finishing=synchronized(intentLock) {
+            approvalFinish?.takeIf { ticket -> ticket.receipt==receipt && memory.value.receipt==receipt && memory.value.approvalFinishing && !memory.value.pendingOperation && finishCurrent(ticket) }?.also {
+                mutableMemory.value=memory.value.copy(pendingOperation=true,failed=false)
+            }
+        }
+        if(finishing!=null) { enqueue { finishApproval(finishing) };return }
+        val owner=receipt.owner ?: return
+        val (pending,operation,token)=synchronized(intentLock) {
+            if(!currentDisplay(receipt) || receipt.channel!="inline" || receipt.requestId!=pendingMemory?.first?.requestId || receipt.proposal!=pendingMemory?.second || receipt.stamp!=pendingMemoryStamp) return
+            val pending=pendingMemory ?: return
+            val operation="approve:$owner:${receipt.identity}"
+            mutableMemory.value=memory.value.copy(pendingOperation=true,activeOperation=operation,failed=false)
+            Triple(pending,operation,epoch.get())
+        }
+        fun stillCurrent(): Boolean = epoch.get()==token && currentDisplay(receipt,allowPending=true) && memory.value.activeOperation==operation && memory.value.pendingOperation &&
+            state.value.answerRequest==pending.first && state.value.currentContact?.id==owner && pendingMemory==pending && pendingMemoryStamp==receipt.stamp
+        enqueue {
+            try {
+                if(!synchronized(intentLock) { stillCurrent() }) return@enqueue
+                val sourceCurrent=answerSourceCurrent()
+                if(!synchronized(intentLock) { stillCurrent() }) return@enqueue
+                if(!sourceCurrent) {
+                    synchronized(intentLock) { if(stillCurrent()) {
+                        pendingMemory=null;pendingMemoryStamp=null
+                        mutableMemory.value=memory.value.copy(consentProposal=null,receipt=null,pendingOperation=false,failed=true)
+                    } }
+                    return@enqueue
+                }
+                val op=persistence.memoryApprove(owner,pending.second,receipt.stamp,operation) {
+                    synchronized(intentLock) { check(stillCurrent()) { "Approval display or source authority changed" } }
+                }
+                if(!synchronized(intentLock) { stillCurrent() }) return@enqueue
+                val finishing=ApprovalFinish(owner,pending.first,token,op.id,pending.second.value,receipt)
+                invalidateRun();summaries=emptyList()
+                synchronized(intentLock) {
+                    if(epoch.get()!=token || state.value.currentContact?.id!=owner || state.value.answerRequest!=pending.first || !state.value.lockState.canDisplaySensitiveContent) return@synchronized
+                    approvalFinish=finishing
+                    mutableMemory.value=memory.value.copy(receipt=receipt,activeOperation=op.id,consentProposal=null,approvalFinishing=true,pendingOperation=true,failed=false)
+                }
+                finishApproval(finishing)
+            } catch (_: Exception) {
+                synchronized(intentLock) {
+                    if(stillCurrent()) mutableMemory.value=memory.value.copy(pendingOperation=false,failed=true)
+                }
+            }
+        }
+    }
+    private fun showMemoryNotice(summary: String, id: String, owner: String? = state.value.currentContact?.id, inference: Boolean = true) = synchronized(intentLock) {
+        if(owner!=null && (state.value.currentContact?.id==owner || memoryPage.value.ownerId==owner)) memoryDisplay.showNotice(summary,id,owner,inference)
+    }
+    private fun mutateMemory(owner: String, receipt: MemoryUiReceipt, onSuccess: () -> Unit = {}, action: suspend () -> Unit) {
+        val operation=synchronized(intentLock) { if(receipt.owner!=owner || !currentDisplay(receipt)) return;revokeMemoryAuthority(owner,preserveEditor=true) }
+        enqueue {
+            if(!operationCurrent(owner,operation)) return@enqueue
+            if(state.value.currentContact?.id==owner) { invalidateRun(); summaries=emptyList() }
+            try { action(); refreshMemory(owner);onSuccess() }
+            catch (failure: Exception) {
+                if(failure is MemoryWriteRejected && failure.code in setOf("STALE_SOURCE","STALE_MEMORY","STALE_CONSENT","CONSENT_REQUIRED","MEMORY_PAUSED","POLICY_VERSION")) {
+                    if(memoryPage.value.ownerId==owner && memoryPage.value.activeOperation==operation) openMemory(owner)
+                } else memoryFailed(owner,operation)
+            }
+        }
+    }
+    fun editMemory(owner: String, entry: MemoryEntry, receipt: MemoryUiReceipt, editorOperation: String) {
+        var result: MemoryOperation?=null
+        mutateMemory(owner,receipt,{ result?.let { op -> op.after.firstOrNull { it.id==entry.id }?.let { saved -> showMemoryNotice(saved.value,op.id,owner,saved.sourceType==MemorySource.ASSISTANT_INFERENCE) } } }) {
+            val snapshot=persistence.memorySnapshot(owner)
+            val current=snapshot.entries.first { it.id==entry.id }
+            require(current.contactId==owner)
+            require(current.sourceType!=MemorySource.ASSISTANT_INFERENCE || current.id in snapshot.verifiedInferenceIds) { "Unverified legacy inference is read-only" }
+            result=persistence.memoryEdit(owner,current.copy(value=entry.value,updatedAt=wallClockMillis()),receipt.stamp,"user:$owner:$editorOperation")
+        }
+    }
+    fun addMemory(owner: String, group: MemoryScope, value: String, receipt: MemoryUiReceipt, editorOperation: String) {
+        var result: MemoryOperation?=null
+        mutateMemory(owner,receipt,{ result?.let { showMemoryNotice(value,it.id,owner,false) } }) {
+            val entry=MemoryEntry("manual:$editorOperation",owner,scope=group,subjectId=owner,field=group.name,value=value,
+                sourceType=MemorySource.USER_EXPLICIT,confidence=if(group==MemoryScope.HYPOTHESIS) Confidence.LOW else Confidence.HIGH,createdAt=wallClockMillis(),updatedAt=wallClockMillis())
+            result=persistence.memoryEdit(owner,entry,receipt.stamp,"user:$owner:$editorOperation")
+        }
+    }
+    fun deleteMemory(owner: String,id: String,receipt: MemoryUiReceipt) = mutateMemory(owner,receipt) { persistence.memoryDelete(owner,id,receipt.stamp,false) }
+    fun markMemoryWrong(owner: String,id: String,receipt: MemoryUiReceipt) = mutateMemory(owner,receipt) { persistence.memoryDelete(owner,id,receipt.stamp,true) }
+    fun undoMemory(owner: String,id: String,receipt: MemoryUiReceipt) = mutateMemory(owner,receipt) { if(receipt.operationId==id) persistence.memoryUndo(owner,id,receipt.stamp) }
+    fun clearMemories(receipt: MemoryUiReceipt) {
+        val authority=receipt.clearAuthority ?: return
+        val submitted=synchronized(intentLock) { if(!currentDisplay(receipt) || receipt.channel!="page") return;epoch.get() }
+        enqueue {
+            var operation: String?=null
+            try {
+                persistence.clearMemories(authority) {
+                    synchronized(intentLock) {
+                        check(epoch.get()==submitted && currentDisplay(receipt)) { "Stale clear UI" }
+                        operation=revokeMemoryAuthority()
+                    }
+                }
+                invalidateRun();summaries=emptyList()
+                refreshMemory(state.value.currentContact?.id);openMemory(memoryPage.value.ownerId)
+            } catch (_: Exception) { operation?.let { memoryFailed(receipt.owner,it) } }
+        }
+    }
+    private suspend fun rememberCompleted(request: AnalysisRequest, answer: StructuredAnswer, token: Long) {
+        val owner=request.contactId ?: return
+        if(request.mode!=RequestMode.FULL_ANALYSIS || request.purpose!=OutboundPurpose.ANALYSIS || state.value.answerDemo || !isCurrentMemoryResult(request,token)) return
+        val snapshot=persistence.memorySnapshot(owner)
+        if(snapshot.stamp!=proposalStamp) return
+        val candidate=MemoryPresentation.candidate(answer,snapshot,owner)?.copy(subjectId=owner,sourceRef=request.requestId) ?: return
+        if(snapshot.consent.paused) return
+        if(!snapshot.consent.enabled) {
+            if(snapshot.consent.declinedUntil>wallClockMillis()) return
+            pendingMemory=request to candidate
+            pendingMemoryStamp=snapshot.stamp
+            mutableMemory.value=displayed(MemoryUiState(owner,snapshot,consentProposal=candidate),"inline",request.requestId)
+        } else {
+            val stamp=proposalStamp ?: return
+            try {
+                val op=persistence.memoryProposal(owner,candidate,stamp)
+                if(!isCurrentMemoryResult(request,token)) {
+                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memorySnapshot(owner).stamp)); return
+                }
+                refreshMemory(owner)
+                if(!isCurrentMemoryResult(request,token)) {
+                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memorySnapshot(owner).stamp));return
+                }
+                showMemoryNotice(candidate.value,op.id)
+                summaries=emptyList(); previewRequest=null; (assembler as? FrozenPromptAssembler)?.clear()
+            } catch (rejected: MemoryWriteRejected) {
+                if(rejected.code=="MEMORY_METADATA_LIMIT") mutableMemory.value=memory.value.copy(failed=true,capacityFull=true)
+            } catch (_: Exception) { /* No receipt means no saved notice. */ }
+        }
+    }
+    private fun isCurrentMemoryResult(request: AnalysisRequest, token: Long) = epoch.get()==token && state.value.answerRequest==request && state.value.currentContact?.id==request.contactId
+
     private val demoProvider = provider
     private var settings = ModelSettingsSnapshot()
     private var testJob: Job? = null
@@ -153,6 +459,7 @@ class CounselController(
     }
     /** Only this owner's operations revoke its request. An old A form cannot cancel B. */
     private fun revokeContact(id: String) = synchronized(intentLock) {
+        if(memory.value.ownerId==id) clearInlineMemory()
         if (mutableDetails.value.ownerId == id) {
             detailEpoch.incrementAndGet(); mutableDetails.value = ContactDetailState(id, loading = true)
         }
@@ -270,9 +577,12 @@ class CounselController(
         }
     }
     private fun set(next: CounselState) = synchronized(intentLock) {
+        if(!next.lockState.canDisplaySensitiveContent) clearInlineMemory()
         mutableState.value = if (pendingSummaryCleanup.isEmpty()) next else next.copy(error = CounselError("STORAGE_UNAVAILABLE", true))
     }
     private fun invalidateRun() {
+        pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null
+        mutableMemory.value=memory.value.copy(consentProposal=null,approvalFinishing=false,pendingOperation=false)
         testGeneration++; testJob?.cancel(); testJob = null
         waitingJob?.cancel(); waitingJob = null
         stream?.cancel(); stream = null; frozen = null
@@ -346,6 +656,7 @@ class CounselController(
             persistence.initialize()
             modelSettings?.let { settings = it.load(); applyModelSettings() }
             val contacts = persistence.contacts()
+            refreshMemory(null)
             initialized = true
             set(state.value.copy(contacts = contacts, loading = false))
             contacts.firstOrNull { it.archivedAt == null }?.let { loadContact(it) } ?: beginTemporary()
@@ -364,6 +675,7 @@ class CounselController(
         }
     }
     private suspend fun beginTemporary() {
+        clearInlineMemory()
         invalidateRun()
         credential?.let { temporary.remove(it) }
         credential = temporary.begin()
@@ -373,12 +685,16 @@ class CounselController(
         dirtyDraft = false
         set(CounselState(loading = false, contacts = state.value.contacts,
             conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
+        refreshMemory(null)
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {
+        clearInlineMemory()
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
+        val memorySnapshot=persistence.memorySnapshot(contact.id)
+        val memoryContext=MemoryPresentation.context(contact.id,memorySnapshot)
         if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
         if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
         summaries = saved.summaries; plans = saved.plans
@@ -390,12 +706,12 @@ class CounselController(
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val profile = persistence.redactionProfile(contact.id)
-        val completedCurrentAnswer = AnswerSourcePolicy.matches(answerRequest,
+        val completedCurrentAnswer = (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) && AnswerSourcePolicy.matches(answerRequest,
             saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
             saved.conversation, contact.id, contact.sourceRevision, saved.draft, saved.evidence, profile.revision, settings.saved.revision)
         val resumable = saved.runs.sortedBy { if (it.requestId == latestUser?.requestId) 1 else 0 }.lastOrNull { run ->
             val r = run.requestSnapshot
-            r != null && (run.requestId == latestUser?.requestId || (r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && !completedCurrentAnswer)) && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
+            r != null && r.actualDataContext==memoryContext && (run.requestId == latestUser?.requestId || (r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && !completedCurrentAnswer)) && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
                 r.conversationId == saved.conversation.id && r.conversationRevision == saved.conversation.revision &&
                 r.contactId == contact.id && r.sourceRevision == contact.sourceRevision && r.userText == saved.draft &&
                 r.evidence == saved.evidence && r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision &&
@@ -418,8 +734,9 @@ class CounselController(
             inputRevision++
             dirtyDraft = false
             ledger = AnalysisLedger(runs = saved.runs.map { if (it.requestId == resumable?.requestId) resumable else it }, messages = saved.messages)
+            mutableMemory.value=displayed(MemoryUiState(contact.id,memorySnapshot),"inline")
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
-                conversation = saved.conversation, draft = saved.draft,
+                conversation = saved.conversation, draft = saved.draft, memoryContext=memoryContext,memoryRetention=MemoryPresentation.retention(contact.id,memorySnapshot),
                 relationType = answerRequest?.manualRelation ?: answer?.scene?.relationType ?: contact.relationType,
                 goal = answerRequest?.manualGoal ?: answer?.scene?.goal ?: Goal.REPLY,
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
@@ -561,7 +878,7 @@ class CounselController(
         val pieces = ledger.messages.filter { it.role == MessageRole.ASSISTANT && it.status == MessageStatus.COMPLETED && it.contactId == current.currentContact?.id }.mapNotNull { message ->
             val run = ledger.runs.firstOrNull { it.requestId == message.requestId } ?: return@mapNotNull null
             val original = run.requestSnapshot ?: return@mapNotNull null
-            if (original.purpose != OutboundPurpose.ANALYSIS || !ContinuousAnalysis.sourcesRetained(original, current.currentContact?.id, current.evidence) || original.redactionProfile.revision != current.redactionProfile.revision || run.configRevision != settings.saved.revision) return@mapNotNull null
+            if (!MemoryPresentation.sourcesRetained(original.actualDataContext,current.memoryRetention) || original.purpose != OutboundPurpose.ANALYSIS || !ContinuousAnalysis.sourcesRetained(original, current.currentContact?.id, current.evidence) || original.redactionProfile.revision != current.redactionProfile.revision || run.configRevision != settings.saved.revision) return@mapNotNull null
             val answer = runCatching { json.decodeFromString(StructuredAnswer.serializer(), message.answerJson ?: "") }.getOrNull() ?: return@mapNotNull null
             val choice = plans.lastOrNull { it.sourceRequestId == message.requestId && it.sourceAnswerId == message.id }?.let { "${it.status}:${ContinuousAnalysis.historyExcerpt(it.chosenReply, 80)}" } ?: "未记录选择"
             ContinuousAnalysis.scopeHistoricalTokens("历史建议（${if (message.providerKind == ProviderKind.DEMO) "虚构演示" else "模型分析，非聊天事实"}） VERDICT=${ContinuousAnalysis.historyExcerpt(answer.verdict, 100)} NEXT=${ContinuousAnalysis.historyExcerpt(answer.next, 100)} 用户选择=$choice", "历史${message.requestId.hashCode().toUInt().toString(16)}")
@@ -586,9 +903,13 @@ class CounselController(
         val identity = json.encodeToString(AnalysisRequest.serializer(), candidate.copy(requestId = "", inputRevision = 0)) + settings.saved.revision + version
         return java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
     }
-    private fun request(): AnalysisRequest {
+    private suspend fun request(): AnalysisRequest {
         val current = state.value
         val conversation = checkNotNull(current.conversation)
+        val memorySnapshot=persistence.memorySnapshot(current.currentContact?.id)
+        val context=MemoryPresentation.context(current.currentContact?.id,memorySnapshot)
+        mutableMemory.value=displayed(memory.value.copy(ownerId=current.currentContact?.id,snapshot=memorySnapshot),"inline")
+        set(state.value.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot)))
         return AnalysisRequest(requestId = UUID.randomUUID().toString(), inputRevision = inputRevision,
             contactId = current.currentContact?.id,
             relationType = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).relationType,
@@ -598,7 +919,7 @@ class CounselController(
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
             redactionProfile = current.redactionProfile,
-            recentSummary = history(current), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
+            actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
     private fun ordinaryAllowed() = pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
     private suspend fun answerSourceCurrent(): Boolean {
@@ -619,6 +940,8 @@ class CounselController(
         if (!AnswerSourcePolicy.matches(original, run.configRevision, current.conversation, contact?.id,
             contact?.sourceRevision ?: 0, current.draft, current.evidence, current.redactionProfile.revision, settings.saved.revision)) return false
         if (stored == null) return true
+        val memorySnapshot=persistence.memorySnapshot(contact!!.id)
+        if(!MemoryPresentation.sourcesRetained(original.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) return false
         return stored.messages.any { it.id == source.id && it.answerJson == source.answerJson } &&
             stored.conversation == current.conversation && stored.draft == current.draft && stored.evidence == current.evidence &&
             persistence.redactionProfile(contact!!.id).revision == original.redactionProfile.revision
@@ -642,6 +965,9 @@ class CounselController(
         val snapshot = request().copy(mode = RequestMode.REWRITE_REPLY, purpose = OutboundPurpose.REPLY_REWRITE,
             parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = bias.coerceIn(0f, 1f))
         if (settings.saved.live) {
+            if(snapshot.actualDataContext!=MemoryPresentation.context(snapshot.contactId,persistence.memorySnapshot(snapshot.contactId))) {
+                invalidateRun(); return@enqueueFrom
+            }
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
             if (epoch.get() != operationEpoch || state.value.conversation?.id != origin) return@enqueueFrom
             previewRequest = snapshot
@@ -807,6 +1133,9 @@ class CounselController(
         }
     }
     private suspend fun start(request: AnalysisRequest) {
+        val snapshot=persistence.memorySnapshot(request.contactId)
+        if(request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { invalidateRun(); return }
+        proposalStamp=snapshot.stamp
         if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
             summaryKey = cacheKey(request)
             val previous = ledger.runs.firstOrNull { it.requestId == request.requestId }
@@ -976,6 +1305,7 @@ class CounselController(
                     relationType = state.value.manualRelation ?: answer.scene?.relationType ?: state.value.relationType,
                     goal = state.value.manualGoal ?: answer.scene?.goal ?: state.value.goal,
                     formality = state.value.manualFormality ?: answer.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: state.value.formality, styleBias = request.styleBias, tone = request.tone ?: state.value.tone))
+                rememberCompleted(request,answer,token)
             }
         }
     }
@@ -1047,6 +1377,7 @@ class CounselController(
         set(state.value.copy(streaming = false, error = CounselError("CANCELLED", true)))
     }
     fun clearAll() {
+        clearInlineMemory()
         closeContactDetails()
         selectionEpoch.incrementAndGet()
         enqueue(true) {
