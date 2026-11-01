@@ -49,7 +49,7 @@ class ImportCoordinator(
     }
     private var imageRows: Map<String,List<ImportRow>> = emptyMap()
     init { scope.launch { controller.state.collect { state ->
-        if (mutable.value?.source == ImportSource.SCREENSHOT && (!state.lockState.canDisplaySensitiveContent ||
+        if (!state.lockState.canDisplaySensitiveContent || (mutable.value?.source == ImportSource.SCREENSHOT &&
             (authority != null && controller.importAuthority != authority))) this@ImportCoordinator.cancel()
     } } }
     private var pendingRead: Pair<ImportPreview, () -> String>? = null

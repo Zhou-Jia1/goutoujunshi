@@ -9,6 +9,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.shengjidaguai.goutoujunshi.importing.ScreenshotPhotoPicker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Column
+
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.res.painterResource
@@ -45,7 +47,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun JunshiNavigation(viewModel: CounselViewModel) {
+internal fun JunshiNavigation(viewModel: CounselViewModel) {
     val nav = rememberNavController()
     val current by nav.currentBackStackEntryAsState()
     val destinations = listOf("counsel" to R.string.nav_counsel, "contacts" to R.string.nav_contacts, "me" to R.string.nav_me)
@@ -53,6 +55,12 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
     val images=rememberLauncherForActivityResult(ScreenshotPhotoPicker.contract()) { viewModel.importImages(it) }
     val files=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { viewModel.importFile(it) }
     val pendingImport by viewModel.imports.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    if (!state.lockState.canDisplaySensitiveContent) {
+        val context=androidx.compose.ui.platform.LocalContext.current
+        com.shengjidaguai.goutoujunshi.floating.FloatingLockGate({com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.unlock(context)})
+        return
+    }
     if (pendingImport != null) { ImportOverlay(viewModel); return }
     Scaffold(bottomBar = {
         NavigationBar {
@@ -68,11 +76,19 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
         }
     }) { padding ->
         NavHost(nav, startDestination = "counsel", modifier = androidx.compose.ui.Modifier.padding(padding)) {
-            composable("counsel") { CounselScreen(viewModel,
+            composable("counsel") { Column { FloatingEntry(); androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f)) { CounselScreen(viewModel,
                 pickImages={ viewModel.launchImagePicker { images.launch(ScreenshotPhotoPicker.request()) } },
-                pickFile={ viewModel.launchFilePicker { files.launch(arrayOf("text/plain","application/json")) } }) { nav.navigate("me") { launchSingleTop = true } } }
+                pickFile={ viewModel.launchFilePicker { files.launch(arrayOf("text/plain","application/json")) } }) { nav.navigate("me") { launchSingleTop = true } } } } }
             composable("contacts") { ContactsScreen(viewModel) { nav.navigate("counsel") { launchSingleTop = true } } }
-            composable("me") { SettingsScreen(viewModel) }
+            composable("me") { Column { FloatingEntry(); androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f)) { SettingsScreen(viewModel) } } }
         }
     }
+}
+
+@Composable
+private fun FloatingEntry() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    com.shengjidaguai.goutoujunshi.designsystem.SecondaryButton(stringResource(R.string.floating_title), {
+        com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.open(context)
+    })
 }
