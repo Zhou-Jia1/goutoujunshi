@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.shengjidaguai.goutoujunshi.importing.ScreenshotPhotoPicker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Column
 
 import androidx.compose.foundation.layout.padding
@@ -26,13 +27,27 @@ import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    private val captureUiOwner=Any()
+    override fun onStart() { super.onStart();com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.started(captureUiOwner) }
+    override fun onStop() { com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.hidden(captureUiOwner);super.onStop() }
+    override fun onDestroy() { com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.hidden(captureUiOwner);super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val viewModel = ViewModelProvider(this)[CounselViewModel::class.java]
         viewModel.receiveShare(intent)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
-            JunshiTheme(calm = (state.emotion ?: 0) >= 8) { JunshiNavigation(viewModel) }
+            val captureNotice by com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.notice.collectAsStateWithLifecycle()
+            JunshiTheme(calm = (state.emotion ?: 0) >= 8) {
+                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize()) {
+                    if(captureNotice) Surface {
+                        com.shengjidaguai.goutoujunshi.designsystem.JunshiColumn {
+                            com.shengjidaguai.goutoujunshi.designsystem.BodyText(stringResource(R.string.capture_return_chat))
+                        }
+                    }
+                    androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.weight(1f)) { JunshiNavigation(viewModel) }
+                }
+            }
         }
     }
     override fun onNewIntent(intent: Intent) {

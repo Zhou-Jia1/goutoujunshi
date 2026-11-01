@@ -25,6 +25,9 @@ class FloatingTileHandoffTest {
         val ticket=FloatingRuntime.session.request()
         val holder=Robolectric.buildActivity(FloatingCounselActivity::class.java,intent(ticket)).create().start().resume().visible()
         shadowOf(Looper.getMainLooper()).idle()
+        assertNull(shadowOf(app).nextStartedService)
+        deliverProjectionResult(holder.get())
+        shadowOf(Looper.getMainLooper()).idle()
         val started=shadowOf(app).nextStartedService
         assertNotNull(started)
         assertEquals(ticket,started.getLongExtra(FloatingCounselService.TICKET,-1))

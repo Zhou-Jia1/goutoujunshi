@@ -2,8 +2,9 @@
 
 Installs only the validated debug APK, grants its two test permissions and uses
 its SystemUI tile. Abrupt death signals only the exact same-UID debug process.
-No application storage is cleared, no credentials are entered and no chat is
-captured. The test stops its service and removes only a tile it added.
+No application storage is cleared, no credentials are entered and no frame is
+requested. Each start accepts the real system projection dialog on this empty
+fixture. The test stops its service and removes only a tile it added.
 """
 import argparse
 import re
@@ -14,6 +15,7 @@ from pathlib import Path
 from smoke_android_m1 import APP, Device, require, resource_text, validate_apk
 from smoke_android_import import find_text, labels
 from smoke_android_model_settings import MISSING
+from android_projection_consent import projection_consent
 
 TILE = f'{APP}/com.shengjidaguai.goutoujunshi.floating.FloatingCounselTile'
 
@@ -54,10 +56,14 @@ class FloatingDevice:
         return False
 
     def running(self):
-        return self.service() and self.notification() and self.window()
+        return self.service() and self.notification() and self.window() and self.projecting()
 
     def stopped(self):
-        return not self.service() and not self.notification() and not self.window()
+        return (not self.service() and not self.notification() and not self.window()
+                and not self.projecting())
+
+    def projecting(self):
+        return APP in self.device.call('shell', 'dumpsys', 'media_projection')
 
     def click_tile(self):
         self.device.call('shell', 'cmd', 'statusbar', 'expand-settings')
@@ -99,13 +105,20 @@ def main():
             device.call('shell', 'cmd', 'statusbar', 'add-tile', TILE)
         device.call('shell', 'input', 'keyevent', 'KEYCODE_HOME')
         floating.click_tile()
+        projection_consent(device, allow=False)
+        wait_for(floating.stopped, 'Refusing projection permission left floating resources')
+        print('PASS: refusing the real system projection dialog leaves floating counsel off', flush=True)
+        device.call('shell', 'input', 'keyevent', 'KEYCODE_HOME')
+        floating.click_tile()
+        projection_consent(device)
         wait_for(floating.running, 'One tile click did not create the service, window and notification')
-        print('PASS: one SystemUI tile click starts floating counsel from the background', flush=True)
+        print('PASS: a tile click and fresh system consent start floating counsel from the background', flush=True)
         floating.click_tile()
         wait_for(floating.stopped, 'Tile stop left a service, window or notification')
         print('PASS: one tile click removes the service, window and notification', flush=True)
 
         floating.click_tile()
+        projection_consent(device)
         wait_for(floating.running, 'The service did not restart after an explicit tile click')
         pid = device.call('shell', 'pidof', APP).strip()
         require(re.fullmatch(r'\d+', pid), 'Refusing an ambiguous process target')
@@ -120,6 +133,7 @@ def main():
         print('PASS: abrupt death of the running debug process and app reopening do not restore the ball', flush=True)
 
         floating.click_tile()
+        projection_consent(device)
         wait_for(floating.running, 'Explicit restart after process death failed')
         device.call('shell', 'input', 'keyevent', 'KEYCODE_SLEEP')
         wait_for(floating.stopped, 'Screen off left floating-counsel resources')

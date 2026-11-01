@@ -8,11 +8,11 @@ import com.shengjidaguai.goutoujunshi.R
 import com.shengjidaguai.goutoujunshi.designsystem.*
 
 @Composable
-internal fun FloatingMenuBall(side: Side, openMenu: () -> Unit) {
+internal fun FloatingMenuBall(side: Side, openMenu: () -> Unit, capture:()->Unit=openMenu) {
     val label=stringResource(R.string.floating_ball_menu)
     FloatingBall(FloatingBallState.IDLE,side,Modifier.clearAndSetSemantics {
         contentDescription=label
-        onClick { openMenu(); true }
+        onClick { capture(); true }
         onLongClick { openMenu(); true }
     })
 }

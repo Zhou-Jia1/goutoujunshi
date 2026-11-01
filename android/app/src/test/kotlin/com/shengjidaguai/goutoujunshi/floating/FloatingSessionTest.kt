@@ -20,4 +20,11 @@ class FloatingSessionTest {
   assertTrue(floatingContentAllowed(LockState(enabled=true, unlocked=true)))
   assertTrue(floatingContentAllowed(LockState()))
  }
+ @Test fun freshRamAuthorityCannotAcceptTicketFromDiscardedProcessAfterNewRequest() {
+  val discarded=FloatingSession();val old=discarded.request()
+  val fresh=FloatingSession();val current=fresh.request()
+  assertTrue(fresh.valid(current))
+  assertFalse("A new request must not revive a ticket retained by an old task Intent",fresh.valid(old))
+ }
+
 }

@@ -87,7 +87,10 @@ class CounselControllerTest {
         var draftWrites = 0
         var beforeMessage: CompletableDeferred<Unit>? = null
         var beforeUpdate: CompletableDeferred<Unit>? = null
+        var updateEntered: CompletableDeferred<Unit>? = null
         var beforeInitialize: CompletableDeferred<Unit>? = null
+        var initializeEntered: CompletableDeferred<Unit>? = null
+        var contactsEntered: CompletableDeferred<Unit>? = null
         var initializeFailures = 0
         var initializeAttempts = 0
         var updateFailures = 0
@@ -102,11 +105,13 @@ class CounselControllerTest {
         var cleanupPending = false
         var beforeCleanup: CompletableDeferred<Unit>? = null
         override suspend fun initialize() {
+            initializeEntered?.complete(Unit)
             beforeInitialize?.await()
             initializeAttempts++
             if (initializeFailures > 0) { initializeFailures--; error("synthetic init failure") }
         }
         override suspend fun contacts(): List<Contact> {
+            contactsEntered?.complete(Unit)
             beforeContacts?.await()
             if (contactsFailures > 0) { contactsFailures--; error("synthetic contacts read failure") }
             return people.toList()
@@ -135,6 +140,7 @@ class CounselControllerTest {
         }
         override suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String) {
             check(saved[contact.id]?.conversation == previous)
+            updateEntered?.complete(Unit)
             beforeUpdate?.await()
             if (updateFailures > 0) { updateFailures--; error("synthetic pre-commit failure") }
             draftWrites++

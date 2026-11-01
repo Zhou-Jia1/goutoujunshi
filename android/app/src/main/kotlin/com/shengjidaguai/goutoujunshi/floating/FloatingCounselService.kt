@@ -20,6 +20,18 @@ import com.shengjidaguai.goutoujunshi.designsystem.*
 import kotlinx.coroutines.*
 
 class FloatingCounselService : Service() {
+    private var projection: SingleFrameProjection?=null
+    private val captureState get()=FloatingRuntime.session.capture
+    private var captureEpoch=0L
+    private var captureJob:Job?=null
+    private var ownUiStamp:CaptureOwnUi.Stamp?=null
+    private var timeoutJob:Job?=null
+    private var sessionTicket:Long?=null
+    private var debugCaptureCalls=0
+    private var debugCaptureAccepted=0
+    private var debugPointerDowns=0
+    private var debugPointerUps=0
+    private fun touchSession() { timeoutJob?.cancel();timeoutJob=scope.launch { delay(FloatingRuntime.timeoutMinutes*60_000L);close() } }
     private var window: FloatingBallWindow? = null
     private var owners: OverlayOwners? = null
     private lateinit var wm: WindowManager
@@ -27,6 +39,7 @@ class FloatingCounselService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var receiverRegistered = false
     private var ownedTicket: Long? = null
+    private var ownedLockRevision:Long?=null
     private var appOps: AppOpsManager? = null
     private val overlayChanged=AppOpsManager.OnOpChangedListener { _, packageName ->
         if(packageName==this.packageName) Handler(Looper.getMainLooper()).post { if(!Settings.canDrawOverlays(this)) close() }
@@ -47,10 +60,19 @@ class FloatingCounselService : Service() {
         if (intent?.action == STOP) { close(); return START_NOT_STICKY }
         val ticket=intent?.getLongExtra(TICKET,-1) ?: -1
         if (!FloatingRuntime.session.accept(ticket)) {
+            ProjectionGrantStore.clear(ticket)
             if (window == null) { cleanup(); stopSelf(startId) }
             return START_NOT_STICKY
         }
+        if(projection!=null) { ProjectionGrantStore.clear(ticket);FloatingRuntime.session.cancel(ticket);return START_NOT_STICKY }
         ownedTicket=ticket
+        FloatingRuntime.runtimeTicket=ticket
+        sessionTicket=ticket
+        captureEpoch=captureState.revision
+        val grant=ProjectionGrantStore.take(ticket)
+        if(grant==null || grant.lockRevision!=CounselRuntime.get(application).lockRevision) { fail();return START_NOT_STICKY }
+        ownedLockRevision=grant.lockRevision
+        captureState.advance(captureEpoch,CaptureState.Phase.STARTING_SERVICE)
         if (!Settings.canDrawOverlays(this) || getSystemService(KeyguardManager::class.java).isKeyguardLocked ||
             !floatingContentAllowed(CounselRuntime.get(application).state.value.lockState)) {
             fail(); return START_NOT_STICKY
@@ -62,9 +84,27 @@ class FloatingCounselService : Service() {
             val notification = Notification.Builder(this, CHANNEL).setSmallIcon(com.shengjidaguai.goutoujunshi.designsystem.R.drawable.ic_junshi_monochrome)
                 .setContentTitle(getString(R.string.floating_notification)).setContentIntent(stop).setOngoing(true).setShowWhen(false)
                 .apply { if(Build.VERSION.SDK_INT>=31) setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE) }.build()
-            if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             else startForeground(NOTIFICATION, notification)
+            val candidate=SingleFrameProjection(this,::close)
+            projection=candidate
+            candidate.start(grant.data)
+            if(projection!==candidate || FloatingRuntime.session.epoch()!=ticket || captureState.revision!=captureEpoch) {
+                fail();return START_NOT_STICKY
+            }
+            captureState.advance(captureEpoch,CaptureState.Phase.READY)
+            FloatingRuntime.captureAction=::capture
+            if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) FloatingRuntime.captureDiagnostics={
+                CaptureDebugSnapshot(debugCaptureCalls,debugCaptureAccepted,debugPointerDowns,debugPointerUps,projection?.debugSnapshot())
+            }
+            FloatingRuntime.stopCapture=::clearCapture
+            FloatingRuntime.timeoutChanged=::touchSession
+            touchSession()
             if (window == null) attach()
+            if(projection==null || window==null || captureState.phase!=CaptureState.Phase.READY ||
+                ownedLockRevision!=CounselRuntime.get(application).lockRevision || !floatingContentAllowed(CounselRuntime.get(application).state.value.lockState)) {
+                fail();return START_NOT_STICKY
+            }
             FloatingRuntime.active.value = true
         } catch (_: RuntimeException) { fail() }
         return START_NOT_STICKY
@@ -118,18 +158,22 @@ class FloatingCounselService : Service() {
         view.composeView.setViewTreeViewModelStoreOwner(owner)
         view.composeView.setViewTreeSavedStateRegistryOwner(owner)
         view.composeView.setContent { JunshiTheme { Box(Modifier.fillMaxSize(), contentAlignment=Alignment.Center) {
-            FloatingMenuBall(if(params.x < 0) Side.LEFT else Side.RIGHT,::openMenu)
+            FloatingMenuBall(if(params.x < 0) Side.LEFT else Side.RIGHT,::openMenu,::capture)
         } } }
         var startX=0; var startY=0; var downX=0f; var downY=0f; var moved=false
         val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(event: android.view.MotionEvent) = true
-            override fun onSingleTapUp(event: android.view.MotionEvent): Boolean { if(!moved) openMenu(); return true }
+            override fun onSingleTapUp(event: android.view.MotionEvent): Boolean { if(!moved) capture(); return true }
             override fun onLongPress(event: android.view.MotionEvent) { if(!moved) openMenu() }
         })
         view.handleMotion = motion@{ event ->
+            if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) {
+                if(event.actionMasked==MotionEvent.ACTION_DOWN) debugPointerDowns++
+                if(event.actionMasked==MotionEvent.ACTION_UP) debugPointerUps++
+            }
             if (!Settings.canDrawOverlays(this)) { close(); return@motion true }
             when(event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { startX=params.x; startY=params.y; downX=event.rawX; downY=event.rawY; moved=false }
+                MotionEvent.ACTION_DOWN -> { touchSession();startX=params.x; startY=params.y; downX=event.rawX; downY=event.rawY; moved=false }
                 MotionEvent.ACTION_MOVE -> {
                     val dx=event.rawX-downX; val dy=event.rawY-downY
                     if(kotlin.math.hypot(dx,dy)>ViewConfiguration.get(this).scaledTouchSlop) moved=true
@@ -142,15 +186,89 @@ class FloatingCounselService : Service() {
         }
         wm.addView(view, params)
         scope.launch {
+            CaptureOwnUi.changes.collect {
+                val stamp=ownUiStamp
+                if(stamp!=null && !CaptureOwnUi.valid(stamp) && captureState.phase in setOf(CaptureState.Phase.CAPTURING,CaptureState.Phase.RECOGNIZING)) captureJob?.cancel()
+            }
+        }
+        scope.launch {
             CounselRuntime.get(application).state.collect { state ->
-                if (!floatingContentAllowed(state.lockState)) {
-                    // The ball contains no private content; any Activity/menu is gated separately.
-                    if (getSystemService(KeyguardManager::class.java).isKeyguardLocked) close()
+                if ((ownedLockRevision!=null && ownedLockRevision!=CounselRuntime.get(application).lockRevision) || !floatingContentAllowed(state.lockState)) {
+                    close()
                 }
             }
         }
     }
-    private fun openMenu() { if(window!=null && FloatingRuntime.active.value) FloatingRuntime.open(this, contacts = true) }
+    private suspend fun refresh() = suspendCancellableCoroutine<Unit> { continuation ->
+        Choreographer.getInstance().postFrameCallback { Choreographer.getInstance().postFrameCallback {
+            if(continuation.isActive) continuation.resume(Unit) { _,_,_ -> }
+        } }
+    }
+    private fun capture() {
+        if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureCalls++
+        if(!floatingContentAllowed(CounselRuntime.get(application).state.value.lockState)) { FloatingRuntime.unlock(this);return }
+        val ownUi=CaptureOwnUi.snapshot()
+        if(!ownUi.clear) { ownUiBlocked();return }
+        if(!captureState.advance(captureEpoch,CaptureState.Phase.CAPTURING)) return
+        if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureAccepted++
+        ownUiStamp=ownUi
+        touchSession()
+        val epoch=captureEpoch;val ticket=sessionTicket ?: return
+        val imports=CounselRuntime.imports(application)
+        val previousPreview=imports.state.value?.id
+        var previewOwner:String?=null
+        captureJob=scope.launch {
+            var bitmap:android.graphics.Bitmap?=null
+            try {
+                FloatingRuntime.hideWindows(ownedTicket)
+                window?.visibility=View.INVISIBLE
+                refresh()
+                if(!CaptureOwnUi.valid(ownUi)) return@launch
+                bitmap=projection?.capture()
+                if(!CaptureOwnUi.valid(ownUi)) return@launch
+                if(bitmap==null || !frameHasContent(bitmap!!)) { android.widget.Toast.makeText(this@FloatingCounselService,R.string.capture_no_frame,android.widget.Toast.LENGTH_LONG).show();return@launch }
+                if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) runCatching { FloatingRuntime.frameObserver?.invoke(ticket,bitmap!!) }
+                window?.visibility=View.VISIBLE
+                if(!captureState.advance(epoch,CaptureState.Phase.RECOGNIZING)) return@launch
+                val owner=withTimeout(10_000) { imports.beginCapture(ticket,{ action ->
+                    var accepted=false
+                    captureState.commit(epoch) { accepted=CaptureOwnUi.commit(ownUi,action) } && accepted
+                }) { captureState.revision==epoch && FloatingRuntime.active.value && CaptureOwnUi.valid(ownUi) } } ?: return@launch
+                previewOwner=owner
+                val lines=com.shengjidaguai.goutoujunshi.data.ocr.PaddleImageReader(this@FloatingCounselService).readBitmap(bitmap!!)
+                bitmap?.recycle();bitmap=null
+                if(captureState.revision!=epoch || !CaptureOwnUi.valid(ownUi) || !imports.captured(owner,lines)) return@launch
+                captureState.advance(epoch,CaptureState.Phase.ANALYZING)
+                FloatingRuntime.showCapture(this@FloatingCounselService)
+            } catch(e:CancellationException) { throw e }
+            catch(_:Exception) { if(captureState.revision==epoch) android.widget.Toast.makeText(this@FloatingCounselService,R.string.capture_no_frame,android.widget.Toast.LENGTH_LONG).show() }
+            finally {
+                bitmap?.recycle()
+                if(captureState.revision==epoch) {
+                    if(!CaptureOwnUi.valid(ownUi)) {
+                        if(previewOwner!=null && previewOwner!=previousPreview) imports.cancelCapture(ticket)
+                        ownUiBlocked()
+                    }
+                    captureState.advance(epoch,CaptureState.Phase.READY);window?.visibility=View.VISIBLE
+                }
+                if(ownUiStamp==ownUi) ownUiStamp=null
+            }
+        }
+    }
+    private fun ownUiBlocked() {
+        CaptureOwnUi.warn()
+        android.widget.Toast.makeText(this,R.string.capture_return_chat,android.widget.Toast.LENGTH_LONG).show()
+    }
+    private fun clearCapture() {
+        if(ownedTicket!=null && FloatingRuntime.runtimeTicket==ownedTicket) {
+            FloatingRuntime.frameObserver=null;FloatingRuntime.captureDiagnostics=null
+        }
+        debugCaptureCalls=0;debugCaptureAccepted=0;debugPointerDowns=0;debugPointerUps=0
+        captureJob?.cancel();captureJob=null;timeoutJob?.cancel();timeoutJob=null
+        projection?.close();projection=null;ownedLockRevision=null
+        sessionTicket?.let { CounselRuntime.imports(application).cancelCapture(it);ProjectionGrantStore.clear(it) };sessionTicket=null
+    }
+    private fun openMenu() { if(window!=null && FloatingRuntime.active.value) { touchSession();FloatingRuntime.open(this, contacts = true) } }
     private fun dock() {
         val bounds=geometry(); val point=bounds.dock(params.x,params.y)
         params.x=point.x; params.y=point.y
@@ -159,11 +277,16 @@ class FloatingCounselService : Service() {
         updateWindow()
     }
     private fun updateWindow() { try { window?.let { wm.updateViewLayout(it,params) } } catch (_:RuntimeException) { close() } }
-    override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if(window!=null) { val bounds=geometry(); params.width=bounds.size; params.height=bounds.size; restorePosition(); updateWindow() } }
-    private fun close() { FloatingRuntime.session.stop(); cleanup(); stopSelf() }
+    override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); if(Build.VERSION.SDK_INT<34) projection?.displayResized(); if(window!=null) { val bounds=geometry(); params.width=bounds.size; params.height=bounds.size; restorePosition(); updateWindow() } }
+    private fun close() { ownedTicket?.let(FloatingRuntime.session::cancel); cleanup(); stopSelf() }
     private fun fail() { ownedTicket?.let(FloatingRuntime.session::cancel); cleanup(); stopSelf() }
     private fun cleanup() {
-        FloatingRuntime.active.value=false
+        ownedTicket?.let(FloatingRuntime::hideWindows)
+        clearCapture()
+        if(ownedTicket!=null && FloatingRuntime.runtimeTicket==ownedTicket) {
+            FloatingRuntime.runtimeTicket=null;FloatingRuntime.captureAction=null;FloatingRuntime.stopCapture=null;FloatingRuntime.timeoutChanged=null
+            FloatingRuntime.active.value=false
+        }
         window?.let { view -> window=null; view.handleMotion={false}; try { wm.removeViewImmediate(view) } catch (_: RuntimeException) { }; view.composeView.disposeComposition() }
         owners?.destroy(); owners=null
         stopForeground(STOP_FOREGROUND_REMOVE)

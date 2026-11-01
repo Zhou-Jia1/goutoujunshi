@@ -18,12 +18,15 @@ data class ImportPreview(
     val images: List<Uri> = emptyList(), val target: ImportTarget? = null,
     val imageIds: List<String> = images.map { UUID.randomUUID().toString() },
     val imageLabels: Map<String,Int> = imageIds.withIndex().associate { it.value to it.index+1 },
-    val mySide: OcrSide? = null, val recognized: Boolean = false,
+    val captureSession: Long? = null, val mySide: OcrSide? = null, val recognized: Boolean = false,
     val rightsAccepted: Boolean = false, val busy: Boolean = false, val error: String? = null,
 ) {
-    val canConfirm get() = (target?.newAlias == null || target.newAlias.isNotBlank()) && !busy && error == null && (source != ImportSource.SCREENSHOT || (images.isNotEmpty() && recognized && mySide != null)) && rightsAccepted && target != null &&
+    val canConfirm get() = (target?.newAlias == null || target.newAlias.isNotBlank()) && !busy && error == null && (source != ImportSource.SCREENSHOT || ((images.isNotEmpty() || captureSession != null) && recognized && mySide != null)) && rightsAccepted && target != null &&
         rows.size<=MAX_IMPORT_ROWS && rows.sumOf { it.text.toByteArray(Charsets.UTF_8).size }<=MAX_IMPORT_BYTES && rows.any { !it.excluded } && rows.filterNot { it.excluded }.all { (it.ocrConfidence == null || it.ocrConfidence >= .8f || it.reviewed) && it.speaker != null && it.text.isNotBlank() && (it.speaker != Speaker.OTHER || it.name.isNotBlank()) }
 }
+
+/** Storage retries must preserve the edited preview; only OCR failures need another frame. */
+internal fun ImportPreview.retryNeedsCapture() = captureSession!=null && error?.startsWith("OCR_")==true
 
 /** Only RAM. No SavedStateHandle, URI grants persisted, file cache or private text preferences. */
 class ImportCoordinator(
@@ -35,7 +38,7 @@ class ImportCoordinator(
     val state = mutable.asStateFlow()
     private var job: Job? = null
     private var authority: Long? = null
-    private var selectionRevision=0L
+    @Volatile private var selectionRevision=0L
     internal fun beginSelection():SelectionAuthority? {
         val (epoch,state)=controller.importSelectionState()
         val conversation=state.conversation?.id ?: return null
@@ -54,11 +57,15 @@ class ImportCoordinator(
     } } }
     private var pendingRead: Pair<ImportPreview, () -> String>? = null
     private fun begin(source: ImportSource): ImportPreview {
-        job?.cancel(); authority = null; imageRows = emptyMap(); pendingRead = null
-        controller.setImportPending(true)
+        controller.setImportPending(true) {
+            selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null
+        }
         return ImportPreview(source = source, rightsAccepted = rightsSeen()).also { mutable.value = it }
     }
-    fun cancel() { job?.cancel(); authority = null; imageRows = emptyMap(); pendingRead = null; mutable.value = null; controller.setImportPending(false) }
+    fun cancel() { controller.setImportPending(false) {
+        selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null
+    } }
+
     fun text(text: String, source: ImportSource = ImportSource.PASTE) {
         val preview = begin(source)
         parse(preview, { text })
@@ -147,6 +154,38 @@ class ImportCoordinator(
         mutable.value = p.copy(images = uris, imageIds = ids, imageLabels=ids.withIndex().associate { it.value to it.index+1 },
             error = if(uris.size !in 1..20 || uris.any { it.scheme != "content" }) "OCR_READ" else null)
     }
+    /** Returns a scoped RAM preview; newer manual imports invalidate this owner. */
+    suspend fun beginCapture(session:Long,commit:((()->Unit)->Boolean)?=null,current:()->Boolean):String? {
+        val existing=mutable.value
+        if(existing?.captureSession==session && current()) return existing.id
+        val selection=++selectionRevision
+        val expected=controller.importAuthority
+        val switched=suspendCancellableCoroutine<Long?> { continuation ->
+            controller.captureTemporary(expected,{ continuation.isActive && current() && selectionRevision==selection && mutable.value===existing },commit ?: { action -> if(current()) { action();true } else false }) {
+                if(continuation.isActive) continuation.resume(it)
+            }
+        }
+        if(switched==null || controller.importAuthority!=switched) return null
+        if(!current() || selectionRevision!=selection || mutable.value!==existing) return null
+        val p=begin(ImportSource.SCREENSHOT).copy(captureSession=session)
+        authority=controller.importAuthority;mutable.value=p
+        return p.id
+    }
+    fun cancelCapture(session:Long) { if(mutable.value?.captureSession==session) cancel() }
+    fun captured(previewId:String,lines:List<OcrLine>):Boolean {
+        val p=mutable.value?.takeIf { it.id==previewId && it.captureSession!=null } ?: return false
+        if(controller.importAuthority!=authority || !controller.state.value.lockState.canDisplaySensitiveContent) return false
+        if(lines.isEmpty()) { mutable.value=p.copy(error="OCR_EMPTY");return true }
+        require(p.imageIds.size<20 && p.rows.size+lines.size<=MAX_IMPORT_ROWS && p.rows.sumOf { it.text.toByteArray(Charsets.UTF_8).size }+lines.sumOf { it.text.toByteArray(Charsets.UTF_8).size }<=MAX_IMPORT_BYTES)
+        require(lines.size<=MAX_IMPORT_ROWS && lines.sumOf { it.text.toByteArray(Charsets.UTF_8).size }<=MAX_IMPORT_BYTES)
+        val id=UUID.randomUUID().toString()
+        val rows=lines.mapIndexed { i,line -> ImportRow(name=line.nickname.orEmpty(),text=line.text,id="$id:$i",imageId=id,
+            side=line.side,ocrConfidence=line.confidence,excluded=OcrLayout.isUi(line)) }
+        // User scrolled upwards: newest capture precedes the previous screen.
+        imageRows=imageRows+(id to rows)
+        val next=p.copy(imageIds=listOf(id)+p.imageIds,recognized=true,mySide=null,error=if(lines.isEmpty()) "OCR_EMPTY" else null)
+        mutable.value=next.copy(rows=orderedRows(next));return true
+    }
     fun recognize() {
         val p=mutable.value?.takeIf { !it.busy && it.source==ImportSource.SCREENSHOT && it.images.isNotEmpty() } ?: return
         if(p.images.size !in 1..ScreenshotPhotoPicker.MAX_IMAGES || p.images.any { it.scheme!="content" }) return
@@ -207,6 +246,8 @@ class ImportCoordinator(
         // Retain edits by identity when the image order changes.
         val updated=next.firstOrNull { it.id==rowId } ?: return
         updated.imageId?.let { id -> imageRows=imageRows+(id to imageRows[id].orEmpty().map { if(it.id==rowId) updated.copy(excluded=updated.exclusionOverride ?: it.excluded) else it }) }
+        // A user's reversible UI review can expose a previously blocked page boundary.
+        if(p.captureSession!=null) mutable.value=p.copy(rows=orderedRows(p))
     }
     fun edit(index: Int, row: ImportRow) { mutable.value?.takeIf { !it.busy }?.let { p ->
         mutable.value = p.copy(rows = p.rows.mapIndexed { i, old -> if (i == index) row else old })

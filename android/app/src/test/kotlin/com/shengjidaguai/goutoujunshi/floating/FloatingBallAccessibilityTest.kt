@@ -15,8 +15,8 @@ class FloatingBallAccessibilityTest {
     @get:Rule val compose=createComposeRule()
     @Test fun ballAnnouncesMenuAndProvidesAccessibleClick() {
         var opened=false
-        compose.setContent { JunshiTheme { FloatingMenuBall(Side.RIGHT) { opened=true } } }
-        compose.onNodeWithContentDescription("悬浮军师，打开菜单").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        compose.setContent { JunshiTheme { FloatingMenuBall(Side.RIGHT,openMenu={ opened=true }) } }
+        compose.onNodeWithContentDescription("悬浮军师，点按截屏，长按菜单").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
         Assert.assertTrue(opened)
         compose.onNodeWithContentDescription("悬浮军师，点击分析").assertDoesNotExist()
     }
