@@ -161,6 +161,8 @@ python -B scripts/smoke_android_ocr.py --serial emulator-5580 --apk android/app/
 
 ## 剩余设备与发布门禁
 
+工程接线提交为 `cac93e8`，随后正常合并父 T43 的最终文档提交 `f9b78a6`，没有重写历史或改变运行源。51 文件提交前冻结清单 SHA-256 为 `e5da80bf6dadcac83dc3f62bed2626519f0fdfca5307b4d3a374e20f7810d2fb`；负责人逐项核对全部字节哈希和 git 改动集合相同后提交。最终 lint 为 **0 Error、36 Warning、2 Hint**；SARIF 将两类非错误合计表示为 38 条 warning level。未合并或发布草稿 PR。
+
 - 六图完整原生 UI 流程及实际分块/群聊断言已实际通过；binder death、损坏/撤权/超限图片、配置旋转与锁定/来源删除的设备专项仍须补实际证据。JVM 有 fake OCR 的取消、owner stale、重试、侧确认、群聊、重排恢复与临时不落库回归，不冒充上述设备覆盖。
 - 中端 ARM64 真机三图 <3 秒、16KB 页设备、真实 SAF/自带 Key 等仍未验证。原引擎模拟器时间不用于这些验收。
 - 当前 App 为含四 ABI 的大型 debug 包，不能当作最终发布体积。正式按 ABI 分发、OCR 运行时与模型体积须另评估。
