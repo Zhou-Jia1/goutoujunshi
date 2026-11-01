@@ -47,11 +47,15 @@ fun RelationType.group(): RelationGroup = when(this) {
     val inputRevision:Long=0, val conversationRevision:Long=0, val sourceRevision:Long=0,
     val consentVersion:Long=0, val learningAuthorized:Boolean=false)
 @Serializable data class NicknameMapping(val id:String="", val contactId:String?=null, val original:String="", val replacement:String="", val sourceRevision:Long=0)
-@Serializable data class ConsentState(val enabled:Boolean=false, val paused:Boolean=false, val consentVersion:Long=0, val policyVersion:String="1", val updatedAt:Long=0)
+@Serializable data class ConsentState(val enabled:Boolean=false, val paused:Boolean=false, val consentVersion:Long=0, val policyVersion:String="1", val updatedAt:Long=0, val declinedUntil:Long=0)
 
 @Serializable enum class MemoryScope { @SerialName("user") USER, @SerialName("object") OBJECT, @SerialName("relationship") RELATIONSHIP, @SerialName("event") EVENT, @SerialName("hypothesis") HYPOTHESIS }
 @Serializable enum class MemorySource { @SerialName("user_explicit") USER_EXPLICIT, @SerialName("user_report") USER_REPORT, @SerialName("chatlab") CHATLAB, @SerialName("tool") TOOL, @SerialName("assistant_inference") ASSISTANT_INFERENCE }
 @Serializable data class MemoryEntry(val id:String="", val contactId:String?=null, val scope:MemoryScope=MemoryScope.HYPOTHESIS, val subjectId:String="", val field:String="", val value:String="", val sourceType:MemorySource=MemorySource.ASSISTANT_INFERENCE, val sourceRef:String="", val occurredAt:String?=null, val observedAt:String="", val confidence:Confidence=Confidence.MEDIUM, val active:Boolean=true, val createdAt:Long=0, val updatedAt:Long=0)
-@Serializable data class MemoryOperation(val id:String="", val contactId:String?=null, val before:List<MemoryEntry> = emptyList(), val after:List<MemoryEntry> = emptyList(), val createdAt:Long=0, val action:String="apply")
+@Serializable data class MemoryOperation(val id:String="", val contactId:String?=null, val before:List<MemoryEntry> = emptyList(), val after:List<MemoryEntry> = emptyList(), val createdAt:Long=0, val action:String="apply", val beforeAnchors:List<MemoryAnchor> = emptyList(), val afterAnchors:List<MemoryAnchor> = emptyList(), val approval:MemoryApprovalProof? = null)
 /** Untrusted model proposal. Passing parsing is never permission to persist. */
 @Serializable data class MemoryProposal(val scope:MemoryScope=MemoryScope.HYPOTHESIS, @SerialName("subject_id") val subjectId:String="", val field:String="", val value:String="", @SerialName("source_type") val sourceType:MemorySource=MemorySource.ASSISTANT_INFERENCE, @SerialName("source_ref") val sourceRef:String="", @SerialName("occurred_at") val occurredAt:String?=null, val confidence:String="medium")
+
+@Serializable data class MemoryAnchor(val id: String, val fingerprint: String, val contentKey: String)
+
+@Serializable data class MemoryApprovalProof(val generation:Long, val consentBefore:Long, val sourceBefore:Long, val ownerRevision:Long?, val memoryBefore:Long?, val proposalHash:String)

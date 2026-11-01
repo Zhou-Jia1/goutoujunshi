@@ -80,7 +80,7 @@ fun contactTimeline(data: ContactDetails): List<ContactTimelineItem> = (
     else DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(millis))
 
 @Composable fun ContactDetailContent(state: ContactDetailState, back: () -> Unit, reload: (String) -> Unit,
-    edit: (Contact, Long) -> Unit, delete: (String) -> Unit, undo: () -> Unit, talk: (String) -> Unit) {
+    edit: (Contact, Long) -> Unit, delete: (String) -> Unit, undo: () -> Unit, talk: (String) -> Unit, memory: ((String) -> Unit)? = null) {
     val data = state.data?.takeIf { it.contact.id == state.ownerId }
     val contact = data?.contact
     // A new owner/revision discards every private editor, source selection and confirmation.
@@ -149,7 +149,7 @@ fun contactTimeline(data: ContactDetails): List<ContactTimelineItem> = (
                     BodyText(contact.notes?.takeIf { it.isNotBlank() } ?: stringResource(R.string.contact_unknown_notes))
                 }
                 3 -> {
-                    item { BodyText(stringResource(R.string.contact_memory_pending)) }
+                    item { if(memory==null) BodyText(stringResource(R.string.contact_memory_pending)) else SecondaryButton(stringResource(R.string.memory_manage),{ memory(contact.id) }) }
                     val memories = data.memories.filter { it.contactId == contact.id }
                     if (memories.isEmpty()) item { BodyText(stringResource(R.string.contact_no_memory)) }
                     memories.forEach { memory -> item {

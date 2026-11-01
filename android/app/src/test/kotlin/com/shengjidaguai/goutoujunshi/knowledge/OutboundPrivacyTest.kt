@@ -137,6 +137,67 @@ class OutboundPrivacyTest {
     @Test fun rewriteUsesActualSharedHttpGate() = verify(OutboundPurpose.REPLY_REWRITE)
     @Test fun practiceUsesActualSharedHttpGate() = verify(OutboundPurpose.PRACTICE)
 
+    @Test fun memoryReceiptMetadataStaysLocalWhileProjectedValuesUseExactSharedHttpPreview()=runBlocking {
+        val owner="fictional-a"
+        val entry=MemoryEntry("INTERNAL_MEMORY_ENTRY_T43",owner,subjectId=owner,field="pattern",value=privateText,confidence=Confidence.LOW,updatedAt=1793404800000)
+        val evicted=entry.copy(id="INTERNAL_QUOTA_ROOT_T43",value="不可外发的淘汰根原值",active=false)
+        val fingerprint=MemoryContextPolicy.entryFingerprint(entry)
+        val anchorHash=MemoryContextPolicy.entryFingerprint(evicted)
+        val snapshot=com.shengjidaguai.goutoujunshi.data.MemorySnapshot(ConsentState(enabled=true,consentVersion=7773311),
+            com.shengjidaguai.goutoujunshi.data.WriteStamp(7773311,0,1,memoryRevision=7773312),listOf(entry,evicted),
+            anchors=mapOf(evicted.id to anchorHash),verifiedInferenceIds=setOf(entry.id))
+        val context=com.shengjidaguai.goutoujunshi.counsel.MemoryPresentation.context(owner,snapshot)
+        assertTrue(context.text.contains(owner));assertTrue(context.text.contains(entry.id));assertTrue(context.text.contains("7773311"))
+        assertEquals(fingerprint,MemoryContextPolicy.dependencies(context)[entry.id])
+        val source=request().copy(actualDataContext=context)
+        for(purpose in OutboundPurpose.entries) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type","text/event-stream").setBody("data: {\"choices\":[{\"delta\":{\"content\":\"[[REPLY]]虚构回复\"}}]}\n\ndata: [DONE]\n\n"))
+            val assembler=builder()
+            val frozen=when(purpose) {
+                OutboundPurpose.ANALYSIS->OutboundRequests.analysis(source)
+                OutboundPurpose.LONG_RECORD_SUMMARY->OutboundRequests.summary(source)
+                OutboundPurpose.STYLE_DESCRIPTION->OutboundRequests.style(source)
+                OutboundPurpose.REPLY_REWRITE->OutboundRequests.rewrite(source)
+                OutboundPurpose.PRACTICE->OutboundRequests.practice(source)
+            }
+            val prepared=assembler.prepare(frozen)
+            val connection=ModelConnection(server.url("/v1/").toString(),"synthetic","Mock")
+            val preview=CompletionBody.encode(connection,prepared)
+            val engine=OutboundEngine(OpenAiCompatibleProvider(connection,assembler,CredentialSource { "sk-synthetic".toByteArray() },allowLocalhostHttpForTests=true))
+            when(purpose) {
+                OutboundPurpose.ANALYSIS->engine.analyze(source)
+                OutboundPurpose.LONG_RECORD_SUMMARY->engine.summarize(source)
+                OutboundPurpose.STYLE_DESCRIPTION->engine.describeStyle(source)
+                OutboundPurpose.REPLY_REWRITE->engine.rewrite(source)
+                OutboundPurpose.PRACTICE->engine.practice(source)
+            }.toList()
+            val body=server.takeRequest().body.readUtf8()
+            assertEquals(preview,body)
+            for(secret in listOf(phone,identity,name,fingerprint,anchorHash,owner,entry.id,evicted.id,evicted.value,"7773311","7773312")) assertFalse(secret,body.contains(secret))
+            assertTrue(prepared.user.contains("军师的猜测（不是事实）"));assertTrue(prepared.user.contains("[手机号"))
+            assertEquals(context,source.actualDataContext)
+            assertEquals(fingerprint,MemoryContextPolicy.dependencies(source.actualDataContext)[entry.id])
+        }
+        val withdrawn=com.shengjidaguai.goutoujunshi.counsel.MemoryPresentation.context(owner,snapshot.copy(consent=snapshot.consent.copy(enabled=false)))
+        assertEquals(OutboundDataContext(),withdrawn)
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type","text/event-stream").setBody("data: {\"choices\":[{\"delta\":{\"content\":\"[[REPLY]]虚构回复\"}}]}\n\ndata: [DONE]\n\n"))
+            val assembler=builder()
+            val request=source.copy(actualDataContext=withdrawn)
+            val prepared=assembler.prepare(OutboundRequests.analysis(request))
+            val connection=ModelConnection(server.url("/v1/").toString(),"synthetic","Mock")
+            OutboundEngine(OpenAiCompatibleProvider(connection,assembler,CredentialSource { "sk-synthetic".toByteArray() },allowLocalhostHttpForTests=true)).analyze(request).toList()
+            val body=server.takeRequest().body.readUtf8()
+            assertEquals(CompletionBody.encode(connection,prepared),body)
+            assertFalse(prepared.user.contains("<actual_data_context>"));assertFalse(body.contains(anchorHash));assertFalse(body.contains(fingerprint))
+        }
+        val ordinary=OutboundDataContext("普通用户值包含JSON：{\"owner\":\"文字\"}",owner)
+        assertEquals(ordinary.text,MemoryContextPolicy.outboundText(ordinary))
+        val userJson="用户自己写的JSON：{\"owner\":\"用户文字\",\"revision\":4}"
+        val nested=MemoryContextPolicy.context(owner,snapshot.consent,1,listOf(entry.copy(value=userJson)))
+        assertTrue(MemoryContextPolicy.outboundText(nested).contains(userJson))
+        assertFalse(MemoryContextPolicy.outboundText(nested).contains(entry.id))
+    }
     @Test fun generatedTokensAreNeverRecursivelyRedacted() {
         val redactor = Redactor(listOf("号", "1", "屏蔽词", company), listOf(RedactionAlias(name, "小伙伴")))
         val text = redactor.redact("$privateText 号 1 屏蔽词")

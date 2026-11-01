@@ -55,11 +55,14 @@ data class CounselState(
     val currentRequest: AnalysisRequest? = null,
     val redactionProfile: RedactionProfile = RedactionProfile(),
     val redactionError: Boolean = false,
+    val memoryContext: OutboundDataContext = OutboundDataContext(),
+    val memoryAnchors: Map<String,String> = emptyMap(),
 )
 
 /** Also used by the UI: invalid historic answers have no source-dependent actions or private modals. */
 fun CounselState.hasCurrentAnswerSource(): Boolean {
     val original = answerRequest ?: return false
+    if(!MemoryPresentation.sourcesRetained(original.actualDataContext,memoryContext,memoryAnchors)) return false
     val answerId = answer?.id ?: return false
     if (!AnswerSourcePolicy.matches(original, answerConfigRevision, conversation, currentContact?.id,
         currentContact?.sourceRevision ?: 0, draft, evidence, redactionProfile.revision, modelSettings.saved.revision)) return false
@@ -70,7 +73,7 @@ fun CounselState.hasCurrentAnswerSource(): Boolean {
 
 /** Process-local modal ownership; changing any input authority discards edits and selected source refs. */
 fun CounselState.answerModalStamp(): List<Any?> = listOf(conversation, currentContact?.id, currentContact?.sourceRevision,
-    redactionProfile.revision, draft, evidence, modelSettings.saved.revision, answer?.id, answerRequest, answerConfigRevision)
+    redactionProfile.revision, memoryContext, draft, evidence, modelSettings.saved.revision, answer?.id, answerRequest, answerConfigRevision)
 
 /** Route-owned profile state is process-local and is never an outbound model context. */
 data class ContactDetailState(val ownerId: String? = null, val loading: Boolean = false,

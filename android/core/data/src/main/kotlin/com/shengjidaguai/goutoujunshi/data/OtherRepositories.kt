@@ -59,7 +59,7 @@ class TimelineRepository(private val session: DataSession) {
         requireNotNull(conversation(contactId, run.conversationId))
         putOwned(contactId, run.requestId, OwnedRecordKind.ANALYSIS_RUN, encode(run))
     }
-    suspend fun deleteRun(contactId: String, requestId: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.ANALYSIS_RUN.name, requestId) }
+    suspend fun deleteRun(contactId: String, requestId: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.ANALYSIS_RUN.name, requestId);pruneDerivedMemories() }
     suspend fun mappings(contactId: String): List<NicknameMapping> = session.transaction { records(contactId, OwnedRecordKind.NICKNAME.name).map { decode(it.payload) } }
     suspend fun save(mapping: NicknameMapping) = session.transaction { putOwned(requireNotNull(mapping.contactId), mapping.id, OwnedRecordKind.NICKNAME, encode(mapping)) }
     suspend fun deleteMapping(contactId: String, id: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.NICKNAME.name, id) }
