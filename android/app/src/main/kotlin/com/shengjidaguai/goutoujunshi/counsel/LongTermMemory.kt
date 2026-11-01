@@ -47,7 +47,8 @@ internal class MemoryDisplayCoordinator(private val scope: CoroutineScope,
 
 object MemoryPresentation {
     fun context(owner: String?, snapshot: MemorySnapshot) = MemoryContextPolicy.context(owner,snapshot.consent,snapshot.stamp?.memoryRevision ?: 0,snapshot.outboundEntries())
-    fun sourcesRetained(original: OutboundDataContext,current: OutboundDataContext,anchors: Map<String,String> = emptyMap()) = MemoryContextPolicy.sourcesRetained(original,current,anchors)
+    fun retention(owner: String?, snapshot: MemorySnapshot) = MemoryContextPolicy.retention(owner,snapshot.consent,snapshot.outboundEntries(),snapshot.anchors)
+    fun sourcesRetained(original: OutboundDataContext,current: MemoryRetentionView) = MemoryContextPolicy.sourcesRetained(original,current)
     fun candidate(answer: StructuredAnswer, snapshot: MemorySnapshot, owner: String = ""): MemoryProposal? = answer.memoryProposals.firstOrNull {
         LongTermMemoryPolicy.worthRemembering(it) && LongTermMemoryPolicy.contentFingerprint(owner,it.value) !in snapshot.rejected &&
             snapshot.entries.none { entry -> LongTermMemoryPolicy.contentKey(entry.value)==LongTermMemoryPolicy.contentKey(it.value) }

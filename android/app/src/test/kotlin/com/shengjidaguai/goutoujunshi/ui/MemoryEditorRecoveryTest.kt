@@ -63,7 +63,7 @@ class MemoryEditorRecoveryTest(private val adding: Boolean,private val lostAckno
             compose.onNode(hasSetTextAction()).performTextReplacement(value)
             val confirm=if(adding) "由我确认并保存到本机" else "保存到本机"
             compose.onNodeWithText(confirm).performClick()
-            compose.onNode(hasSetTextAction()).assertTextContains(value)
+            compose.onNodeWithText(value).assertTextContains(value).assertIsDisplayed()
             compose.onNodeWithText("这次没有确认保存成功，输入仍保留在本次打开期间。可以重试保存或取消，不会重新调用模型。").assertIsDisplayed()
             compose.onNodeWithText(confirm).performClick()
             compose.onNode(isDialog()).assertDoesNotExist()

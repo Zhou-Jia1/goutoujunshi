@@ -25,6 +25,16 @@ class MemoryModalGateTest {
         input("旧表单回调")
         assertEquals("后来表单",later.value);assertFalse(gate.accepts(buffer.token))
     }
+    @Test fun invalidValuesDoNotFreezeAndCanBeCorrectedBeforeAnySubmission() {
+        for(invalid in listOf("虚".repeat(201),"虚构\u0001内容")) {
+            val buffer=MemoryEditorBuffer(1)
+            buffer.select(MemoryScope.USER);buffer.replace(invalid)
+            assertNull(buffer.freeze());assertNull(buffer.submitted)
+            val valid="😀".repeat(200) // code points, not UTF-16 code units
+            buffer.replace(valid)
+            assertEquals(valid,buffer.freeze()!!.value)
+        }
+    }
     @Test fun closedModalCallbacksCannotActOnAnotherDialog() {
         val gate=MemoryModalGate()
         val shown=gate.issue()

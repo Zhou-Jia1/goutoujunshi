@@ -251,6 +251,7 @@
     <string name="memory_confirm_user">由我确认并保存到本机</string>
     <string name="memory_add_disclosure">这条内容由你主动填写和确认，会标为“你说的”，只属于当前联系人。已有猜测的普通编辑不会自动升级成事实。后续分析仍按同意范围脱敏发送。</string>
     <string name="memory_saved_user">记下了（你主动确认）：%1$s</string>
+    <string name="memory_editor_invalid">请输入1–%1$d个字，移除异常控制字符后再保存。</string>
     <string name="memory_editor_retry">这次没有确认保存成功，输入仍保留在本次打开期间。可以重试保存或取消，不会重新调用模型。</string>
     <string name="memory_unverified">（来源未核验，仅供查看；可删除或标错，不发送给模型）</string>
     <string name="memory_saved_read_pending">记忆已保存，正在读取本机状态。</string>

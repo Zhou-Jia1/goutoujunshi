@@ -6,6 +6,10 @@ private data class MemoryContextRow(val id: String, val scope: MemoryScope, val 
 @kotlinx.serialization.Serializable
 private data class MemoryContextEnvelope(val owner: String, val consent: Long, val revision: Long, val rows: List<MemoryContextRow>)
 
+/** RAM-only read authority. Never serialize this full set into an outbound request or prompt. */
+data class MemoryRetentionView(val owner: String? = null, val consentVersion: Long? = null,
+    val fingerprints: Map<String,String> = emptyMap())
+
 object MemoryContextPolicy {
     private const val prefix="记忆（军师推测不是事实）\n"
     private val json=kotlinx.serialization.json.Json
@@ -21,13 +25,21 @@ object MemoryContextPolicy {
         }
         return OutboundDataContext(text,owner)
     }
-    /** Reading/copying/history depend on retained immutable entries, sending/writes on exact revision. */
-    fun sourcesRetained(original: OutboundDataContext, current: OutboundDataContext, anchors: Map<String,String> = emptyMap()): Boolean {
+    /** Full legal active set is independent of this request's bounded outbound selection. */
+    fun retention(owner: String?, consent: ConsentState, entries: List<MemoryEntry>, anchors: Map<String,String> = emptyMap()): MemoryRetentionView {
+        if(owner==null || !consent.enabled || consent.paused || consent.policyVersion!="1") return MemoryRetentionView()
+        require(owner.length<=128) { "Memory owner identifier limit" }
+        val retained=anchors.toMutableMap()
+        entries.filter { it.contactId==owner && it.active }.forEach { retained[it.id]=entryFingerprint(it) }
+        return MemoryRetentionView(owner,consent.consentVersion,java.util.Collections.unmodifiableMap(retained))
+    }
+    /** Reading/copying/history use all retained fingerprints; sending/writes keep exact context revision. */
+    fun sourcesRetained(original: OutboundDataContext, current: MemoryRetentionView): Boolean {
         if(original==OutboundDataContext()) return true
-        if(original.sourceContactId!=current.sourceContactId) return false
+        if(original.sourceContactId!=current.owner || current.owner==null) return false
         val before=decode(original) ?: return false
-        val after=decode(current) ?: return false
-        return before.owner==after.owner && before.consent==after.consent && before.rows.all { it in after.rows || anchors[it.id]==fingerprint(it) }
+        return before.owner==original.sourceContactId && before.owner==current.owner && before.consent==current.consentVersion &&
+            before.rows.all { current.fingerprints[it.id]==fingerprint(it) }
     }
     private fun decode(context: OutboundDataContext): MemoryContextEnvelope? = runCatching {
         require(context.text.startsWith(prefix))

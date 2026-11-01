@@ -56,13 +56,13 @@ data class CounselState(
     val redactionProfile: RedactionProfile = RedactionProfile(),
     val redactionError: Boolean = false,
     val memoryContext: OutboundDataContext = OutboundDataContext(),
-    val memoryAnchors: Map<String,String> = emptyMap(),
+    val memoryRetention: MemoryRetentionView = MemoryRetentionView(),
 )
 
 /** Also used by the UI: invalid historic answers have no source-dependent actions or private modals. */
 fun CounselState.hasCurrentAnswerSource(): Boolean {
     val original = answerRequest ?: return false
-    if(!MemoryPresentation.sourcesRetained(original.actualDataContext,memoryContext,memoryAnchors)) return false
+    if(!MemoryPresentation.sourcesRetained(original.actualDataContext,memoryRetention)) return false
     val answerId = answer?.id ?: return false
     if (!AnswerSourcePolicy.matches(original, answerConfigRevision, conversation, currentContact?.id,
         currentContact?.sourceRevision ?: 0, draft, evidence, redactionProfile.revision, modelSettings.saved.revision)) return false

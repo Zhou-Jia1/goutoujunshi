@@ -23,7 +23,7 @@ import org.junit.runner.RunWith
 class T43EncryptedMemoryIntegrationTest {
     private class Sandbox(base: Context): ContextWrapper(base) {
         private val nonce=UUID.randomUUID().toString().replace("-", "")
-        private val root=File(base.filesDir,"t43-memory-$nonce").apply { mkdirs() }
+        private val root=File(base.filesDir,"t43-memory-$nonce").apply { check(mkdirs() && isDirectory) { "Unable to create unique memory test sandbox" } }
         override fun getApplicationContext(): Context = this
         override fun getPackageName(): String = "${baseContext.packageName}.t43.$nonce"
         override fun getFilesDir(): File = root
@@ -49,16 +49,27 @@ class T43EncryptedMemoryIntegrationTest {
     }
 
     @Test fun alreadyConsentedAutomaticWritesHaveVerifiedReceiptsAndSourceDeletionPrunesQuotaAnchors()=runBlocking {
-        // Use only the test APK sandbox plus a unique database/files directory and Keystore alias.
-        val context=Sandbox(InstrumentationRegistry.getInstrumentation().context)
+        // Instrumentation runs under the target UID: use only a unique, checked target-private
+        // child root and nonce preference/Keystore names, never the real target store paths.
+        val context=Sandbox(InstrumentationRegistry.getInstrumentation().targetContext)
         val store=EncryptedDataStore(context)
         val temporary=TemporarySessionStore()
         val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        var primaryFailure: Throwable?=null
         try {
             assertSame(context,context.applicationContext)
             val target=InstrumentationRegistry.getInstrumentation().targetContext
             assertNotEquals(target.packageName,context.packageName)
             assertNotEquals(target.filesDir.canonicalPath,context.filesDir.canonicalPath)
+            assertTrue(context.filesDir.canonicalPath.startsWith(target.filesDir.canonicalPath+File.separator))
+            assertTrue(context.filesDir.isDirectory && context.filesDir.canWrite())
+            assertTrue(context.cacheDir.canonicalPath.startsWith(context.filesDir.canonicalPath+File.separator))
+            assertTrue(context.noBackupFilesDir.canonicalPath.startsWith(context.filesDir.canonicalPath+File.separator))
+            assertNotEquals(target.cacheDir.canonicalPath,context.cacheDir.canonicalPath)
+            assertNotEquals(target.noBackupFilesDir.canonicalPath,context.noBackupFilesDir.canonicalPath)
+            val wrapperDataStore=File(context.filesDir,"datastore/secret_wrappers.preferences_pb")
+            assertNotEquals(File(target.filesDir,"datastore/secret_wrappers.preferences_pb").canonicalPath,wrapperDataStore.canonicalPath)
+            assertTrue(wrapperDataStore.canonicalPath.startsWith(context.filesDir.canonicalPath+File.separator))
             assertNotEquals(target.getDatabasePath("junshi.db").canonicalPath,context.getDatabasePath("junshi.db").canonicalPath)
             assertTrue(context.getDatabasePath("junshi.db").canonicalPath.startsWith(context.filesDir.canonicalPath+File.separator))
             val probe="t43-isolation-probe"
@@ -69,7 +80,7 @@ class T43EncryptedMemoryIntegrationTest {
             assertNotEquals(File(target.applicationInfo.dataDir,"shared_prefs/$probe.xml").canonicalPath,context.preferenceFile(probe).canonicalPath)
             val session=store.open()
             assertTrue(context.getDatabasePath("junshi.db").isFile)
-            assertTrue(File(context.filesDir,"datastore/secret_wrappers.preferences_pb").isFile)
+            assertTrue(wrapperDataStore.isFile)
             val keys=KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             val alias="${context.packageName}.secret-wrapper.v1"
             assertNotEquals("${target.packageName}.secret-wrapper.v1",alias)
@@ -83,7 +94,7 @@ class T43EncryptedMemoryIntegrationTest {
             val provider=Provider()
             val persistence=EncryptedCounselPersistence(store,temporary)
             val assembler=FrozenPromptAssembler(object: PromptAssembler {
-                override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic system","synthetic outbound",emptyList(),"synthetic")
+                override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic system","synthetic outbound",listOf(KnowledgeReference("synthetic.md","a".repeat(64),9)),"synthetic")
             })
             val controller=CounselController(persistence,temporary,assembler,provider,scope)
             controller.initialize()
@@ -116,11 +127,22 @@ class T43EncryptedMemoryIntegrationTest {
             assertTrue(after.entries.isEmpty())
             assertTrue(after.anchors.isEmpty())
             assertTrue(repository.operations(owner).isEmpty())
+        } catch(failure: Throwable) {
+            primaryFailure=failure
+            throw failure
         } finally {
-            scope.cancel()
-            store.clearAll(temporary)
-            context.deleteSharedPreferences("t43-isolation-probe")
-            assertFalse(KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias("${context.packageName}.secret-wrapper.v1"))
+            var cleanupFailure: Throwable?=null
+            suspend fun clean(action: suspend () -> Unit) {
+                try { action() } catch(failure: Throwable) {
+                    val original=primaryFailure ?: cleanupFailure
+                    if(original!=null) original.addSuppressed(failure) else cleanupFailure=failure
+                }
+            }
+            clean { scope.cancel() }
+            clean { store.clearAll(temporary) }
+            clean { check(context.deleteSharedPreferences("t43-isolation-probe")) }
+            clean { assertFalse(KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias("${context.packageName}.secret-wrapper.v1")) }
+            cleanupFailure?.let { throw it }
         }
     }
 }

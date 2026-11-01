@@ -198,6 +198,36 @@ class OutboundPrivacyTest {
         assertTrue(MemoryContextPolicy.outboundText(nested).contains(userJson))
         assertFalse(MemoryContextPolicy.outboundText(nested).contains(entry.id))
     }
+    @Test fun fullRetentionViewAtBudgetBoundaryNeverLeaksUnselectedValuesOrFingerprintsToHttp()=runBlocking {
+        val owner="01234567-89ab-cdef-0123-456789abcdef"
+        val rows=com.shengjidaguai.goutoujunshi.counsel.budgetBoundaryEntries(owner)
+        val anchors=mapOf("LOCAL_ONLY_QUOTA_ANCHOR" to "d".repeat(64))
+        val snapshot=com.shengjidaguai.goutoujunshi.data.MemorySnapshot(ConsentState(enabled=true,consentVersion=1),
+            com.shengjidaguai.goutoujunshi.data.WriteStamp(1,0,1,memoryRevision=100),rows,anchors=anchors)
+        val view=com.shengjidaguai.goutoujunshi.counsel.MemoryPresentation.retention(owner,snapshot)
+        val context=com.shengjidaguai.goutoujunshi.counsel.MemoryPresentation.context(owner,snapshot)
+        assertEquals(rows.size+anchors.size,view.fingerprints.size)
+        assertFalse(rows.last().id in MemoryContextPolicy.dependencies(context))
+        assertTrue(rows.last().id in view.fingerprints)
+        assertTrue(context.text.codePointCount(0,context.text.length)<=3800)
+        val template=request()
+        val source=template.copy(contactId=owner,actualDataContext=context,
+            evidence=template.evidence.map { block -> block.copy(lines=block.lines.map { it.copy(contactId=owner) }) })
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type","text/event-stream").setBody("data: {\"choices\":[{\"delta\":{\"content\":\"[[REPLY]]虚构回复\"}}]}\n\ndata: [DONE]\n\n"))
+            val assembler=builder()
+            val prepared=assembler.prepare(source)
+            val connection=ModelConnection(server.url("/v1/").toString(),"synthetic","Mock")
+            val preview=CompletionBody.encode(connection,prepared)
+            OutboundEngine(OpenAiCompatibleProvider(connection,assembler,CredentialSource { "sk-synthetic".toByteArray() },allowLocalhostHttpForTests=true)).analyze(source).toList()
+            val body=server.takeRequest().body.readUtf8()
+            assertEquals(preview,body)
+            for(secret in view.fingerprints.keys+view.fingerprints.values+listOf(owner,rows.last().value,"只留本机的末条记忆","13800138000","fingerprints","consentVersion"))
+                assertFalse(secret,body.contains(secret))
+            assertTrue(prepared.user.contains("[手机号"))
+            assertEquals(context,source.actualDataContext)
+        }
+    }
     @Test fun generatedTokensAreNeverRecursivelyRedacted() {
         val redactor = Redactor(listOf("号", "1", "屏蔽词", company), listOf(RedactionAlias(name, "小伙伴")))
         val text = redactor.redact("$privateText 号 1 屏蔽词")

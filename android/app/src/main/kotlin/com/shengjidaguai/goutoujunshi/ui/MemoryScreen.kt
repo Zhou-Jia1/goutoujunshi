@@ -1,6 +1,7 @@
 package com.shengjidaguai.goutoujunshi.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -26,20 +27,26 @@ internal class MemoryModalGate {
 internal data class MemoryEditorSubmission(val value: String,val group: MemoryScope,val operation: String)
 /** One modal owns one observable RAM buffer; input callbacks never read another modal's buffer. */
 internal class MemoryEditorBuffer(val token: Long,val existing: MemoryEntry? = null) {
-    var value by mutableStateOf(existing?.value.orEmpty())
-        private set
+    val textState=TextFieldState(existing?.value.orEmpty())
+    val value: String get()=textState.text.toString()
     var group by mutableStateOf(existing?.scope)
         private set
     var submitted by mutableStateOf<MemoryEditorSubmission?>(null)
         private set
+    var invalidValue by mutableStateOf(false)
+        private set
     private val operation=java.util.UUID.randomUUID().toString()
-    fun replace(text: String) { if(submitted==null) value=text }
+    fun replace(text: String) { if(submitted==null) textState.edit { replace(0,length,text) } }
     fun select(scope: MemoryScope) { if(submitted==null) group=scope }
     fun freeze(): MemoryEditorSubmission? {
         submitted?.let { return it }
         val scope=group ?: return null
-        if(value.isBlank()) return null
-        return MemoryEditorSubmission(value,scope,operation).also { submitted=it }
+        val validated=try { MemoryPolicy.validateValue(value) } catch(_: MemoryWriteRejected) {
+            invalidValue=true
+            return null
+        }
+        invalidValue=false
+        return MemoryEditorSubmission(validated,scope,operation).also { submitted=it }
     }
 }
 private data class MemoryDanger(val token: Long,val receipt: MemoryUiReceipt,val withdraw: Boolean)
@@ -105,13 +112,14 @@ private data class MemoryDanger(val token: Long,val receipt: MemoryUiReceipt,val
             else edit(owner,existing.copy(value=submission.value),receipt,submission.operation)
         }) {
             if(state.failed) BodyText(stringResource(R.string.memory_editor_retry))
+            if(buffer.invalidValue) BodyText(stringResource(R.string.memory_editor_invalid,MemoryPolicy.MAX_VALUE_CODEPOINTS))
             if(buffer.existing==null) {
                 BodyText(stringResource(R.string.memory_add_disclosure))
                 ChoiceField(stringResource(R.string.memory_group_choose),buffer.group?.let { stringResource(memoryGroupLabel(it)) } ?: stringResource(R.string.memory_group_choose),MemoryScope.entries.map { group ->
                     stringResource(memoryGroupLabel(group)) to { if(gate.accepts(buffer.token)) buffer.select(group) }
                 })
             }
-            FormTextField(buffer.value,{ text -> if(gate.accepts(buffer.token)) buffer.replace(text) },stringResource(R.string.memory_edit))
+            ReplyEditField(buffer.textState,stringResource(R.string.memory_edit),readOnly=buffer.submitted!=null)
         }
     }
     danger?.let { shown ->

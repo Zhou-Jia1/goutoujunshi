@@ -92,16 +92,84 @@ class LongTermMemoryControllerTest {
         val noticeGate=CompletableDeferred<Unit>()
         var noticeDelayMillis=0L
         val outputs=Channel<AnalysisChunk>(Channel.UNLIMITED)
+        val requests=Channel<AnalysisRequest>(Channel.UNLIMITED)
+        private val delivered=Channel<Unit>(Channel.UNLIMITED)
         var providerCalls=0
-        val provider=object: AnalysisProvider { override val kind=kind; override fun analyze(request: AnalysisRequest)=flow { providerCalls++;for(item in outputs) emit(item) } }
+        val provider=object: AnalysisProvider { override val kind=kind; override fun analyze(request: AnalysisRequest)=flow { providerCalls++;requests.send(request);for(item in outputs) { emit(item);delivered.send(Unit) } } }
         val controller=CounselController(persistence,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
-            override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic","synthetic",emptyList(),"test")
+            override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic","synthetic",listOf(KnowledgeReference("synthetic.md","a".repeat(64),9)),"test")
         }),provider,scope,wallClockMillis={1000},memoryNoticeDelay={ noticeDelayMillis=it;noticeGate.await() })
         suspend fun complete(value: String="虚构猜测") {
             outputs.send(AnalysisChunk.Completed(StructuredAnswer(id="synthetic",reply=listOf("虚构回复"),memoryProposals=listOf(MemoryProposal(subjectId="ta",field="pattern",value=value)))))
-            yield()
+            try { withTimeout(10_000) {
+                delivered.receive() // completion has actually entered the controller's actor mailbox
+                val barrier=CompletableDeferred<Unit>()
+                @Suppress("UNCHECKED_CAST")
+                val mailbox=CounselController::class.java.getDeclaredField("mailbox").apply { isAccessible=true }.get(controller) as Channel<suspend () -> Unit>
+                mailbox.send { barrier.complete(Unit) }
+                barrier.await() // all completion work, including memory coordination, has finished
+            } } catch(timeout: TimeoutCancellationException) {
+                val current=controller.state.value
+                throw AssertionError("Completion delivery missing: providerKind=${provider.kind}, calls=$providerCalls, loading=${current.loading}, streaming=${current.streaming}, error=${current.error}, currentRequest=${current.currentRequest?.purpose}, hasOwner=${current.currentContact!=null}",timeout)
+            }
         }
         fun close()=scope.cancel()
+    }
+    @Test fun automaticAppendAtBudgetRevisionBoundaryKeepsCopyReloadRewriteFeedbackAndHistory()=runBlocking {
+        val f=Fixture()
+        try {
+            f.persistence.consent=ConsentState(enabled=true,consentVersion=1);f.persistence.revision=99
+            f.controller.initialize();f.controller.createContact("虚构预算边界",RelationType.FRIEND)
+            val owner=f.controller.state.value.currentContact!!.id
+            val rows=budgetBoundaryEntries(owner)
+            f.persistence.entries+=rows
+            f.controller.editDraft("虚构边界问题");f.controller.analyze();f.complete("合法自动新增")
+            val frozen=f.controller.state.value.answerRequest!!
+            assertEquals(3800,frozen.actualDataContext.text.codePointCount(0,frozen.actualDataContext.text.length))
+            assertEquals(11,MemoryContextPolicy.dependencies(frozen.actualDataContext).size)
+            assertEquals(100L,f.persistence.revision)
+            assertFalse(rows.last().id in MemoryContextPolicy.dependencies(f.controller.state.value.memoryContext))
+            assertTrue(f.persistence.entries.contains(rows.last()))
+            assertTrue("completed answer must remain copyable",f.controller.state.value.hasCurrentAnswerSource())
+            f.controller.selectContact(owner)
+            assertEquals(frozen.actualDataContext,f.controller.state.value.answerRequest!!.actualDataContext)
+            assertTrue("reloaded old immutable answer must remain copyable",f.controller.state.value.hasCurrentAnswerSource())
+            assertEquals(frozen.requestId,withTimeout(10_000) { f.requests.receive() }.requestId)
+            val origin=f.controller.state.value.conversation!!.id
+            f.controller.feedback(origin,"synthetic")
+            assertTrue(f.controller.state.value.feedbackSaved);assertEquals(1,f.persistence.base.feedbackPlans.size)
+            f.controller.rewrite(origin,"synthetic",Tone.NATURAL,.5f)
+            val rewrite=withTimeout(10_000) { f.requests.receive() }
+            assertEquals(2,f.providerCalls)
+            assertEquals(OutboundPurpose.REPLY_REWRITE,rewrite.purpose)
+            assertEquals(f.controller.state.value.memoryContext,rewrite.actualDataContext)
+            f.complete("rewrites never auto-save")
+            assertEquals(1,f.persistence.writes)
+            f.controller.editDraft("虚构后续边界问题");f.controller.analyze()
+            val next=withTimeout(10_000) { f.requests.receive() }
+            assertTrue(next.recentSummary.contains("历史建议"))
+            assertFalse(rows.last().id in MemoryContextPolicy.dependencies(next.actualDataContext))
+        } finally { f.close() }
+    }
+    @Test fun invalidManualValueCanBeCorrectedAndValidTwoHundredCodepointsAreNotExpandedBeforeStorage()=runBlocking {
+        val f=Fixture()
+        try {
+            f.persistence.consent=ConsentState(enabled=true,consentVersion=1)
+            f.controller.initialize();f.controller.createContact("虚构校验测试",RelationType.FRIEND)
+            val owner=f.controller.state.value.currentContact!!.id
+            f.controller.openMemory(owner)
+            val receipt=f.controller.memoryPage.value.receipt!!
+            for(invalid in listOf("虚".repeat(201),"虚构\u0001内容")) {
+                f.controller.addMemory(owner,MemoryScope.USER,invalid,receipt,"invalid-op")
+                assertEquals(0,f.persistence.manualCommits);assertTrue(f.persistence.entries.isEmpty())
+                assertFalse(f.controller.memoryPage.value.pendingOperation)
+            }
+            val valid="虚".repeat(189)+"13800138000"
+            assertEquals(200,valid.codePointCount(0,valid.length))
+            f.controller.addMemory(owner,MemoryScope.USER,valid,receipt,"corrected-op")
+            assertEquals(valid,f.persistence.entries.single().value)
+            assertEquals(1,f.persistence.manualCommits);assertEquals(0,f.providerCalls)
+        } finally { f.close() }
     }
     @Test fun consentAppearsOnlyAfterValidFormalLiveCompletionAndDeclineSuppressesThirtyDays()=runBlocking {
         val f=Fixture()

@@ -211,7 +211,7 @@ class CounselController(
         }
         if(epoch.get()==authorityToken && state.value.currentContact?.id==owner) {
             mutableMemory.value=displayed(memory.value.copy(ownerId=owner,snapshot=snapshot,failed=false,loading=false,pendingOperation=false),"inline")
-            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,snapshot),memoryAnchors=snapshot.anchors))
+            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,snapshot),memoryRetention=MemoryPresentation.retention(owner,snapshot)))
         }
     }
     private fun memoryFailed(owner: String?, operation: String) {
@@ -264,7 +264,7 @@ class CounselController(
                         if(live!=null && live.consent.enabled && epoch.get()==submitted && currentDisplay(receipt)) {
                             pendingMemory=null;pendingMemoryStamp=null
                             mutableMemory.value=displayed(MemoryUiState(owner,live),"inline")
-                            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,live),memoryAnchors=live.anchors))
+                            set(state.value.copy(memoryContext=MemoryPresentation.context(owner,live),memoryRetention=MemoryPresentation.retention(owner,live)))
                         }
                     }
                 }
@@ -706,7 +706,7 @@ class CounselController(
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val profile = persistence.redactionProfile(contact.id)
-        val completedCurrentAnswer = (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,memoryContext,memorySnapshot.anchors)) && AnswerSourcePolicy.matches(answerRequest,
+        val completedCurrentAnswer = (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) && AnswerSourcePolicy.matches(answerRequest,
             saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
             saved.conversation, contact.id, contact.sourceRevision, saved.draft, saved.evidence, profile.revision, settings.saved.revision)
         val resumable = saved.runs.sortedBy { if (it.requestId == latestUser?.requestId) 1 else 0 }.lastOrNull { run ->
@@ -736,7 +736,7 @@ class CounselController(
             ledger = AnalysisLedger(runs = saved.runs.map { if (it.requestId == resumable?.requestId) resumable else it }, messages = saved.messages)
             mutableMemory.value=displayed(MemoryUiState(contact.id,memorySnapshot),"inline")
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
-                conversation = saved.conversation, draft = saved.draft, memoryContext=memoryContext,memoryAnchors=memorySnapshot.anchors,
+                conversation = saved.conversation, draft = saved.draft, memoryContext=memoryContext,memoryRetention=MemoryPresentation.retention(contact.id,memorySnapshot),
                 relationType = answerRequest?.manualRelation ?: answer?.scene?.relationType ?: contact.relationType,
                 goal = answerRequest?.manualGoal ?: answer?.scene?.goal ?: Goal.REPLY,
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
@@ -878,7 +878,7 @@ class CounselController(
         val pieces = ledger.messages.filter { it.role == MessageRole.ASSISTANT && it.status == MessageStatus.COMPLETED && it.contactId == current.currentContact?.id }.mapNotNull { message ->
             val run = ledger.runs.firstOrNull { it.requestId == message.requestId } ?: return@mapNotNull null
             val original = run.requestSnapshot ?: return@mapNotNull null
-            if (!MemoryPresentation.sourcesRetained(original.actualDataContext,current.memoryContext,current.memoryAnchors) || original.purpose != OutboundPurpose.ANALYSIS || !ContinuousAnalysis.sourcesRetained(original, current.currentContact?.id, current.evidence) || original.redactionProfile.revision != current.redactionProfile.revision || run.configRevision != settings.saved.revision) return@mapNotNull null
+            if (!MemoryPresentation.sourcesRetained(original.actualDataContext,current.memoryRetention) || original.purpose != OutboundPurpose.ANALYSIS || !ContinuousAnalysis.sourcesRetained(original, current.currentContact?.id, current.evidence) || original.redactionProfile.revision != current.redactionProfile.revision || run.configRevision != settings.saved.revision) return@mapNotNull null
             val answer = runCatching { json.decodeFromString(StructuredAnswer.serializer(), message.answerJson ?: "") }.getOrNull() ?: return@mapNotNull null
             val choice = plans.lastOrNull { it.sourceRequestId == message.requestId && it.sourceAnswerId == message.id }?.let { "${it.status}:${ContinuousAnalysis.historyExcerpt(it.chosenReply, 80)}" } ?: "未记录选择"
             ContinuousAnalysis.scopeHistoricalTokens("历史建议（${if (message.providerKind == ProviderKind.DEMO) "虚构演示" else "模型分析，非聊天事实"}） VERDICT=${ContinuousAnalysis.historyExcerpt(answer.verdict, 100)} NEXT=${ContinuousAnalysis.historyExcerpt(answer.next, 100)} 用户选择=$choice", "历史${message.requestId.hashCode().toUInt().toString(16)}")
@@ -909,7 +909,7 @@ class CounselController(
         val memorySnapshot=persistence.memorySnapshot(current.currentContact?.id)
         val context=MemoryPresentation.context(current.currentContact?.id,memorySnapshot)
         mutableMemory.value=displayed(memory.value.copy(ownerId=current.currentContact?.id,snapshot=memorySnapshot),"inline")
-        set(state.value.copy(memoryContext=context,memoryAnchors=memorySnapshot.anchors))
+        set(state.value.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot)))
         return AnalysisRequest(requestId = UUID.randomUUID().toString(), inputRevision = inputRevision,
             contactId = current.currentContact?.id,
             relationType = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).relationType,
@@ -919,7 +919,7 @@ class CounselController(
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
             redactionProfile = current.redactionProfile,
-            actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryAnchors=memorySnapshot.anchors)), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
+            actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
     private fun ordinaryAllowed() = pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
     private suspend fun answerSourceCurrent(): Boolean {
@@ -941,7 +941,7 @@ class CounselController(
             contact?.sourceRevision ?: 0, current.draft, current.evidence, current.redactionProfile.revision, settings.saved.revision)) return false
         if (stored == null) return true
         val memorySnapshot=persistence.memorySnapshot(contact!!.id)
-        if(!MemoryPresentation.sourcesRetained(original.actualDataContext,MemoryPresentation.context(contact.id,memorySnapshot),memorySnapshot.anchors)) return false
+        if(!MemoryPresentation.sourcesRetained(original.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) return false
         return stored.messages.any { it.id == source.id && it.answerJson == source.answerJson } &&
             stored.conversation == current.conversation && stored.draft == current.draft && stored.evidence == current.evidence &&
             persistence.redactionProfile(contact!!.id).revision == original.redactionProfile.revision
