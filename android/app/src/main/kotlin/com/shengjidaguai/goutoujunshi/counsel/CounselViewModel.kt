@@ -18,7 +18,8 @@ private object CounselRuntime {
     @Synchronized fun imports(application: Application): ImportCoordinator = importer ?: ImportCoordinator(get(application),
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         { application.getSharedPreferences("import-notice", 0).getBoolean("accepted", false) },
-        { application.getSharedPreferences("import-notice", 0).edit().putBoolean("accepted", true).apply() }
+        { application.getSharedPreferences("import-notice", 0).edit().putBoolean("accepted", true).apply() },
+        com.shengjidaguai.goutoujunshi.data.ocr.PaddleImageReader(application)::read
     ).also { importer = it }
     @Volatile private var controller: CounselController? = null
     fun get(application: Application): CounselController = controller ?: synchronized(this) {
@@ -39,9 +40,9 @@ private object CounselRuntime {
     }
 }
 
-class CounselViewModel(application: Application) : AndroidViewModel(application) {
-    private val controller = CounselRuntime.get(application)
-    val imports = CounselRuntime.imports(application)
+class CounselViewModel internal constructor(application: Application, private val controller: CounselController, val imports: ImportCoordinator) : AndroidViewModel(application) {
+    constructor(application: Application):this(application,CounselRuntime.get(application),CounselRuntime.imports(application))
+    private val pickerSelection=ImportSelectionSession(imports)
     val state = controller.state
     val memory = controller.memory
     val memoryPage = controller.memoryPage
@@ -62,7 +63,10 @@ class CounselViewModel(application: Application) : AndroidViewModel(application)
     fun editContact(next: Contact, expected: Long) = controller.editContact(next, expected)
     fun undoContactEdit() = controller.undoContactEdit()
     fun receiveShare(intent: Intent) = imports.receive(intent, getApplication<Application>().contentResolver)
-    fun importFile(uri: Uri) = imports.file(getApplication<Application>().contentResolver, uri)
+    fun launchImagePicker(launch:()->Unit)=pickerSelection.launch(PickerKind.IMAGE,launch)
+    fun launchFilePicker(launch:()->Unit)=pickerSelection.launch(PickerKind.FILE,launch)
+    fun importImages(uris: List<Uri>) { if(pickerSelection.consume(PickerKind.IMAGE) && uris.isNotEmpty()) imports.images(uris) }
+    fun importFile(uri: Uri?) { if(pickerSelection.consume(PickerKind.FILE) && uri!=null) imports.file(getApplication<Application>().contentResolver,uri) }
     fun importPaste(text: String) = imports.text(text)
     init { initialize() }
     fun initialize() = controller.initialize()

@@ -4,6 +4,9 @@ import android.os.Bundle
 import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.shengjidaguai.goutoujunshi.importing.ScreenshotPhotoPicker
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.padding
@@ -46,6 +49,9 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
     val nav = rememberNavController()
     val current by nav.currentBackStackEntryAsState()
     val destinations = listOf("counsel" to R.string.nav_counsel, "contacts" to R.string.nav_contacts, "me" to R.string.nav_me)
+    // Fixed registrations outlive import overlays and route changes. Each VM owns one in-flight slot.
+    val images=rememberLauncherForActivityResult(ScreenshotPhotoPicker.contract()) { viewModel.importImages(it) }
+    val files=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { viewModel.importFile(it) }
     val pendingImport by viewModel.imports.state.collectAsStateWithLifecycle()
     if (pendingImport != null) { ImportOverlay(viewModel); return }
     Scaffold(bottomBar = {
@@ -62,7 +68,9 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
         }
     }) { padding ->
         NavHost(nav, startDestination = "counsel", modifier = androidx.compose.ui.Modifier.padding(padding)) {
-            composable("counsel") { CounselScreen(viewModel) { nav.navigate("me") { launchSingleTop = true } } }
+            composable("counsel") { CounselScreen(viewModel,
+                pickImages={ viewModel.launchImagePicker { images.launch(ScreenshotPhotoPicker.request()) } },
+                pickFile={ viewModel.launchFilePicker { files.launch(arrayOf("text/plain","application/json")) } }) { nav.navigate("me") { launchSingleTop = true } } }
             composable("contacts") { ContactsScreen(viewModel) { nav.navigate("counsel") { launchSingleTop = true } } }
             composable("me") { SettingsScreen(viewModel) }
         }

@@ -22,6 +22,7 @@ android {
         debug { applicationIdSuffix = ".debug" }
         release { isMinifyEnabled = true; isShrinkResources = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") }
     }
+    sourceSets.getByName("debug").assets.srcDir("src/androidTest/assets")
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     testOptions { unitTests.isIncludeAndroidResources = true }
@@ -58,6 +59,8 @@ dependencies {
     testImplementation(libs.roborazzi.compose)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockwebserver)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.test)
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.test.runner)
     androidTestImplementation(libs.test.junit)

@@ -1,7 +1,5 @@
 package com.shengjidaguai.goutoujunshi.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -61,6 +59,7 @@ data class CounselUiActions(
     val clearAll: () -> Unit = {},
     val openSettings: () -> Unit = {},
     val importFile: () -> Unit = {},
+    val importImages: () -> Unit = {},
     val saveRedactionProfile: (String, List<String>, List<RedactionAlias>) -> Unit = { _, _, _ -> },
 )
 
@@ -85,12 +84,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     }
 }
 
-@Composable fun CounselScreen(viewModel: CounselViewModel, openSettings: () -> Unit = {}) {
+@Composable fun CounselScreen(viewModel: CounselViewModel, pickImages:()->Unit = {}, pickFile:()->Unit = {}, openSettings: () -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val importing by viewModel.imports.state.collectAsStateWithLifecycle()
     val memory by viewModel.memory.collectAsStateWithLifecycle()
     val shownMemory=memory
-    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importFile) }
     CounselContent(state, CounselUiActions(
         rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
         initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = { text, _ -> viewModel.importPaste(text) },
@@ -100,7 +98,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         analyze = viewModel::analyze, retry = viewModel::retry, stop = viewModel::stop,
         newTemporary = viewModel::newTemporary, clearAll = viewModel::clearAll,
         openSettings = openSettings,
-        importFile = { files.launch(arrayOf("text/plain", "application/json")) },
+        importImages = pickImages,
+        importFile = pickFile,
         saveRedactionProfile = viewModel::saveRedactionProfile,
     ), importing != null, memoryPaused=memory.consent.paused, resumeMemory={ shownMemory.receipt?.let { viewModel.setMemoryEnabled(true,false,it) } }) {
         MemoryInline(shownMemory.copy(snapshot=shownMemory.snapshot.copy(consent=shownMemory.consent.copy(paused=false))),viewModel::acceptMemory,viewModel::declineMemory,{ receipt -> viewModel.setMemoryEnabled(true,false,receipt) }, {
@@ -193,7 +192,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         item { BodyText(stringResource(if (state.demo) R.string.demo_explanation else R.string.live_explanation), secondary = true) }
         if (state.loading) item { ThinkingIndicator(ThinkingStage.LISTENING, false) }
         item {
-            UploadHeroButton({ note = R.string.import_ocr_pending }, actions.importFile, ::paste)
+            UploadHeroButton(actions.importImages, actions.importFile, ::paste)
         }
         item {
             Row(Modifier.horizontalScroll(rememberScrollState()).testTag("quick-scenes"),
@@ -289,7 +288,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         item {
             Box(Modifier.testTag("counsel-composer")) {
                 Composer(editor.text, ::editDraft, if (state.evidence.isEmpty()) emptyList() else listOf(AttachmentModel("imports", stringResource(R.string.import_ready, state.evidence.sumOf { it.lines.size }))), state.emotion, actions.setEmotion, state.streaming,
-                    { source -> if (source == AttachSource.PASTE) paste() else actions.importFile() },
+                    { source -> when(source) { AttachSource.PASTE -> paste(); AttachSource.SCREENSHOT -> actions.importImages(); AttachSource.FILE -> actions.importFile() } },
                     { if (canAnalyze && origin != null) { flushDisplayedDraft(); if (!state.demo) { actions.preparePreview(origin); previewOpen = true } else actions.analyze(origin) } }, actions.stop)
             }
         }

@@ -130,7 +130,7 @@ class ImportCoordinatorTest {
             assertEquals(2, importer.state.value!!.rows.size); assertFalse(importer.state.value!!.canConfirm)
             importer.receive(Intent(Intent.ACTION_SEND_MULTIPLE).setType("image/png")
                 .putParcelableArrayListExtra(Intent.EXTRA_STREAM, arrayListOf(Uri.parse("content://synthetic/1"), Uri.parse("content://synthetic/2"))))
-            assertEquals("OCR_PENDING", importer.state.value!!.error)
+            assertNull(importer.state.value!!.error)
             assertEquals(2, importer.state.value!!.images.size); assertTrue(importer.state.value!!.rows.isEmpty())
             assertFalse(importer.state.value!!.canConfirm)
         } finally { importer.cancel(); f.close() }

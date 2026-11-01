@@ -17,6 +17,8 @@ import com.shengjidaguai.goutoujunshi.data.*
 import com.shengjidaguai.goutoujunshi.designsystem.*
 import com.shengjidaguai.goutoujunshi.domain.*
 import org.junit.Rule
+import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.ParameterizedRobolectricTestRunner
@@ -28,6 +30,14 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class T43MemoryScreenshotTest(private val page: String,private val mode: String) {
     @get:Rule val compose=createComposeRule()
+    private lateinit var originalTimeZone:java.util.TimeZone
+    @Before fun pinReferenceTimeZone() {
+        originalTimeZone=java.util.TimeZone.getDefault()
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/Los_Angeles"))
+    }
+    @After fun restoreTimeZone() {
+        if(::originalTimeZone.isInitialized) java.util.TimeZone.setDefault(originalTimeZone)
+    }
     @Test fun memoryPages() {
         val entry=MemoryEntry("fictional-memory","a",subjectId="a",field="节奏",value="虚构小北可能最近周末忙",createdAt=1793404800000,updatedAt=1793404800000)
         val initial=MemoryUiState("a",MemorySnapshot(ConsentState(enabled=true),WriteStamp(1,0,1,0,1),listOf(entry),"operation",verifiedInferenceIds=setOf(entry.id)),totalMemories=1)

@@ -510,6 +510,8 @@ class CounselController(
 
     private val mailbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
     private val epoch = AtomicLong()
+    val importAuthority: Long get() = epoch.get()
+    internal fun importSelectionState() = synchronized(intentLock) { epoch.get() to state.value }
     private val intentLock = Any()
     @Volatile private var importPending = false
     fun setImportPending(value: Boolean) { synchronized(intentLock) {
@@ -1337,7 +1339,7 @@ class CounselController(
                 val hash = ChatImportParser.hash(preview.rows)
                 val imported = ChatImport(id, contact?.id, preview.source, hash, System.currentTimeMillis())
                 val lines = preview.rows.mapIndexed { i, row -> ChatLine("$id:$i", id, i,
-                    checkNotNull(row.speaker), row.text, row.sentAt, speakerConfirmed = true,
+                    checkNotNull(row.speaker), row.text, row.sentAt, ocrConfidence = row.ocrConfidence, speakerConfirmed = true,
                     contactId = contact?.id, speakerName = row.name.ifBlank { null }) }
                 if (contact != null) {
                     if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
