@@ -17,7 +17,7 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 internal val dataJson = Json { encodeDefaults = true; ignoreUnknownKeys = true }
 internal inline fun <reified T> encode(value: T): String = dataJson.encodeToString(value)
 internal inline fun <reified T> decode(value: String): T = dataJson.decodeFromString(value)
-data class WriteStamp(val consentVersion: Long, val sourceRevision: Long, val generation: Long, val contactRevision: Long? = null)
+data class WriteStamp(val consentVersion: Long, val sourceRevision: Long, val generation: Long, val contactRevision: Long? = null, val memoryRevision: Long? = null)
 
 class DataSession internal constructor(internal val database: JunshiDatabase, val generation: Long, internal val ownedFileRoot: File? = null) {
     internal val gate = Mutex()
@@ -29,7 +29,7 @@ class DataSession internal constructor(internal val database: JunshiDatabase, va
     }
     suspend fun stamp(contactId: String? = null): WriteStamp = transaction {
         val contact = contactId?.let { requireContact(it) }
-        WriteStamp(currentConsent().consentVersion, metadata()?.styleRevision ?: 0, generation, contact?.revision)
+        WriteStamp(currentConsent().consentVersion, metadata()?.styleRevision ?: 0, generation, contact?.revision, contactId?.let { memoryRevision(it) })
     }
     internal fun checkGeneration(stamp: WriteStamp) {
         check(active && stamp.generation == generation) { "Stale database generation" }
@@ -133,3 +133,5 @@ class EncryptedDataStore(context: Context) {
         failures
     }
 }
+
+internal suspend fun JunshiDao.memoryRevision(owner: String): Long = records(owner, OwnedRecordKind.MEMORY_STATE.name).singleOrNull()?.let { decode<Long>(it.payload) } ?: 0

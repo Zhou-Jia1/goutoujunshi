@@ -58,5 +58,9 @@ dependencies {
     testImplementation(libs.roborazzi.compose)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockwebserver)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.test.runner)
+    androidTestImplementation(libs.test.junit)
+    androidTestImplementation(libs.test.core)
     debugImplementation(libs.compose.test.manifest)
 }

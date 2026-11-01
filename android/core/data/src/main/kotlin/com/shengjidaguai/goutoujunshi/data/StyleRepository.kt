@@ -69,6 +69,7 @@ class StyleRepository(private val session: DataSession) {
 
 /** Called only inside the mutation transaction. Clear generated descriptions before recomputing. */
 internal suspend fun JunshiDao.invalidateAndRecompute() {
+    pruneDerivedMemories()
     val revision = (metadata()?.styleRevision ?: 0) + 1
     put(MetadataRow(styleRevision = revision))
     clearProfiles()

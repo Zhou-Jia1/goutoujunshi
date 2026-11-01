@@ -38,7 +38,7 @@ object MemoryPolicy {
         val normalized = entry.copy(
             subjectId = validateText(entry.subjectId,64),
             field = validateText(entry.field,64),
-            value = validateText(entry.value,MAX_VALUE_CODEPOINTS),
+            value = validateValue(entry.value),
             sourceRef = validateText(entry.sourceRef,200,false),
             occurredAt = entry.occurredAt?.let(::stripWhitespace)?.takeIf { it.isNotEmpty() },
         )
@@ -53,6 +53,8 @@ object MemoryPolicy {
         validateDate(normalized.occurredAt)
         return normalized
     }
+    /** Shared pre-submit and transaction rule; validation never freezes a UI operation. */
+    fun validateValue(value: String): String = validateText(value,MAX_VALUE_CODEPOINTS)
     /** Match Python str.strip, including NEL. Removed boundary whitespace is never persisted. */
     private fun stripWhitespace(value: String): String = value.trim { it.isWhitespace() || it == '\u0085' }
 

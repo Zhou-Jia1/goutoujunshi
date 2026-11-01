@@ -58,3 +58,14 @@ python scripts/smoke_android_import.py --adb 'D:\tools\android-sdk\platform-tool
 ```powershell
 python scripts/smoke_android_model_settings.py --adb 'D:\tools\android-sdk\platform-tools\adb.exe' --aapt2 'D:\tools\android-sdk\build-tools\37.0.0\aapt2.exe' --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+
+## 低内存分模块验证（可选）
+
+从 `android/` 执行下例；Windows 将 `./gradlew` 换为 `./gradlew.bat`。可选 init profile 仅限制 Test JVM 为 256m / 单 fork，不更改断言、生产配置或系统设置。
+
+```sh
+./gradlew :core:domain:test :core:data:compileDebugKotlin --no-daemon --max-workers=1 --no-parallel --init-script low-memory.init.gradle -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx384m -Dfile.encoding=UTF-8' --console=plain
+```
+
+使用 [Kotlin 官方进程内策略](https://kotlinlang.org/docs/compiler-execution-strategy.html) 降低多 JVM 峰值。临时目录仍由本次进程的 TEMP/TMP 与 java.io.tmpdir 指定，宜指向空间充足的位置；不会代替系统盘空间维护。当前实际已通过该 profile 的 domain 36 测试、Data 编译与长期记忆 15 项专项测试；App 最终编译、完整回归、截图、lint 与设备测试须分别执行，不能以这些局部结果替代。资源不足或未执行必须明确标记，不忽略失败或重录旧截图使其变绿。

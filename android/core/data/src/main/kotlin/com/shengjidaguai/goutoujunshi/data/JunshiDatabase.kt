@@ -8,6 +8,7 @@ interface JunshiDao {
     @Query("SELECT contactId FROM messages WHERE id=:id") suspend fun ownerOfMessage(id: String): String?
     @Query("SELECT contactId FROM imports WHERE id=:id") suspend fun ownerOfImport(id: String): String?
     @Query("SELECT contactId FROM chat_lines WHERE id=:id") suspend fun ownerOfLine(id: String): String?
+    @Query("SELECT contactId FROM memory_operations WHERE id=:id") suspend fun ownerOfMemoryOperation(id: String): String?
     @Query("SELECT contactId FROM memories WHERE id=:id") suspend fun ownerOfMemory(id: String): String?
     @Query("SELECT contactId FROM owned_records WHERE id=:id") suspend fun ownerOfRecord(id: String): String?
     @Query("SELECT * FROM contacts ORDER BY id") suspend fun contacts(): List<ContactRow>
@@ -49,6 +50,8 @@ interface JunshiDao {
     @Query("DELETE FROM memory_operations") suspend fun clearAllOperations()
     @Query("SELECT * FROM owned_records WHERE contactId=:contactId AND kind=:kind ORDER BY id") suspend fun records(contactId: String, kind: String): List<OwnedRecordRow>
     @Query("SELECT * FROM owned_records WHERE contactId=:contactId AND kind=:kind AND id=(:kind || ':' || :id)") suspend fun record(contactId: String, kind: String, id: String): OwnedRecordRow?
+    @Query("DELETE FROM owned_records WHERE kind='MEMORY_ANCHOR'") suspend fun clearMemoryAnchors()
+    @Query("DELETE FROM owned_records WHERE kind='MEMORY_SOURCE'") suspend fun clearMemorySources()
     @Query("DELETE FROM owned_records WHERE kind='SUMMARY'") suspend fun clearSummaries()
     @Query("DELETE FROM owned_records WHERE contactId=:contactId AND kind='SUMMARY'") suspend fun clearSummaries(contactId: String)
     @Upsert suspend fun put(row: OwnedRecordRow)

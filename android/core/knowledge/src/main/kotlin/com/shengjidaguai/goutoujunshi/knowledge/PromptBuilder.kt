@@ -57,11 +57,12 @@ class PromptBuilder(
             })
         }
         val group = type.group()
+        val selectedData=MemoryContextPolicy.outboundText(request.actualDataContext)
         val redactor = Redactor((request.redactionTerms + request.redactionProfile.terms).distinct(), request.redactionProfile.aliases)
         val user = buildString {
             appendLine("关系=${type.name}；目标=${goal.name}；情绪=${request.emotionLevel ?: "未知"}；formality=${request.formality}；styleBias=${request.styleBias}；tone=${request.tone?.name ?: "NATURAL"}")
             appendLine("<user_request>${escape(redactor.redact(request.userText))}</user_request>")
-            if (request.actualDataContext.text.isNotBlank()) appendLine("<actual_data_context>${escape(redactor.redact(request.actualDataContext.text))}</actual_data_context>")
+            if (selectedData.isNotBlank()) appendLine("<actual_data_context>${escape(redactor.redact(selectedData))}</actual_data_context>")
             appendLine("<style>${escape(redactor.redact(request.styleContext).limitCodePoints(600))}</style>")
             request.styleSamples.filter { it.relationGroup == group || it.relationGroup == RelationGroup.DEFAULT }.take(5).forEach {
                 appendLine("<style_sample>${escape(redactor.redact(it.text).limitCodePoints(200))}</style_sample>")
