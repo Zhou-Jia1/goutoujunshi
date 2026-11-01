@@ -5,6 +5,8 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+data class ContactEditReceipt(val before: Contact, val after: Contact)
+
 class ContactRepository(private val session: DataSession) {
     suspend fun list(): List<Contact> = session.transaction { contacts().map { decode(it.payload) } }
     suspend fun get(contactId: String): Contact? = session.transaction { contact(contactId)?.let { decode(it.payload) } }
@@ -15,6 +17,19 @@ class ContactRepository(private val session: DataSession) {
         put(ContactRow(contact.id, revision, encode(contact.copy(sourceRevision = revision))))
         if (previous != null) invalidateAndRecompute()
     }
+    /** CAS edits cannot recreate a deleted owner. Undo also requires the receipt's current revision. */
+    suspend fun update(next: Contact, expectedSource: Long): ContactEditReceipt = session.transaction {
+        require(next.alias.isNotBlank() && next.alias.length <= 80 && (next.notes?.length ?: 0) <= 4000)
+        val previous = requireContact(next.id)
+        check(previous.revision == expectedSource) { "Contact source changed" }
+        val before: Contact = decode(previous.payload)
+        val after = next.copy(alias = next.alias.trim(), createdAt = before.createdAt, sourceRevision = expectedSource + 1)
+        put(ContactRow(next.id, after.sourceRevision, encode(after)))
+        invalidateAndRecompute()
+        ContactEditReceipt(before, after)
+    }
+    suspend fun undo(receipt: ContactEditReceipt): Contact = update(receipt.before, receipt.after.sourceRevision).after
+
     suspend fun delete(contactId: String): List<String> {
         session.transaction {
             files(contactId).forEach { put(PendingFileCleanupRow(it.path)) }
@@ -40,10 +55,14 @@ class ConversationRepository(private val session: DataSession) {
         require(message.id.isNotBlank())
         require(ownerOfMessage(message.id).let { it == null || it == contactId })
         requireNotNull(conversation(contactId, message.conversationId))
-        message(contactId, message.id)?.let {
-            if (it.payload != encode(message)) { deleteAnswerSamples(message.id); invalidateAndRecompute() }
+        val previous = message(contactId, message.id)
+        // A source timestamp is immutable after first insertion. Never replace an older
+        // stored time (including legacy unknown=0) with a retry or current wall-clock value.
+        val retained = previous?.let { message.copy(createdAt = decode<Message>(it.payload).createdAt) } ?: message
+        previous?.let {
+            if (it.payload != encode(retained)) { deleteAnswerSamples(message.id); invalidateAndRecompute() }
         }
-        put(MessageRow(message.id, contactId, message.conversationId, encode(message)))
+        put(MessageRow(message.id, contactId, message.conversationId, encode(retained)))
     }
     suspend fun messages(contactId: String, conversationId: String): List<Message> = session.transaction {
         messages(contactId, conversationId).map { decode(it.payload) }

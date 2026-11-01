@@ -25,7 +25,7 @@ import com.shengjidaguai.goutoujunshi.importing.*
             verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
             JunshiTopBar(stringResource(R.string.import_title), viewModel.imports::cancel)
             Box(Modifier.weight(1f)) {
-                ImportContent(p, counsel.contacts, viewModel.imports::edit, viewModel.imports::target,
+                ImportContent(p, counsel.contacts.filter { it.archivedAt == null }, viewModel.imports::edit, viewModel.imports::target,
                     viewModel.imports::acceptRights, viewModel.imports::confirm, viewModel.imports::retry)
             }
             SecondaryButton(stringResource(R.string.close), viewModel.imports::cancel)
