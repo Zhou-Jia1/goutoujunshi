@@ -39,6 +39,65 @@ import org.robolectric.annotation.GraphicsMode
 @Config(application = Application::class, sdk = [35], qualifiers = "zh-rCN-w411dp-h891dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AppCounselBehaviorTest {
+    @Test fun crisisHidesMalformedOrdinaryContentInCompletedAndStoppedStreamsAndLockHidesEverything() {
+        val ordinary = "虚构普通策略必须隐藏"
+        val state = mutableStateOf(syntheticCounselState("empty").copy(answer = StructuredAnswer(
+            safety = com.shengjidaguai.goutoujunshi.domain.SafetyLevel.CRISIS,
+            reply = listOf(ordinary), verdict = ordinary, why = listOf(ordinary),
+            freeText = ordinary, rawText = ordinary, formatDisordered = true)))
+        compose.setContent { JunshiTheme { Surface(Modifier.fillMaxSize()) { CounselContent(state.value, CounselUiActions()) } } }
+        compose.onNodeWithTag("counsel-list").performScrollToNode(hasTestTag("counsel-safety"))
+        compose.onAllNodesWithText(ordinary, substring = true).assertCountEquals(0)
+        compose.onNodeWithTag("counsel-answer").assertDoesNotExist()
+        compose.runOnIdle { state.value = state.value.copy(answer = null, partial = mapOf(
+            com.shengjidaguai.goutoujunshi.domain.SectionId.SAFETY to "CRISIS",
+            com.shengjidaguai.goutoujunshi.domain.SectionId.REPLY to ordinary,
+            com.shengjidaguai.goutoujunshi.domain.SectionId.FREE_TEXT to ordinary)) }
+        compose.onNodeWithTag("counsel-safety").assertIsDisplayed()
+        compose.onAllNodesWithText(ordinary, substring = true).assertCountEquals(0)
+        compose.runOnIdle { state.value = state.value.copy(safety = com.shengjidaguai.goutoujunshi.domain.SafetyLevel.CRISIS,
+            error = com.shengjidaguai.goutoujunshi.counsel.CounselError("STORAGE_UNAVAILABLE", true),
+            partial = mapOf(com.shengjidaguai.goutoujunshi.domain.SectionId.REPLY to ordinary)) }
+        compose.onNodeWithTag("counsel-safety").assertIsDisplayed()
+        compose.onNodeWithTag("counsel-answer").assertDoesNotExist()
+        compose.onAllNodesWithText(ordinary, substring = true).assertCountEquals(0)
+        compose.runOnIdle { state.value = state.value.copy(draft = ordinary,
+            lockState = com.shengjidaguai.goutoujunshi.domain.LockState(enabled = true)) }
+        compose.onNodeWithText(text(R.string.counsel_locked)).assertIsDisplayed()
+        compose.onAllNodesWithText(ordinary, substring = true).assertCountEquals(0)
+        compose.onNodeWithTag("counsel-list").assertDoesNotExist()
+    }
+    @Test fun balanceErrorOpensSettingsAndMissingReplyStillDisplaysWholeHumanText() {
+        val state = mutableStateOf(syntheticCounselState("empty").copy(
+            error = com.shengjidaguai.goutoujunshi.counsel.CounselError("INSUFFICIENT_BALANCE")))
+        var opens = 0
+        compose.setContent { JunshiTheme { Surface(Modifier.fillMaxSize()) {
+            CounselContent(state.value, CounselUiActions(openSettings = { opens++ }))
+        } } }
+        compose.onNodeWithTag("counsel-list").performScrollToNode(hasText(text(DsR.string.ds_settings)))
+        compose.onNodeWithText(text(DsR.string.ds_settings)).performClick()
+        compose.runOnIdle {
+            assertEquals(1, opens)
+            state.value = state.value.copy(error = null, answer = com.shengjidaguai.goutoujunshi.domain.SectionParser().apply {
+                feed("[[SITUATION]]虚构局势仍可参考")
+            }.finish())
+        }
+        compose.onNodeWithTag("counsel-list").performScrollToNode(hasText("[[SITUATION]]虚构局势仍可参考"))
+        compose.onNodeWithText("[[SITUATION]]虚构局势仍可参考").assertIsDisplayed()
+    }
+    @Test fun stoppedOrFailedPartialReplyCannotBeCopiedAsCompletedAnswer() {
+        val state = syntheticCounselState("streaming").copy(streaming = false,
+            error = com.shengjidaguai.goutoujunshi.counsel.CounselError("NETWORK", true))
+        var copies = 0
+        compose.setContent { JunshiTheme {
+            CompositionLocalProvider(LocalCounselClipboard provides CounselClipboard(read = { null }, write = { copies++ })) {
+                Surface(Modifier.fillMaxSize()) { CounselContent(state, CounselUiActions()) }
+            }
+        } }
+        compose.onNodeWithTag("counsel-list").performScrollToNode(hasTestTag("counsel-answer"))
+        compose.onNodeWithText(text(DsR.string.ds_copy_all)).assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(0, copies) }
+    }
     // Use Compose 1.12's StandardTestDispatcher-aware synchronization for dialog roots.
     @get:Rule val compose = createComposeRule()
     private val context get() = RuntimeEnvironment.getApplication()
@@ -84,6 +143,27 @@ class AppCounselBehaviorTest {
         assertDemo()
         compose.onNodeWithTag("counsel-list").performScrollToNode(hasTestTag("counsel-answer"))
         compose.onNode(hasText(text(DsR.string.ds_demo)) and hasAnyAncestor(hasTestTag("counsel-answer"))).assertIsDisplayed()
+    }
+
+    @Test fun modelPillExplanationMatchesDemoLiveMissingKeyAndOffline() {
+        val state = mutableStateOf(syntheticCounselState("empty"))
+        compose.setContent { JunshiTheme { Surface { CounselContent(state.value, CounselUiActions()) } } }
+        val settings = com.shengjidaguai.goutoujunshi.data.network.ModelSettingsSnapshot(
+            com.shengjidaguai.goutoujunshi.data.network.SavedModelSettings(true, "https://synthetic.example", "synthetic", "Synthetic"), "••••1234")
+        val cases = listOf(
+            syntheticCounselState("empty") to R.string.demo_explanation,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings) to R.string.live_explanation,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings.copy(maskedKey = null)) to R.string.model_not_configured_notice,
+            syntheticCounselState("empty").copy(demo = false, modelSettings = settings,
+                error = com.shengjidaguai.goutoujunshi.counsel.CounselError("NETWORK")) to R.string.model_error_network,
+        )
+        cases.forEach { (snapshot, explanation) ->
+            compose.runOnIdle { state.value = snapshot }
+            compose.onNode(hasClickAction() and hasAnyAncestor(hasTestTag("model-status"))).performClick()
+            compose.onNode(hasText(text(explanation)) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+            if (!snapshot.demo) compose.onNode(hasText(text(R.string.demo_explanation)) and hasAnyAncestor(isDialog())).assertDoesNotExist()
+            compose.onNodeWithText(text(R.string.close)).performClick()
+        }
     }
 
     @Test fun copiedReplyIsReadableFromAndroidClipboardAndMarkedSensitive() {

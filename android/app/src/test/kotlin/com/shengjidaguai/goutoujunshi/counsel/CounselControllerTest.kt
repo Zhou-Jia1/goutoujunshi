@@ -11,6 +11,51 @@ import org.junit.Test
 
 class CounselControllerTest {
     internal class MemoryPersistence : CounselPersistence {
+        var beforeSummary: CompletableDeferred<Unit>? = null
+        var summaryStarted = false
+        var discardSummaryFailures = 0
+        var summaryCompletionFailures = 0
+        override suspend fun discardSummary(summary: TimelineSummary) {
+            if (discardSummaryFailures > 0) { discardSummaryFailures--; error("synthetic discard failure") }
+            val id = summary.request.contactId!!
+            saved[id]?.let { prior -> saved[id] = prior.copy(summaries = prior.summaries.filterNot { it.key == summary.key && it.request.requestId == summary.request.requestId }) }
+        }
+        var summaryFailures = 0
+        override suspend fun saveSummary(summary: TimelineSummary) {
+            summaryStarted = true
+            beforeSummary?.await()
+            if (summaryFailures > 0) { summaryFailures--; error("synthetic summary save failure") }
+            val id = summary.request.contactId!!
+            val prior = saved.getValue(id)
+            saved[id] = prior.copy(summaries = prior.summaries.filterNot { it.key == summary.key } + summary)
+        }
+        val feedbackPlans = mutableMapOf<String,ActionPlan>()
+        var feedbackFailures = 0
+        override suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) {
+            if (feedbackFailures > 0) { feedbackFailures--; error("synthetic save failure") }
+            check(people.any { it.id == contact.id && it.sourceRevision == plan.sourceRevision })
+            feedbackPlans[plan.id] = plan
+            saved[contact.id]?.let { saved[contact.id] = it.copy(plans = feedbackPlans.values.filter { p -> p.contactId == contact.id }) }
+        }
+        var beforeDetails: CompletableDeferred<Unit>? = null
+        override suspend fun contactDetails(contact: Contact): com.shengjidaguai.goutoujunshi.data.ContactDetails {
+            beforeDetails?.await()
+            check(people.any { it.id == contact.id && it.sourceRevision == contact.sourceRevision })
+            val stored = saved[contact.id]
+            return com.shengjidaguai.goutoujunshi.data.ContactDetails(contact,
+                imports = imports.values.filter { it.contactId == contact.id },
+                evidence = stored?.evidence.orEmpty(), messages = stored?.messages.orEmpty(),
+                runs = stored?.runs.orEmpty(), plans = stored?.plans.orEmpty())
+        }
+        var contactEditAttempts = 0
+        override suspend fun editContact(next: Contact, expectedSource: Long): com.shengjidaguai.goutoujunshi.data.ContactEditReceipt {
+            contactEditAttempts++
+            val before = people.first { it.id == next.id }
+            check(before.sourceRevision == expectedSource)
+            val after = next.copy(sourceRevision = expectedSource + 1)
+            people.replaceAll { if (it.id == next.id) after else it }
+            return com.shengjidaguai.goutoujunshi.data.ContactEditReceipt(before, after)
+        }
         val people = mutableListOf<Contact>()
         val saved = mutableMapOf<String, StoredCounsel>()
         val imports = mutableMapOf<String, ChatImport>()
@@ -30,7 +75,15 @@ class CounselControllerTest {
             if (failImportAfterCommit) { failImportAfterCommit = false; error("synthetic acknowledgement failure") }
             return imported.id
         }
+        val privacy = mutableMapOf<String, RedactionProfile>()
+        override suspend fun redactionProfile(contactId: String) = privacy[contactId] ?: RedactionProfile()
+        override suspend fun saveRedactionProfile(contactId: String, expected: Long, profile: RedactionProfile) {
+            check(people.any { it.id == contactId })
+            check((privacy[contactId]?.revision ?: 0) == expected)
+            privacy[contactId] = profile
+        }
         var messageWrites = 0
+        var runFailures = 0
         var draftWrites = 0
         var beforeMessage: CompletableDeferred<Unit>? = null
         var beforeUpdate: CompletableDeferred<Unit>? = null
@@ -100,6 +153,12 @@ class CounselControllerTest {
         override suspend fun discardMessage(contact: Contact, message: Message) {
             saved[contact.id]?.let { saved[contact.id] = it.copy(messages = it.messages.filterNot { entry -> entry.id == message.id }) }
         }
+        override suspend fun saveRun(contact: Contact, run: AnalysisRun) {
+            if (summaryCompletionFailures > 0 && run.status == RunStatus.COMPLETED && run.requestSnapshot?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) { summaryCompletionFailures--; error("synthetic final checkpoint failure") }
+            if (runFailures > 0) { runFailures--; error("synthetic run checkpoint failure") }
+            val prior = saved.getValue(contact.id)
+            saved[contact.id] = prior.copy(runs = prior.runs.filterNot { it.requestId == run.requestId } + run)
+        }
         override suspend fun clearAll(): Boolean { people.clear(); saved.clear(); return true }
     }
     internal class ControlledProvider : AnalysisProvider {
@@ -107,14 +166,17 @@ class CounselControllerTest {
         val calls = mutableListOf<AnalysisRequest>()
         val outputs = mutableListOf<Channel<AnalysisChunk>>()
         override fun analyze(request: AnalysisRequest) = flow {
-            calls += request
             val output = Channel<AnalysisChunk>(Channel.UNLIMITED)
             outputs += output
+            // Publishing the observed call also guarantees its response channel is ready.
+            calls += request
             for (chunk in output) emit(chunk)
         }
     }
     internal class Fixture(val persistence: MemoryPersistence = MemoryPersistence(),
-        val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)) {
+        val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
+        val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+        val wallClock: () -> Long = { System.currentTimeMillis() }) {
         val provider = ControlledProvider()
         var prepares = 0
         val controller = CounselController(persistence, TemporarySessionStore(), FrozenPromptAssembler(object : PromptAssembler {
@@ -122,12 +184,54 @@ class CounselControllerTest {
                 prepares++
                 return PreparedPrompt("synthetic system", "synthetic ${request.userText}", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 9)), "synthetic-v1")
             }
-        }), provider, scope)
+        }), provider, scope, monotonicMillis = clock, wallClockMillis = wallClock)
         fun close() { scope.cancel() }
     }
     private suspend fun await(predicate: () -> Boolean) = withTimeout(2_000) { while (!predicate()) yield() }
     private val completed get() = AnalysisChunk.Completed(StructuredAnswer(id = "synthetic-answer", reply = listOf("synthetic reply")))
 
+    @Test fun temporaryRulesInvalidatePreviewAndRunningRequestAndDisappearOnLeaving() = runBlocking {
+        val f = Fixture()
+        try {
+            f.controller.initialize(); f.controller.editDraft("虚构输入")
+            val origin = f.controller.state.value.conversation!!.id
+            f.controller.preparePreview(); await { f.controller.state.value.preview != null }
+            f.controller.saveRedactionProfile(origin, listOf("虚构公司"), listOf(RedactionAlias("虚构姓名", "小伙伴")))
+            assertNull(f.controller.state.value.preview)
+            assertTrue(f.persistence.privacy.isEmpty())
+            f.controller.analyze(); await { f.provider.calls.size == 1 }
+            val channel = f.provider.outputs.single()
+            assertEquals(listOf("虚构公司"), f.provider.calls.single().redactionProfile.terms)
+            f.controller.saveRedactionProfile(origin, listOf("新屏蔽词"), emptyList())
+            channel.send(completed); yield()
+            assertFalse(f.controller.state.value.streaming); assertNull(f.controller.state.value.answer)
+            f.controller.newTemporary()
+            assertEquals(RedactionProfile(), f.controller.state.value.redactionProfile)
+            assertTrue(f.persistence.privacy.isEmpty())
+        } finally { f.close() }
+    }
+    @Test fun formalRulesReloadAndStaleContactEditorCannotInvalidateNewContact() = runBlocking {
+        val f = Fixture()
+        try {
+            f.controller.initialize(); f.controller.createContact("虚构甲", RelationType.FRIEND)
+            val a = f.controller.state.value.currentContact!!.id
+            val origin = f.controller.state.value.conversation!!.id
+            f.controller.saveRedactionProfile(origin, listOf("虚构甲公司"), emptyList())
+            f.controller.createContact("虚构乙", RelationType.FRIEND)
+            val bOrigin = f.controller.state.value.conversation!!.id
+            f.controller.editDraft("虚构问题"); f.controller.preparePreview(); await { f.controller.state.value.preview != null }
+            val preview = f.controller.state.value.preview
+            f.controller.saveRedactionProfile(origin, listOf("过期规则"), emptyList())
+            assertEquals(bOrigin, f.controller.state.value.conversation!!.id)
+            assertEquals(preview, f.controller.state.value.preview)
+            assertEquals(RedactionProfile(), f.controller.state.value.redactionProfile)
+            f.controller.selectContact(a)
+            assertEquals(listOf("虚构甲公司"), f.controller.state.value.redactionProfile.terms)
+            f.controller.saveRedactionProfile(f.controller.state.value.conversation!!.id, listOf("x".repeat(201)), emptyList())
+            assertTrue(f.controller.state.value.redactionError)
+            f.controller.preparePreview(); assertNull(f.controller.state.value.preview)
+        } finally { f.close() }
+    }
     @Test fun importedInjectionIsEvidenceAndTemporaryDedupNeverWritesPersistence() = runBlocking {
         val f = Fixture()
         try {

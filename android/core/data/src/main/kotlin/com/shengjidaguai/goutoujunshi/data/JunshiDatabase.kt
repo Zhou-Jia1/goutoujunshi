@@ -49,6 +49,8 @@ interface JunshiDao {
     @Query("DELETE FROM memory_operations") suspend fun clearAllOperations()
     @Query("SELECT * FROM owned_records WHERE contactId=:contactId AND kind=:kind ORDER BY id") suspend fun records(contactId: String, kind: String): List<OwnedRecordRow>
     @Query("SELECT * FROM owned_records WHERE contactId=:contactId AND kind=:kind AND id=(:kind || ':' || :id)") suspend fun record(contactId: String, kind: String, id: String): OwnedRecordRow?
+    @Query("DELETE FROM owned_records WHERE kind='SUMMARY'") suspend fun clearSummaries()
+    @Query("DELETE FROM owned_records WHERE contactId=:contactId AND kind='SUMMARY'") suspend fun clearSummaries(contactId: String)
     @Upsert suspend fun put(row: OwnedRecordRow)
     @Query("DELETE FROM owned_records WHERE contactId=:contactId AND kind=:kind AND id=(:kind || ':' || :id)") suspend fun deleteRecord(contactId: String, kind: String, id: String)
     @Query("SELECT * FROM tips ORDER BY name") suspend fun tips(): List<TipRow>

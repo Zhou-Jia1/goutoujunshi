@@ -95,12 +95,17 @@ class SectionParser {
         alternatives.drop(2).forEach { fallback += "${it.label}|${it.reply}" }
         val questions=lines(SectionId.ASK)
         fallback+=questions.drop(3)
+        val markers = segments.map { it.id }.filter { it != SectionId.FREE_TEXT }
+        val disordered = (safety != SafetyLevel.CRISIS && text(SectionId.REPLY).isBlank() && raw.isNotBlank()) ||
+            fallback.isNotEmpty() || markers.distinct().size != markers.size ||
+            markers.zipWithNext().any { (a, b) -> a.ordinal > b.ordinal }
         val answer=StructuredAnswer(safety=safety,scene=scene,empathy=text(SectionId.EMPATHY),verdict=text(SectionId.VERDICT),
             reply=bodies(SectionId.REPLY).flatMap { it.split("+++") }.map { it.trim() }.filter { it.isNotEmpty() },
             alternatives=alternatives.take(2),why=lines(SectionId.WHY),cost=text(SectionId.COST),situation=text(SectionId.SITUATION),
             facts=facts,guesses=guesses,unknowns=lines(SectionId.UNKNOWNS),risk=text(SectionId.RISK),tips=tips,habit=text(SectionId.HABIT),
-            next=text(SectionId.NEXT),ask=questions.take(3),memoryProposals=proposals,freeText=fallback.joinToString("\n"),rawText=raw.toString(),
-            sections=SectionId.entries.mapNotNull { id -> text(id).takeIf { it.isNotEmpty() }?.let { id to it } }.toMap())
+            next=text(SectionId.NEXT),ask=questions.take(3),memoryProposals=proposals,
+            freeText=if(disordered) raw.toString() else fallback.joinToString("\n"),rawText=raw.toString(),
+            sections=SectionId.entries.mapNotNull { id -> text(id).takeIf { it.isNotEmpty() }?.let { id to it } }.toMap(), formatDisordered=disordered)
         finished=answer
         return answer
     }

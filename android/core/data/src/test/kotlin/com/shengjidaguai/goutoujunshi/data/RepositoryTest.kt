@@ -21,6 +21,94 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun timelineCacheIsOwnedSourceCasAndRemovedWithRulesOrOwner() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("summary-conv", "a", false)
+        conversations.save(c); conversations.saveDraft("a", c.id, "虚构问题")
+        val line = ChatLine("line","batch",speaker=Speaker.ME,text="虚构原文",speakerConfirmed=true,contactId="a")
+        ImportRepository(session).save(ChatImport("batch","a",ImportSource.PASTE,"synthetic-summary-hash"),listOf(line))
+        val request = AnalysisRequest(requestId="summary-request", contactId="a", sourceRevision=1, conversationId=c.id, userText="虚构问题", networkSelection=listOf("line"),
+            evidence=listOf(EvidenceBlock("batch","PASTE",listOf(ChatLine("line","batch",speaker=Speaker.ME,text="虚构原文",speakerConfirmed=true,contactId="a")))))
+        val cache = TimelineSummary("key", request, "[line] 虚构事件")
+        val repo = SummaryRepository(session)
+        repo.save(cache); assertEquals(1,repo.list("a").size); assertTrue(repo.list("b").isEmpty())
+        assertTrue(runCatching { repo.save(cache.copy(request=request.copy(sourceRevision=99))) }.isFailure)
+        assertTrue(runCatching { repo.save(cache.copy(text="[missing] 无来源")) }.isFailure)
+        val newer = cache.copy(request=request.copy(requestId="new-summary-request"))
+        repo.save(newer); repo.discard(cache); assertEquals("new-summary-request",repo.list("a").single().request.requestId)
+        repo.discard(newer); assertTrue(repo.list("a").isEmpty());repo.save(cache)
+        RedactionRepository(session).save("a",0,RedactionProfile(revision=1))
+        assertTrue(repo.list("a").isEmpty())
+        assertTrue(runCatching { repo.save(cache) }.isFailure)
+        ContactRepository(session).delete("a")
+        assertTrue(runCatching { repo.save(cache) }.isFailure)
+    }
+
+    @Test fun messageTimestampIsImmutableAcrossStorageRetriesAndLegacyReads() = runBlocking {
+        val repo = ConversationRepository(session)
+        repo.save(Conversation("timestamp-conv", "a", false))
+        val message = Message("timestamp-message", "timestamp-conv", MessageRole.ASSISTANT,
+            "虚构建议", contactId="a", createdAt=123L)
+        repo.saveMessage(message)
+        repo.saveMessage(message.copy(createdAt=999L))
+        assertEquals(123L, repo.messages("a", "timestamp-conv").single().createdAt)
+        val legacy = message.copy(id="legacy-message", createdAt=0)
+        repo.saveMessage(legacy); repo.saveMessage(legacy.copy(createdAt=999L))
+        assertEquals(0L, ContactDetailsRepository(session).load("a", ContactRepository(session).get("a")!!.sourceRevision)
+            .messages.single { it.id == legacy.id }.createdAt)
+    }
+
+    @Test fun feedbackKeepsSourceAndDoesNotCreateLearningSamples() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("feedback-conv", "a", false)
+        conversations.save(c)
+        val message = Message(id="feedback-assistant", conversationId=c.id, contactId="a", role=MessageRole.ASSISTANT, requestId="feedback-request", answerJson="{}")
+        conversations.saveMessage(message)
+        val plan = ActionPlan(id="feedback", contactId="a", chosenReply="虚构用户修改", wasEdited=true, status=PlanStatus.SENT, sourceAnswerId=message.id, sourceRequestId=message.requestId, conversationId=c.id)
+        val repo=PlanRepository(session)
+        repo.saveFeedback(plan, 0); repo.saveFeedback(plan, 0)
+        val stored=repo.list("a").single()
+        assertEquals(message.id,stored.sourceAnswerId); assertFalse(stored.learningAuthorized)
+        assertTrue(StyleRepository(session).samples(RelationGroup.SOCIAL).isEmpty()); assertTrue(repo.list("b").isEmpty())
+        assertTrue(runCatching { repo.saveFeedback(plan.copy(conversationRevision=99),0) }.isFailure)
+        assertTrue(runCatching { repo.saveFeedback(plan.copy(sourceAnswerId="missing"),0) }.isFailure)
+        assertTrue(runCatching { repo.saveFeedback(plan,99) }.isFailure)
+    }
+
+    @Test fun runCheckpointUsesSourceAndConversationCasAndCannotRecreateDeletedContact() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("t27-conversation", "a", false)
+        conversations.save(c)
+        conversations.saveDraft("a", c.id, "虚构问题")
+        val request = AnalysisRequest(requestId = "t27", contactId = "a", conversationId = c.id, userText = "虚构问题")
+        val run = AnalysisRun(requestId = request.requestId, contactId = "a", conversationId = c.id,
+            status = RunStatus.RUNNING, requestSnapshot = request)
+        val repo = TimelineRepository(session)
+        repo.saveCurrentRun(run, 0)
+        assertEquals(run, TimelineRepository(session).runs("a").single())
+        assertTrue(repo.runs("b").isEmpty())
+        conversations.updateDraft("a", 0, c.copy(revision = 1), "新虚构问题", 0)
+        assertThrows(IllegalStateException::class.java) { runBlocking { repo.saveCurrentRun(run, 0) } }
+        ContactRepository(session).delete("a")
+        assertTrue(repo.runs("a").isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.saveCurrentRun(run, 0) } }
+        Unit
+    }
+    @Test fun contactEditsArchiveUndoUseCasAndDeletedOwnerCannotReturn() = runBlocking {
+        val repo = ContactRepository(session)
+        val original = repo.get("a")!!
+        val receipt = repo.update(original.copy(alias="新代号", notes="用户手工资料"), original.sourceRevision)
+        assertEquals(original.sourceRevision + 1, receipt.after.sourceRevision)
+        assertTrue(runCatching { repo.update(original, original.sourceRevision) }.isFailure)
+        val archived = repo.update(receipt.after.copy(archivedAt=123L), receipt.after.sourceRevision)
+        assertTrue(runCatching { repo.undo(receipt) }.isFailure)
+        val restored = repo.undo(archived)
+        assertNull(restored.archivedAt)
+        repo.delete("a")
+        assertTrue(runCatching { repo.update(restored, restored.sourceRevision) }.isFailure)
+        assertNull(repo.get("a")); assertNotNull(repo.get("b"))
+    }
+
     private lateinit var db: JunshiDatabase
     private lateinit var session: DataSession
     @Before fun setup() = runBlocking {
@@ -28,6 +116,20 @@ class RepositoryTest {
         session = DataSession(db, 1)
         ContactRepository(session).save(Contact("a", "虚构甲"))
         ContactRepository(session).save(Contact("b", "虚构乙"))
+    }
+    @Test fun redactionRulesReloadAreContactScopedCasAndCascade() = runBlocking {
+        val repo = RedactionRepository(session)
+        val a = RedactionProfile(1, listOf("虚构公司甲"), listOf(RedactionAlias("虚构昵称甲", "朋友甲")))
+        repo.save("a", 0, a)
+        repo.save("b", 0, RedactionProfile(1, listOf("虚构公司乙")))
+        assertEquals(a, RedactionRepository(session).load("a"))
+        assertFalse(repo.load("b").terms.contains("虚构公司甲"))
+        assertThrows(IllegalStateException::class.java) { runBlocking { repo.save("a", 0, a) } }
+        ContactRepository(session).delete("a")
+        assertTrue(session.transaction { records("a", OwnedRecordKind.REDACTION.name).isEmpty() })
+        assertEquals(listOf("虚构公司乙"), repo.load("b").terms)
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.save("a", 0, a) } }
+        Unit
     }
     @After fun close() { db.close() }
 
@@ -179,6 +281,68 @@ class RepositoryTest {
         assertNull(StyleRepository(session).profile(RelationGroup.SOCIAL))
         assertTrue(ImportRepository(session).lines("a", "imp").isEmpty())
         assertNotNull(ContactRepository(session).get("b"))
+    }
+
+    @Test fun profileSnapshotAndDeletionCoverAllOwnedRecordsWithoutMixingB() = runBlocking {
+        consent()
+        val imported = source(StyleOrigin.IMPORT)
+        StyleRepository(session).saveSample(imported, stamp(imported))
+        val conversations = ConversationRepository(session)
+        conversations.save(Conversation("profile-conv", "a", false))
+        conversations.saveMessage(Message("profile-message", "profile-conv", MessageRole.ASSISTANT,
+            "合成唯一标记", contactId="a"))
+        session.transaction {
+            put(MemoryRow("profile-memory", "a", encode(MemoryEntry("profile-memory", "a", value="合成唯一标记"))))
+            put(MemoryOperationRow("profile-op", "a", 1, encode(MemoryOperation("profile-op", "a"))))
+            val request = AnalysisRequest(requestId="profile-run", contactId="a", conversationId="profile-conv")
+            val payloads = mapOf(
+                OwnedRecordKind.PLAN to encode(ActionPlan("fixture", "a", chosenReply="合成唯一标记")),
+                OwnedRecordKind.EVENT to encode(Event("fixture", "a", summary="合成唯一标记")),
+                OwnedRecordKind.ANALYSIS_RUN to encode(AnalysisRun("profile-run", "profile-conv", contactId="a", requestSnapshot=request)),
+                OwnedRecordKind.NICKNAME to encode(NicknameMapping("fixture", "a", original="合成昵称", replacement="代号")),
+                OwnedRecordKind.REDACTION to encode(RedactionProfile()),
+                OwnedRecordKind.SUMMARY to encode(TimelineSummary("fixture", request, "合成唯一标记")))
+            payloads.forEach { (kind, payload) -> put(OwnedRecordRow("${kind.name}:fixture", "a", kind, payload)) }
+        }
+        val a = ContactRepository(session).get("a")!!
+        val populated = ContactDetailsRepository(session).load("a", a.sourceRevision)
+        assertEquals(a, populated.contact)
+        assertEquals(listOf("imp"), populated.imports.map { it.id })
+        assertTrue(populated.imports.all { it.contactId == "a" })
+        assertEquals(listOf("line"), populated.evidence.single().lines.map { it.id })
+        assertTrue(populated.evidence.flatMap { it.lines }.all { it.contactId == "a" && it.importId == "imp" })
+        assertEquals(listOf("profile-message"), populated.messages.map { it.id })
+        assertTrue(populated.messages.all { it.contactId == "a" && it.conversationId == "profile-conv" })
+        assertEquals(listOf("profile-run"), populated.runs.map { it.requestId })
+        assertTrue(populated.runs.all { it.contactId == "a" && it.requestSnapshot?.contactId == "a" })
+        assertEquals(listOf("fixture"), populated.plans.map { it.id })
+        assertTrue(populated.plans.all { it.contactId == "a" })
+        assertEquals(listOf("fixture"), populated.events.map { it.id })
+        assertTrue(populated.events.all { it.contactId == "a" })
+        assertEquals(listOf("profile-memory"), populated.memories.map { it.id })
+        assertTrue(populated.memories.all { it.contactId == "a" })
+        // Legacy analyses with no recorded timestamp stay unknown; reads never backfill now.
+        assertEquals(0L, populated.messages.single().createdAt)
+        val b = ContactRepository(session).get("b")!!
+        val snapshot = ContactDetailsRepository(session).load("b", b.sourceRevision)
+        assertEquals("b", snapshot.contact.id); assertTrue(snapshot.messages.isEmpty())
+        assertTrue(snapshot.imports.isEmpty()); assertTrue(snapshot.evidence.isEmpty())
+        assertTrue(snapshot.memories.isEmpty()); assertTrue(snapshot.runs.isEmpty())
+        assertTrue(snapshot.events.isEmpty()); assertTrue(snapshot.plans.isEmpty())
+        val before = session.stamp()
+        ContactRepository(session).delete("a")
+        assertTrue(session.stamp().sourceRevision > before.sourceRevision)
+        session.transaction {
+            assertNull(contact("a")); assertTrue(conversations("a").isEmpty())
+            assertTrue(messages("a", "profile-conv").isEmpty()); assertTrue(imports("a").isEmpty())
+            assertTrue(lines("a", "imp").isEmpty()); assertTrue(memories("a").isEmpty())
+            assertTrue(operations("a").isEmpty()); assertTrue(files("a").isEmpty())
+            OwnedRecordKind.entries.forEach { assertTrue(records("a", it.name).isEmpty()) }
+            assertTrue(RelationGroup.entries.all { samples(it.name).none { row -> row.contactId == "a" } })
+        }
+        assertNull(StyleRepository(session).profile(RelationGroup.SOCIAL))
+        assertEquals(snapshot, ContactDetailsRepository(session).load("b", b.sourceRevision))
+        assertTrue(runCatching { ContactDetailsRepository(session).load("a", 0) }.isFailure)
     }
 
     @Test fun undoRestoresEvictedRowsAndOnlyAllowsLatest() = runBlocking {

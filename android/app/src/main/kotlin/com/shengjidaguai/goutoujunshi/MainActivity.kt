@@ -62,7 +62,7 @@ private fun JunshiNavigation(viewModel: CounselViewModel) {
         }
     }) { padding ->
         NavHost(nav, startDestination = "counsel", modifier = androidx.compose.ui.Modifier.padding(padding)) {
-            composable("counsel") { CounselScreen(viewModel) }
+            composable("counsel") { CounselScreen(viewModel) { nav.navigate("me") { launchSingleTop = true } } }
             composable("contacts") { ContactsScreen(viewModel) { nav.navigate("counsel") { launchSingleTop = true } } }
             composable("me") { SettingsScreen(viewModel) }
         }

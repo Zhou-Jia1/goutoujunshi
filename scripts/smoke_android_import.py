@@ -7,7 +7,8 @@ import argparse
 import re
 from pathlib import Path
 
-from smoke_android_m1 import APP, Device, require, validate_apk
+from smoke_android_m1 import (APP, Device, require, validate_apk, CONTACTS_ACTIVE,
+                              CONTACT_OVERVIEW, DELETE_CONTACT, CONFIRM_DELETE, EMPTY_CONTACTS)
 
 MESSAGE = "synthetic_t21_message"
 SHARED = "synthetic_t21_speaker:" + MESSAGE
@@ -33,9 +34,9 @@ def find_text(device, text, scroll=False):
     raise AssertionError(f"Expected debug text was not reachable: {text}")
 
 
-def click_ready(device, text):
+def click_ready(device, text, scroll=False, unique=False):
     # The common driver waits for composition/position stability, then taps once.
-    device.click(text)
+    device.click(text, scroll=scroll, unique=unique)
 
 
 def share(device, cold=False):
@@ -97,9 +98,9 @@ def wait_contacts_view(device, empty=False):
                 raise
             continue
         if current.count("联系人") >= 2:
-            if "还没有联系人" in current:
+            if EMPTY_CONTACTS in current:
                 return current
-            if not empty and CONTACT in current and current.count("删除联系人") == 1:
+            if not empty and current.count(CONTACT) == 1 and CONTACTS_ACTIVE in current:
                 return current
     raise AssertionError("Dedicated contact screen did not become ready for safe cleanup")
 
@@ -109,9 +110,12 @@ def remove_contact(device):
     click_ready(device, "联系人")
     current = wait_contacts_view(device)
     if CONTACT in current:
-        require(current.count("删除联系人") == 1, "Refusing ambiguous fixture deletion")
-        click_ready(device, "删除联系人")
-        click_ready(device, "删除这些记录")
+        require(current.count(CONTACT) == 1, "Refusing ambiguous fixture deletion")
+        click_ready(device, CONTACT)
+        detail = labels(device)
+        require(detail.count(CONTACT) == 1 and CONTACT_OVERVIEW in detail, "Unexpected contact detail owner")
+        click_ready(device, DELETE_CONTACT, scroll=True, unique=True)
+        click_ready(device, CONFIRM_DELETE, unique=True)
         require(CONTACT not in wait_contacts_view(device, empty=True), "Synthetic contact was not removed")
     click_ready(device, "军师")
 

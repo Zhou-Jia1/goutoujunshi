@@ -16,6 +16,12 @@ import kotlinx.serialization.Serializable
     val contactContext:String="", val recentSummary:String="", val redactionTerms:List<String> = emptyList(),
     val sourceRevision:Long=0, val speakersConfirmed:Boolean=false,
     val conversationId:String="", val conversationRevision:Long=0,
+    val formality:String="medium",
+    val manualRelation:RelationType?=null, val manualGoal:Goal?=null, val manualFormality:String?=null,
+    val networkSelection:List<String>?=null, val timelineSummary:String="",
+    val purpose:OutboundPurpose=OutboundPurpose.ANALYSIS,
+    val redactionProfile:RedactionProfile=RedactionProfile(),
+    val actualDataContext:OutboundDataContext=OutboundDataContext(),
 )
 interface AnalysisProvider { val kind:ProviderKind; fun analyze(request:AnalysisRequest):Flow<AnalysisChunk> }
 @Serializable sealed interface AnalysisChunk {
@@ -37,12 +43,14 @@ interface AnalysisProvider { val kind:ProviderKind; fun analyze(request:Analysis
     val risk:String="", val tips:List<Tip> = emptyList(), val habit:String="", val next:String="",
     val ask:List<String> = emptyList(), val memoryProposals:List<MemoryProposal> = emptyList(),
     val freeText:String="", val rawText:String="", val sections:Map<SectionId,String> = emptyMap(),
+    val formatDisordered:Boolean=false,
 )
 interface PromptAssembler { fun prepare(request:AnalysisRequest):PreparedPrompt }
 @Serializable data class KnowledgeReference(val path:String, val sha256:String, val characters:Int) {
     init { require(path.isNotBlank()); require(sha256.matches(Regex("[a-fA-F0-9]{64}"))); require(characters > 0) }
 }
-@Serializable data class PreparedPrompt(val system:String, val user:String, val references:List<KnowledgeReference>, val knowledgeVersion:String) {
+@Serializable data class PreparedPrompt(val system:String, val user:String, val references:List<KnowledgeReference>, val knowledgeVersion:String,
+    val redactionCount:Int=0, val safeAliases:Map<String,String> = emptyMap()) {
     init { require(system.isNotBlank() && user.isNotBlank()); require(references.size in 1..3); require(knowledgeVersion.isNotBlank()) }
 }
 
