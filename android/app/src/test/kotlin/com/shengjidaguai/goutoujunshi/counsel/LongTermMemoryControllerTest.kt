@@ -340,8 +340,7 @@ class LongTermMemoryControllerTest {
                 when(action) {
                     "switch"->f.controller.newTemporary()
                     "lock"->{
-                        val boundary=CounselController::class.java.getDeclaredMethod("set",CounselState::class.java).apply { isAccessible=true }
-                        boundary.invoke(f.controller,f.controller.state.value.copy(lockState=LockState(enabled=true,unlocked=false)))
+                        f.controller.updateLockState(LockState(enabled=true,unlocked=false))
                     }
                     "decline"->f.controller.declineMemory(receipt)
                     "clear"->f.controller.clearAll()

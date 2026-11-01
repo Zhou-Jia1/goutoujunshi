@@ -277,4 +277,21 @@
     <string name="ocr_read">暂时无法读取图片，请重新选择，或粘贴文字。</string>
     <string name="ocr_suggested_left">建议左侧 · 待确认</string>
     <string name="ocr_suggested_right">建议右侧 · 待确认</string>
+    <string name="floating_title">悬浮军师</string>
+    <string name="floating_start">开启悬浮军师</string>
+    <string name="floating_stop">关闭悬浮军师</string>
+    <string name="floating_notification">悬浮军师已开启 · 点击关闭</string>
+    <string name="floating_explanation">开启后可以拖动悬浮球，点按或长按打开菜单。关闭屏幕后自动停止，需要你重新开启。</string>
+    <string name="floating_capture">截屏分析</string>
+    <string name="floating_capture_unavailable">截屏分析暂不可用，你可以在 App 中上传截图或粘贴文字。</string>
+    <string name="floating_contacts">选择联系人</string>
+    <string name="floating_unlock">解锁应用</string>
+    <string name="floating_lock_hint">请先确认设备凭据，再查看联系人。</string>
+    <string name="floating_lock_unavailable">请先在系统设置中配置设备锁，才能验证身份。</string>
+    <string name="floating_permission_denied">尚未获得所需权限。你仍可以在 App 中上传截图或粘贴文字。</string>
+    <string name="floating_unavailable">暂时无法开启悬浮窗。请在 App 中继续使用。</string>
+    <string name="floating_started">悬浮军师已开启，拖动悬浮球试试吧。</string>
+    <string name="floating_locked">应用已锁定</string>
+    <string name="floating_ball_menu">悬浮军师，打开菜单</string>
+    <string name="floating_off">悬浮军师未开启。你可以重试开启，或在 App 中上传截图、粘贴文字。</string>
 </resources>

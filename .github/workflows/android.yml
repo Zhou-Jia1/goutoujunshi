@@ -75,11 +75,16 @@ jobs:
           emulator-options: -no-window -gpu swiftshader -no-snapshot -noaudio -no-boot-anim
           working-directory: android
           script: |
-            ./gradlew :app:assembleDebug connectedDebugAndroidTest
+            ./gradlew :app:assembleDebug
+            adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
+            adb -s emulator-5554 shell appops set com.shengjidaguai.goutoujunshi.debug SYSTEM_ALERT_WINDOW allow
+            adb -s emulator-5554 shell pm grant com.shengjidaguai.goutoujunshi.debug android.permission.POST_NOTIFICATIONS
+            ./gradlew connectedDebugAndroidTest
             python3 ../scripts/smoke_android_m1.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
             python3 ../scripts/smoke_android_import.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
             python3 ../scripts/smoke_android_model_settings.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
             python3 ../scripts/smoke_android_ocr.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
+            python3 ../scripts/smoke_android_floating.py --serial emulator-5554 --apk app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:

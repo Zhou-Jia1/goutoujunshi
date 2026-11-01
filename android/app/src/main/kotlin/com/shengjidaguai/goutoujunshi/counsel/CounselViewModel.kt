@@ -13,7 +13,7 @@ import com.shengjidaguai.goutoujunshi.knowledge.*
 import kotlinx.coroutines.*
 
 /** Application lifetime keeps temporary sessions across Activity recreation, never process death. */
-private object CounselRuntime {
+internal object CounselRuntime {
     private var importer: ImportCoordinator? = null
     @Synchronized fun imports(application: Application): ImportCoordinator = importer ?: ImportCoordinator(get(application),
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
@@ -96,5 +96,5 @@ class CounselViewModel internal constructor(application: Application, private va
     fun saveModelSettings(settings: SavedModelSettings, key: String?, removeKey: Boolean = false) = controller.saveModelSettings(settings, key, removeKey)
     fun testModelConnection() = controller.testModelConnection()
     fun cancelModelTest() = controller.cancelModelTest()
-    fun clearAll() { imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); controller.clearAll() }
+    fun clearAll() { com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.clearAll(getApplication<Application>()); imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); controller.clearAll() }
 }
