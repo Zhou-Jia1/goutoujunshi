@@ -48,6 +48,12 @@
 
 复现时沿用项目 JDK17/SDK37.2 与临时目录设置；不执行 `connected*` 自动扫描用户设备：
 
+在 `android/` 目录构建引擎回归和测试包（Windows 使用 `gradlew.bat`）；可选的低内存 init 文件已随本分支提供，不依赖另一工作区：
+
+```sh
+./gradlew :core:data:testDebugUnitTest --tests '*OcrRuntimeSafetyTest' :core:data:assembleDebugAndroidTest --no-daemon --max-workers=1 --no-parallel --init-script low-memory.init.gradle -Pkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx768m -Dfile.encoding=UTF-8'
+```
+
 ```powershell
 R:/sdk/platform-tools/adb.exe -s emulator-5580 shell am instrument -w -r -e class com.shengjidaguai.goutoujunshi.data.ocr.PaddleOcrIsolationTest com.shengjidaguai.goutoujunshi.data.test/androidx.test.runner.AndroidJUnitRunner
 ```
