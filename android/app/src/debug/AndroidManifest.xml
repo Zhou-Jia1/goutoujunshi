@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <provider android:name=".testing.SyntheticOcrProvider" android:authorities="${applicationId}.synthetic-ocr" android:exported="false" />
+        <activity android:name=".capture.SyntheticChatActivity" android:label="@string/capture_synthetic_title" android:exported="false" android:taskAffinity="${applicationId}.syntheticcapture" />
     </application>
 </manifest>

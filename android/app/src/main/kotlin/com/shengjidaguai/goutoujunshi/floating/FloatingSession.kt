@@ -4,17 +4,19 @@ import com.shengjidaguai.goutoujunshi.domain.*
 
 /** RAM only: neither process death nor an old permission result can enable the service. */
 class FloatingSession {
-    private var generation = 0L
+    internal val capture=CaptureState()
+    // A fresh process must never give old task/service Intents a matching RAM epoch.
+    private var generation = java.security.SecureRandom().nextLong().ushr(2) + 1
     private var pending: Long? = null
     @Synchronized fun epoch() = generation
-    @Synchronized fun request(): Long = (++generation).also { pending = it }
+    @Synchronized fun request(): Long = (++generation).also { pending = it;capture.request() }
     @Synchronized fun valid(ticket: Long) = pending == ticket
     @Synchronized fun accept(ticket: Long): Boolean {
         if (!valid(ticket)) return false
         pending = null
         return true
     }
-    @Synchronized fun stop() { generation++; pending = null }
+    @Synchronized fun stop() { generation++; pending = null;capture.stop() }
     /** Cancellation belongs to its request/accepted service, never a newer user's request. */
     @Synchronized fun cancel(ticket: Long) { if(generation==ticket) stop() }
 }

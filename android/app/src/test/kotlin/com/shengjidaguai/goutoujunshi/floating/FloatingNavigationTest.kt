@@ -42,4 +42,12 @@ class FloatingNavigationTest {
             }
         } finally { fixture.close() }
     }
+    @Test fun captureConfirmationDoesNotChangeLaterControlEntryRoute() {
+        val app=RuntimeEnvironment.getApplication()
+        FloatingRuntime.showCapture(app)
+        Assert.assertEquals(FloatingRuntime.CAPTURE_CONFIRM,org.robolectric.Shadows.shadowOf(app).nextStartedActivity.action)
+        FloatingRuntime.open(app)
+        Assert.assertNull(org.robolectric.Shadows.shadowOf(app).nextStartedActivity.action)
+    }
+
 }

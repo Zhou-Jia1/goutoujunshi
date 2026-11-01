@@ -33,11 +33,19 @@ import com.shengjidaguai.goutoujunshi.importing.*
             JunshiTopBar(stringResource(R.string.import_title), viewModel.imports::cancel)
             Box(Modifier.weight(1f)) {
                 ImportContent(p, counsel.contacts.filter { it.archivedAt == null }, viewModel.imports::edit, { target -> viewModel.imports.ifCurrent(p.id) { viewModel.imports.target(target) } },
-                    { viewModel.imports.ifCurrent(p.id,viewModel.imports::acceptRights) }, { viewModel.imports.ifCurrent(p.id,viewModel.imports::confirm) }, { viewModel.imports.ifCurrent(p.id,viewModel.imports::retry) },
+                    { viewModel.imports.ifCurrent(p.id,viewModel.imports::acceptRights) }, { viewModel.imports.ifCurrent(p.id,viewModel.imports::confirm) }, { viewModel.imports.ifCurrent(p.id) {
+                        if(p.retryNeedsCapture() && com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.runtimeTicket==p.captureSession)
+                            com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.captureAction?.invoke()
+                        else viewModel.imports.retry()
+                    } },
                     recognize = { viewModel.imports.ifCurrent(p.id,viewModel.imports::recognize) },
                     side = { viewModel.imports.side(p.id,it) },
                     move = { id,delta -> viewModel.imports.moveImage(p.id,id,delta) },
-                    editStable = { id,update -> viewModel.imports.editRow(p.id,id,update) })
+                    editStable = { id,update -> viewModel.imports.editRow(p.id,id,update) },
+                    recapture = { viewModel.imports.ifCurrent(p.id) {
+                        if(p.captureSession!=null && com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.runtimeTicket==p.captureSession)
+                            com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.captureAction?.invoke()
+                    } })
             }
             SecondaryButton(stringResource(R.string.close), viewModel.imports::cancel)
         } }
@@ -49,11 +57,18 @@ import com.shengjidaguai.goutoujunshi.importing.*
     rights: () -> Unit = {}, confirm: () -> Unit = {}, retry: () -> Unit = {},
     recognize: () -> Unit = {}, side:(OcrSide)->Unit = {}, move:(String,Int)->Unit = { _,_ -> },
     editStable: ((String,(ImportRow)->ImportRow)->Unit)? = null,
+    recapture:()->Unit=retry,
 ) {
     var alias by remember(preview.id) { mutableStateOf("") }
     val dragThreshold=with(LocalDensity.current) { (JunshiTheme.spacing.xl*2).toPx() }
     LazyColumn(Modifier.fillMaxWidth().testTag("import-preview"), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { BodyText(stringResource(R.string.import_confirmation)) }
+        if(preview.captureSession!=null) {
+            item {
+                BodyText(stringResource(R.string.capture_more_hint))
+                SecondaryButton(stringResource(R.string.capture_retry),recapture,enabled=!preview.busy)
+            }
+        }
         if(preview.images.isNotEmpty()) {
             item { BodyText(stringResource(R.string.ocr_order)) }
             itemsIndexed(preview.imageIds, key={ _,id -> id }) { index,id ->
@@ -77,6 +92,11 @@ import com.shengjidaguai.goutoujunshi.importing.*
                     preview.mySide?.let { BodyText(stringResource(if(it==OcrSide.LEFT) R.string.ocr_left_me else R.string.ocr_right_me)) }
                 }
             }
+        }
+        if(preview.captureSession!=null && preview.recognized && preview.rows.any { !it.excluded }) item {
+            BodyText(stringResource(R.string.ocr_side))
+            SecondaryButton(stringResource(R.string.ocr_left_me),{ side(OcrSide.LEFT) })
+            SecondaryButton(stringResource(R.string.ocr_right_me),{ side(OcrSide.RIGHT) })
         }
         if (!preview.rightsAccepted) item {
             BodyText(stringResource(R.string.import_rights))

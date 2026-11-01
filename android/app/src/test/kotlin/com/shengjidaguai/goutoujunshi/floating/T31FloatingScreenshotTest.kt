@@ -29,7 +29,7 @@ class T31FloatingScreenshotTest(private val mode: String) {
                 Surface(Modifier.fillMaxSize()) { FloatingControls(true,true,R.string.floating_started,{},{},{selected=true},{},{}) }
             }
         } }
-        compose.onNodeWithText("截屏分析").assertIsNotEnabled()
+        compose.onNodeWithText("截屏分析").assertIsEnabled()
         compose.onRoot().captureRoboImage("src/test/screenshots/t31_menu_${mode}.png")
         compose.onNodeWithText("选择联系人").performScrollTo().performClick()
         Assert.assertTrue(selected)

@@ -514,7 +514,8 @@ class CounselController(
     internal fun importSelectionState() = synchronized(intentLock) { epoch.get() to state.value }
     private val intentLock = Any()
     @Volatile private var importPending = false
-    fun setImportPending(value: Boolean) { synchronized(intentLock) {
+    fun setImportPending(value: Boolean, change:()->Unit = {}) { synchronized(intentLock) {
+        change()
         importPending = value; epoch.incrementAndGet(); stream?.cancel()
         mailbox.trySend {
             // A share queued during startup must not erase the failure needed by its retry UI.
@@ -687,7 +688,7 @@ class CounselController(
     }
 
     fun initialize() = enqueue { initializeNow() }
-    private suspend fun initializeNow() {
+    private suspend fun initializeNow(forCapture:Boolean=false) {
         if (!initialized) {
             recovery = Recovery.Initialize
             set(state.value.copy(loading = true, error = null))
@@ -697,13 +698,15 @@ class CounselController(
             refreshMemory(null)
             initialized = true
             set(state.value.copy(contacts = contacts, loading = false))
-            contacts.firstOrNull { it.archivedAt == null }?.let { loadContact(it) } ?: beginTemporary()
+        }
+        if(!forCapture && state.value.conversation==null) {
+            state.value.contacts.firstOrNull { it.archivedAt==null }?.let { loadContact(it) } ?: beginTemporary()
         }
     }
     /** Explicit completion avoids relying on conflated loading/error transitions for a retry. */
     fun retryStartup(completion: (String?) -> Unit) = enqueue {
         try {
-            if (!initialized) initializeNow()
+            if (!initialized || state.value.conversation==null) initializeNow()
             else (recovery as? Recovery.Load)?.let { loadContact(it.contact) }
             completion(state.value.conversation?.id)
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -712,18 +715,39 @@ class CounselController(
             completion(null)
         }
     }
-    private suspend fun beginTemporary() {
+    private fun beginTemporaryState(next:TemporarySessionCredential) {
         clearInlineMemory()
         invalidateRun()
-        credential?.let { temporary.remove(it) }
-        credential = temporary.begin()
+        credential = next
         summaries = emptyList(); plans = emptyList()
         inputRevision++
         ledger = AnalysisLedger()
         dirtyDraft = false
         set(CounselState(loading = false, contacts = state.value.contacts,
             conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
+    }
+    private suspend fun beginTemporary() {
+        val previous=credential
+        beginTemporaryState(temporary.begin())
+        previous?.let { temporary.remove(it) }
         refreshMemory(null)
+    }
+    /** Capture may only replace the context that was current at the user's click. */
+    internal fun captureTemporary(expected:Long,current:()->Boolean,commit:((()->Unit)->Boolean),completion:(Long?)->Unit) = enqueue {
+        if(importAuthority!=expected || !current()) { completion(null);return@enqueue }
+        if(!initialized) initializeNow(forCapture=true)
+        if(importAuthority!=expected || !current()) { completion(null);return@enqueue }
+        flushDraft()
+        val next=temporary.begin()
+        var claimed:Long?=null
+        var previous:TemporarySessionCredential?=null
+        val switched=synchronized(intentLock) {
+            if(importAuthority!=expected || !current()) false
+            else commit { claimed=epoch.incrementAndGet();previous=credential;beginTemporaryState(next) }
+        }
+        if(switched) { previous?.let { temporary.remove(it) };refreshMemory(null) }
+        else temporary.remove(next)
+        completion(claimed)
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {

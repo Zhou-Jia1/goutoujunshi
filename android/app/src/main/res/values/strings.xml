@@ -281,9 +281,8 @@
     <string name="floating_start">开启悬浮军师</string>
     <string name="floating_stop">关闭悬浮军师</string>
     <string name="floating_notification">悬浮军师已开启 · 点击关闭</string>
-    <string name="floating_explanation">开启后可以拖动悬浮球，点按或长按打开菜单。关闭屏幕后自动停止，需要你重新开启。</string>
+    <string name="floating_explanation">开启后可以拖动悬浮球，点按截屏，长按打开菜单。关闭屏幕后自动停止，需要你重新开启。</string>
     <string name="floating_capture">截屏分析</string>
-    <string name="floating_capture_unavailable">截屏分析暂不可用，你可以在 App 中上传截图或粘贴文字。</string>
     <string name="floating_contacts">选择联系人</string>
     <string name="floating_unlock">解锁应用</string>
     <string name="floating_lock_hint">请先确认设备凭据，再查看联系人。</string>
@@ -292,6 +291,20 @@
     <string name="floating_unavailable">暂时无法开启悬浮窗。请在 App 中继续使用。</string>
     <string name="floating_started">悬浮军师已开启，拖动悬浮球试试吧。</string>
     <string name="floating_locked">应用已锁定</string>
-    <string name="floating_ball_menu">悬浮军师，打开菜单</string>
+    <string name="floating_ball_menu">悬浮军师，点按截屏，长按菜单</string>
     <string name="floating_off">悬浮军师未开启。你可以重试开启，或在 App 中上传截图、粘贴文字。</string>
+    <string name="capture_usage">回到聊天后点一下悬浮球，读取这一屏；向上翻页后可再点一次。截图只在内存中识别。</string>
+    <string name="capture_no_frame">暂时没能读取画面，请检查共享应用或重试。也可以复制可分享文字或导入已有文件。</string>
+    <string name="capture_timeout">未操作自动关闭</string>
+    <string name="capture_timeout_minutes">%1$d 分钟</string>
+    <string name="capture_synthetic_title">合成测试聊天</string>
+    <string name="capture_synthetic_peer">小林</string>
+    <string name="capture_synthetic_one">周五一起去公园散步吗？</string>
+    <string name="capture_synthetic_two">好呀，下午三点见。</string>
+    <string name="capture_synthetic_three">我带一瓶水过去。</string>
+    <string name="capture_synthetic_prior">上次去公园时看到了小松鼠。</string>
+    <string name="capture_synthetic_earlier">向上翻一屏（合成测试）</string>
+    <string name="capture_more_hint">向上翻页后再点一次悬浮球，新内容会接在已有聊天之前。未读到画面时可回到共享聊天再试。</string>
+    <string name="capture_retry">回到共享聊天再截一屏</string>
+    <string name="capture_return_chat">请先回到聊天，再点悬浮球读取画面。</string>
 </resources>

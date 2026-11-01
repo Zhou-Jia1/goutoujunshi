@@ -11,11 +11,14 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.*
 import org.json.JSONObject
 
+/** Same reversible toolbar/input-area suggestion for URI tiles and live RAM frames. */
+internal fun frameUiHint(line:OcrLine,width:Int,height:Int)=line.copy(suggestedUi=line.suggestedUi ||
+    line.bottom*height < minOf(width,height)*.18f || line.top*height > height-minOf(width,height)*.13f)
+
 /** Bounded content-only reads. Never persists grants, URIs, encoded images or decoded tiles. */
 class PaddleImageReader(private val context:Context) {
-    private val ids=AtomicLong()
-    suspend fun read(uris:List<Uri>):List<List<OcrLine>> = withContext(Dispatchers.IO) {
-        require(uris.size in 1..20 && uris.all { it.scheme=="content" })
+    private companion object { val ids=AtomicLong() }
+    private suspend fun <T> connected(block:suspend (IIsolatedPaddleOcr)->T):T = withContext(Dispatchers.IO) {
         var registered=false
         var pending:CancellableContinuation<IIsolatedPaddleOcr>?=null
         val connection=object:ServiceConnection {
@@ -30,13 +33,27 @@ class PaddleImageReader(private val context:Context) {
                 registered=context.bindService(Intent(context,IsolatedPaddleOcrService::class.java),connection,Context.BIND_AUTO_CREATE)
                 if(!registered) continuation.resumeWithException(IllegalStateException("OCR_UNAVAILABLE"))
             } }
+            block(remote)
+        } catch(e:java.io.IOException) { throw IllegalStateException("OCR_READ") }
+        catch(e:SecurityException) { throw IllegalStateException("OCR_READ") }
+        finally { pending=null; if(registered) context.unbindService(connection) }
+    }
+    /** Caller retains ownership; this entry never encodes or persists the frame. */
+    suspend fun readBitmap(bitmap:Bitmap):List<OcrLine> = connected { remote ->
+        require(!bitmap.isRecycled && bitmap.width.toLong()*bitmap.height<=12_000_000)
+        OcrLayout.attachNicknames(recognize(remote,bitmap).map { frameUiHint(it,bitmap.width,bitmap.height) },bitmap.width.toFloat()/bitmap.height)
+    }
+    suspend fun read(uris:List<Uri>):List<List<OcrLine>> {
+        require(uris.size in 1..20 && uris.all { it.scheme=="content" })
+        return connected { remote ->
+            val coroutine=currentCoroutineContext()
             uris.map { uri ->
-                ensureActive()
+                coroutine.ensureActive()
                 val bytes=withTimeout(30_000) { runInterruptible { context.contentResolver.openInputStream(uri)?.use { input ->
                     val output=java.io.ByteArrayOutputStream()
                     val buffer=ByteArray(8192)
                     while(true) {
-                        ensureActive()
+                        coroutine.ensureActive()
                         val n=input.read(buffer); if(n<0) break
                         require(output.size()+n<=25*1024*1024) { "OCR_LIMIT" }
                         output.write(buffer,0,n)
@@ -50,14 +67,14 @@ class PaddleImageReader(private val context:Context) {
                     val lines=mutableListOf<OcrLine>()
                     val scale=maxOf(1, (decoder.width+1279)/1280)
                     for(tile in OcrLayout.tiles(decoder.height,1600*scale,200*scale)) {
-                        ensureActive()
+                        coroutine.ensureActive()
                         val bitmap=decoder.decodeRegion(Rect(0,tile.top,decoder.width,tile.bottom),BitmapFactory.Options().apply { inSampleSize=scale; inPreferredConfig=Bitmap.Config.ARGB_8888 }) ?: error("OCR_READ")
                         try {
                             val result=recognize(remote,bitmap)
                             result.forEach { l ->
                                 val y=tile.top+l.top*(tile.bottom-tile.top)
                                 val bottom=tile.top+l.bottom*(tile.bottom-tile.top)
-                                if(tile.owns((y+bottom)/2)) lines += l.copy(top=y/decoder.height,bottom=bottom/decoder.height, suggestedUi=(bottom < decoder.width*.18f || y > decoder.height-decoder.width*.13f))
+                                if(tile.owns((y+bottom)/2)) lines += frameUiHint(l.copy(top=y/decoder.height,bottom=bottom/decoder.height),decoder.width,decoder.height)
                             }
                             require(lines.size<=2000) { "OCR_LIMIT" }
                         } finally { bitmap.recycle() }
@@ -66,9 +83,7 @@ class PaddleImageReader(private val context:Context) {
                     OcrLayout.attachNicknames(sorted,decoder.width.toFloat()/decoder.height)
                 } finally { decoder.recycle() }
             }
-        } catch(e:java.io.IOException) { throw IllegalStateException("OCR_READ") }
-        catch(e:SecurityException) { throw IllegalStateException("OCR_READ") }
-        finally { pending=null; if(registered) context.unbindService(connection) }
+        }
     }
     /** Probe the flat bubble background above the glyphs; fall back to text geometry if unclear. */
     private fun bubbleSide(bitmap:Bitmap,line:OcrLine):OcrSide? {
