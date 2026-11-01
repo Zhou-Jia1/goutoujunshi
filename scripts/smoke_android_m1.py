@@ -157,12 +157,15 @@ class Device:
         raise AssertionError(f"Debug action not available: {text}")
 
     def editor(self):
-        for _ in range(10):
+        # Full answers place the composer below a taller card. Small overlapping
+        # gestures need a separate bounded scan budget from short action lookups.
+        for _ in range(40):
             root = self.tree()
             for node in root.iter("node"):
                 if node.get("package") == APP and node.get("class") == "android.widget.EditText":
                     return node
             self.swipe(root, True)
+        print("Redacted editor state:", self.redacted_controls(root), flush=True)
         raise AssertionError("Debug text field is not reachable")
 
     def type_exact(self, text):
