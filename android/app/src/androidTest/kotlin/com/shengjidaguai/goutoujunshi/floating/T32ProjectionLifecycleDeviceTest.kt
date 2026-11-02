@@ -14,6 +14,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.filters.SdkSuppress
@@ -263,6 +264,8 @@ class T32ProjectionLifecycleDeviceTest {
 
     private fun start(fullDisplay: Boolean) {
         compose.onNodeWithText(text(R.string.floating_start)).performClick()
+        compose.onNodeWithText(text(R.string.guide_continue)).performScrollTo().performClick()
+        compose.onNodeWithText(text(R.string.guide_skip)).performScrollTo().performClick()
         if (fullDisplay) SystemProjectionConsent.respond(true) else {
             // Explicit single-app choice, followed by the uniquely labelled synthetic task.
             val spinner = matchingNode {

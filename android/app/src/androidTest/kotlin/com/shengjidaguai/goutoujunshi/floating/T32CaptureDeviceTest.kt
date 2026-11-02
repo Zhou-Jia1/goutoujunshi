@@ -60,6 +60,7 @@ class T32CaptureDeviceTest {
   }
   try {
    compose.onNodeWithText("开启悬浮军师").performClick()
+        SystemProjectionConsent.continueGuide(compose)
    SystemProjectionConsent.respond(true)
    SystemProjectionConsent.waitFor { FloatingRuntime.active.value }
    ActivityScenario.launch(SyntheticChatActivity::class.java).use {
@@ -101,7 +102,7 @@ class T32CaptureDeviceTest {
   } finally { baseline?.recycle() }
  }
  @Test fun deniedConsentNeverStartsProjectionOrNotification() {
-  compose.onNodeWithText("开启悬浮军师").performClick();SystemProjectionConsent.respond(false)
+  compose.onNodeWithText("开启悬浮军师").performClick();SystemProjectionConsent.continueGuide(compose);SystemProjectionConsent.respond(false)
   SystemProjectionConsent.waitFor { SystemProjectionConsent.nodes().none { it.viewIdResourceName=="com.android.systemui:id/screen_share_mode_spinner" } }
   compose.onNodeWithText(application.getString(com.shengjidaguai.goutoujunshi.R.string.floating_permission_denied)).assertIsDisplayed()
   Assert.assertFalse(FloatingRuntime.active.value)
@@ -109,6 +110,7 @@ class T32CaptureDeviceTest {
  }
  @Test fun physicalClickOverMainShowsReturnToChatHintAndPreservesDraftWithoutCapture() {
   compose.onNodeWithText(application.getString(com.shengjidaguai.goutoujunshi.R.string.floating_start)).performClick()
+        SystemProjectionConsent.continueGuide(compose)
   SystemProjectionConsent.respond(true)
   SystemProjectionConsent.waitFor { FloatingRuntime.active.value }
   val frames=java.util.concurrent.atomic.AtomicInteger()

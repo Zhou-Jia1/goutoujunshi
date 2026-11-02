@@ -26,6 +26,10 @@ class FloatingTileHandoffTest {
         val holder=Robolectric.buildActivity(FloatingCounselActivity::class.java,intent(ticket)).create().start().resume().visible()
         shadowOf(Looper.getMainLooper()).idle()
         assertNull(shadowOf(app).nextStartedService)
+        val gate=FloatingCounselActivity::class.java.getDeclaredField("guideGate").apply {isAccessible=true}.get(holder.get()) as PermissionGuideGate
+        val advance=FloatingCounselActivity::class.java.getDeclaredMethod("continueGuide",PermissionAuthority::class.java).apply {isAccessible=true}
+        advance.invoke(holder.get(),gate.authority);advance.invoke(holder.get(),gate.authority)
+        shadowOf(Looper.getMainLooper()).idle()
         deliverProjectionResult(holder.get())
         shadowOf(Looper.getMainLooper()).idle()
         val started=shadowOf(app).nextStartedService

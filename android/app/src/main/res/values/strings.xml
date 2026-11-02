@@ -333,4 +333,27 @@
     <string name="t33_capture_priority">本次分析以这次已确认的截图为准；原导入和图片仍保留。</string>
     <string name="t33_capture_reconfirm">这段截图的来源历史暂时无法安全使用。原记录保留，请改用临时对话或新联系人。</string>
     <string name="t33_capture_history_review">为避免混入旧方向，当前不能将这张截图加入该联系人。请改选临时问问或新联系人，仅分析本次截图；原记录保留。</string>
+    <string name="guide_title">悬浮军师使用指南</string>
+    <string name="guide_intro_title">点一下，帮你看懂聊天</string>
+    <string name="guide_intro_body">只在你点击时看屏幕，在本机识别当前聊天并准备建议。图片不上传，也不保存；发送给模型前仍需检查脱敏后的实际正文。开启后系统状态栏会显示录屏图标，可随时停止。返回或取消不会开启录屏。</string>
+    <string name="guide_overlay_title">允许显示悬浮球</string>
+    <string name="guide_overlay_body">在系统设置中找到狗头军师，允许显示在其他应用上层。如进入应用列表，请先选择狗头军师，再开启权限。回来后会重新检查；未开启也可以截图后上传。</string>
+    <string name="guide_background_title">悬浮球容易消失？看看本应用设置</string>
+    <string name="guide_notification_title">通知没有开启，也可以继续</string>
+    <string name="guide_notification_body">系统可能不在通知栏显示常驻通知，但录屏仍需要前台服务，系统会保留录屏状态提示。你可以现在明确继续，也可以取消。不会自动重复申请通知权限。</string>
+    <string name="guide_continue">了解并继续</string>
+    <string name="guide_skip">跳过，继续开启</string>
+    <string name="guide_cancel">稍后再说</string>
+    <string name="guide_open_overlay">去开启悬浮窗</string>
+    <string name="guide_open_details">打开本应用设置</string>
+    <string name="guide_help">悬浮球消失了？查看机型指南</string>
+    <string name="guide_version_notice">这些是菜单参考，尚未在你的机型上验证。系统版本、地区与菜单名称可能不同，可在设置中搜索相关名称。仅调整狗头军师；无需关闭全局省电。找不到设置页时，请按上述步骤手动查找。</string>
+    <string name="guide_single_app">若系统提供“单个应用”共享（Android 14 QPR2 及以上的部分系统），建议选择聊天应用，避免截到其他应用。是否提供以系统弹窗为准，由你亲自选择共享范围。</string>
+    <string name="guide_xiaomi">① 悬浮窗：设置中搜索“显示在其他应用上层”或“悬浮窗”，允许本应用。② 小米／红米／POCO（HyperOS、MIUI）：应用 → 权限 → 后台自启动，选择本应用。③ 电池中查找本应用的耗电管理，必要时设为无限制。</string>
+    <string name="guide_huawei">① 悬浮窗：设置中搜索“悬浮窗”，允许本应用。② 华为（EMUI、可运行安卓应用的 HarmonyOS）：搜索“应用启动管理”，对本应用手动管理并允许后台活动。③ 搜索“电池优化”，仅将本应用设为不允许优化。</string>
+    <string name="guide_honor">① 悬浮窗：设置中搜索“悬浮窗”，允许本应用。② 荣耀（MagicOS）：搜索“启动管理”或“应用启动管理”，仅对本应用关闭自动管理、允许后台活动。③ 搜索电池优化，必要时仅调整本应用。</string>
+    <string name="guide_oppo">① OPPO（ColorOS）：应用 → 特殊应用权限 → 显示在其他应用上层（部分旧版直接在应用菜单），允许本应用。② 应用或电池设置中查找本应用的自启动、后台活动。③ 仅在后台受限时调整本应用的耗电管理。</string>
+    <string name="guide_oneplus">① 一加：搜索“显示在其他应用上层”，允许本应用。② ColorOS 机型在应用或电池设置查找本应用后台活动。③ OxygenOS 14 菜单参考：电池 → 更多设置 → 应用耗电管理。系统地区不同，勿照搬其他版本菜单。</string>
+    <string name="guide_vivo">① vivo／iQOO（OriginOS）：搜索“悬浮窗”，允许本应用。② 菜单参考：应用与权限 → 权限管理 → 权限 → 自启动，选择本应用。③ 电池 → 后台耗电管理，允许本应用后台运行；新版菜单可能不同。</string>
+    <string name="guide_unknown">① 设置中搜索“显示在其他应用上层”或“悬浮窗”，允许狗头军师。② 打开本应用详情，查找后台活动或自启动设置。③ 若本应用被限制，检查本应用的电池优化选项。无法识别此机型，下面的应用详情入口可能只提供部分选项。</string>
 </resources>

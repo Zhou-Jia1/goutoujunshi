@@ -1,8 +1,16 @@
 package com.shengjidaguai.goutoujunshi.floating
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.platform.app.InstrumentationRegistry
 internal object SystemProjectionConsent {
+ fun continueGuide(compose:ComposeTestRule) {
+  val context=InstrumentationRegistry.getInstrumentation().targetContext
+  compose.onNodeWithText(context.getString(com.shengjidaguai.goutoujunshi.R.string.guide_continue)).performScrollTo().performClick()
+  compose.onNodeWithText(context.getString(com.shengjidaguai.goutoujunshi.R.string.guide_skip)).performScrollTo().performClick()
+ }
+
  private val automation get()=InstrumentationRegistry.getInstrumentation().uiAutomation
  fun nodes():List<AccessibilityNodeInfo> {
   val info=automation.serviceInfo

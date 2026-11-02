@@ -236,6 +236,8 @@ class T33FormalCaptureDeviceTest {
         compose.waitUntil(15000) {controller.state.value.contacts.any {it.alias==fixtureAlias}}
         fixtureContactId=controller.state.value.contacts.single {it.alias==fixtureAlias}.id
         compose.onNodeWithText(text(R.string.floating_start)).performClick()
+        compose.onNodeWithText(text(R.string.guide_continue)).performScrollTo().performClick()
+        compose.onNodeWithText(text(R.string.guide_skip)).performScrollTo().performClick()
         SystemProjectionConsent.respond(true)
         compose.waitUntil(15000) {FloatingRuntime.active.value}
         if(InstrumentationRegistry.getArguments().getString("t33AwaitFont260")=="true") {

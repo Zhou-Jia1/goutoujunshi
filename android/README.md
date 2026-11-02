@@ -69,3 +69,10 @@ python scripts/smoke_android_model_settings.py --adb 'D:\tools\android-sdk\platf
 ```
 
 使用 [Kotlin 官方进程内策略](https://kotlinlang.org/docs/compiler-execution-strategy.html) 降低多 JVM 峰值。临时目录仍由本次进程的 TEMP/TMP 与 java.io.tmpdir 指定，宜指向空间充足的位置；不会代替系统盘空间维护。当前实际已通过该 profile 的 domain 36 测试、Data 编译与长期记忆 15 项专项测试；App 最终编译、完整回归、截图、lint 与设备测试须分别执行，不能以这些局部结果替代。资源不足或未执行必须明确标记，不忽略失败或重录旧截图使其变绿。
+
+
+### T34 权限与机型指南
+
+开启悬浮军师先显示本地截图用途说明，可取消；后台/电池步骤可以跳过，之后可从悬浮控制页的故障入口再次查看。Android13+通知被拒时解释系统展示差异，用户可明确继续，再由真实系统弹窗授权录屏。菜单会随厂牌、地区和系统版本变化，指南只要求调整本应用，不要求关闭全局省电。详见 [T34实现与验收记录](../documentation/android/T34-权限与机型引导.md)。
+
+安装限制：HarmonyOS NEXT（纯血鸿蒙）无法安装 Android APK；官网和商店介绍必须说明此限制。本包不提供鸿蒙原生版本，也不在 App 内做 NEXT 探测。

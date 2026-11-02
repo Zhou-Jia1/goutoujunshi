@@ -67,6 +67,7 @@ class T33FloatingJourneyDeviceTest {
         val large=InstrumentationRegistry.getArguments().getString("t33Font260")=="true"
         if(large) assertTrue("Root must configure effective system fontScale 2.6 for this variant",app.resources.configuration.fontScale>=2.59f)
         compose.onNodeWithText(text(R.string.floating_start)).performClick()
+        SystemProjectionConsent.continueGuide(compose)
         SystemProjectionConsent.respond(true)
         compose.waitUntil(15000) { FloatingRuntime.active.value }
         if(InstrumentationRegistry.getArguments().getString("t33AwaitFont260")=="true") {
