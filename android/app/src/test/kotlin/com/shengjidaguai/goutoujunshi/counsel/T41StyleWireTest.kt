@@ -59,7 +59,7 @@ class T41StyleWireTest {
                 override suspend fun styleGenerated(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) {styles.editDescription(group,text,stamp,generated=true,current=current)}
             }
             val scope=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined)
-            val controller=CounselController(persistence,TemporarySessionStore(),assembler,provider,scope,settings,{provider})
+            val controller=CounselController(persistence,TemporarySessionStore(),assembler,provider,scope,settings,{provider}, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             try {
                 controller.initialize();await {!controller.state.value.loading}
                 controller.newTemporary();await {controller.state.value.currentContact==null && controller.state.value.conversation?.isTemporary==true}

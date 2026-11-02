@@ -79,7 +79,7 @@ class T51EncryptedTeachingIntegrationTest {
         suspend fun awaitReady(test:()->Boolean)=withTimeout(10_000) {while(!test()) delay(10)}
         fun controller():CounselController {
             val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default);scopes+=scope
-            return CounselController(EncryptedCounselPersistence(store,temporary),temporary,assembler,provider,scope)
+            return CounselController(EncryptedCounselPersistence(store,temporary),temporary,assembler,provider,scope,localSafety={SafetyLevel.NONE})
         }
         try {
             val session=store.open()

@@ -272,10 +272,11 @@ class T52PracticeControllerTest {
   assertEquals(1,loads)
   var classifications=0;val f=Fixture(safety={classifications++;safety(it)})
   try {
-   f.open();assertEquals(1,classifications)
-   f.controller.editPracticeInput(f.origin,f.id,"明天讨论方案");await {f.controller.state.value.practice?.draft=="明天讨论方案"};assertEquals(2,classifications)
+   f.controller.initialize();await {f.controller.state.value.currentContact?.id=="a"};assertEquals(1,classifications)
+   f.controller.enterPractice(f.origin);await {f.controller.state.value.practice!=null};assertEquals(2,classifications)
+   f.controller.editPracticeInput(f.origin,f.id,"明天讨论方案");await {f.controller.state.value.practice?.draft=="明天讨论方案"};assertEquals(3,classifications)
    f.controller.editPracticeInput(f.origin,f.id,"我想自杀");assertEquals(SafetyLevel.CRISIS,f.controller.state.value.safety);assertNull(f.controller.state.value.practice)
-   assertEquals(3,classifications);assertEquals(1,loads);assertTrue(f.provider.calls.isEmpty());f.zeroWrites()
+   assertEquals(4,classifications);assertEquals(1,loads);assertTrue(f.provider.calls.isEmpty());f.zeroWrites()
   } finally {f.scope.cancel()}
  }
  @Test fun runtimeSafetyFactoryCachesLoadAndParseFailuresWithoutCrashOrSend()=runBlocking {
@@ -284,13 +285,36 @@ class T52PracticeControllerTest {
    repeat(3) {assertTrue(runCatching {safety("neutral")}.isFailure);assertTrue(runCatching {safety("我想自杀")}.isFailure)}
    val f=Fixture(safety=safety);try {
     f.controller.initialize();await {f.controller.state.value.currentContact?.id=="a"}
+    assertEquals("SAFETY_UNAVAILABLE",f.controller.state.value.error?.code);assertEquals(SafetyLevel.CRISIS,f.controller.state.value.safety)
+    assertNull(f.controller.state.value.practice);assertTrue(f.provider.calls.isEmpty());f.zeroWrites()
+    // Both formal restore and confirmed RAM evidence now fail closed before entry.
+    f.controller.newTemporary();await {f.controller.state.value.currentContact==null}
+    val preview=com.shengjidaguai.goutoujunshi.importing.ImportPreview(
+     rows=listOf(com.shengjidaguai.goutoujunshi.importing.ImportRow("合成对方","明天讨论方案",speaker=Speaker.THEM)),
+     target=com.shengjidaguai.goutoujunshi.importing.ImportTarget(),rightsAccepted=true)
+    f.controller.commitImport(preview) {assertTrue(it)};await {f.controller.state.value.evidence.isNotEmpty()}
+    assertEquals("SAFETY_UNAVAILABLE",f.controller.state.value.error?.code);assertEquals(SafetyLevel.CRISIS,f.controller.state.value.safety)
     repeat(3) {
      f.controller.enterPractice(f.origin)
      val barrier=f.controller.state.value.tipsReceipt;f.controller.openTips();await {f.controller.state.value.tipsReceipt!=barrier}
-     assertEquals("PRACTICE_SAFETY_UNAVAILABLE",f.controller.state.value.error?.code);assertNull(f.controller.state.value.practice)
+     assertEquals("SAFETY_UNAVAILABLE",f.controller.state.value.error?.code);assertNull(f.controller.state.value.practice)
     }
     assertEquals(1,loads);assertTrue(f.provider.calls.isEmpty());f.zeroWrites()
    } finally {f.scope.cancel()}
+   // Exercise the original in-practice exception boundary too: setup uses the real
+   // healthy runtime loader, then fault injection selects the same real failed cache.
+   val healthy=CounselRuntime.localSafetyClassifier {File(System.getProperty("junshi.repositoryRoot"),"android/core/knowledge/src/main/assets/crisis-keywords.txt").readText()}
+   var failedDuringPractice=false
+   val active=Fixture(safety={if(failedDuringPractice)safety(it) else healthy(it)})
+   try {
+    active.open();failedDuringPractice=true
+    active.controller.editPracticeInput(active.origin,active.id,"明天讨论方案")
+    repeat(3) {
+     assertEquals("PRACTICE_SAFETY_UNAVAILABLE",active.controller.state.value.error?.code);assertNull(active.controller.state.value.practice)
+     active.controller.enterPractice(active.origin)
+    }
+    assertEquals(1,loads);assertTrue(active.provider.calls.isEmpty());active.zeroWrites()
+   } finally {active.scope.cancel()}
   }
  }
 

@@ -59,19 +59,29 @@ class ImportCoordinator(
     private var more:com.shengjidaguai.goutoujunshi.counsel.FloatingCaptureMore?=null
     private var pendingMore:String?=null
     private var moreImages=emptyList<String>()
-    init { scope.launch { controller.state.collect { state ->
-        if (!state.lockState.canDisplaySensitiveContent || (mutable.value?.source == ImportSource.SCREENSHOT &&
-            (authority != null && controller.importAuthority != authority))) this@ImportCoordinator.cancel()
-    } } }
     private var pendingRead: Pair<ImportPreview, () -> String>? = null
+    /** A stale external picker ticket is already revoked by controller epoch/lock generation.
+     * Only locally retained work needs automatic cancellation; counters alone are not work. */
+    private fun ownsPendingImport() = mutable.value!=null || job!=null || authority!=null || pendingRead!=null ||
+        imageRows.isNotEmpty() || more!=null || pendingMore!=null || moreImages.isNotEmpty()
+    init { scope.launch { controller.state.collect { state ->
+        if (ownsPendingImport() && (!state.lockState.canDisplaySensitiveContent || (mutable.value?.source == ImportSource.SCREENSHOT &&
+            (authority != null && controller.importAuthority != authority)))) this@ImportCoordinator.cancel()
+    } } }
+    /** Clear ownership before cancellation callbacks or controller publication can re-enter. */
+    private fun clearOwnedImport() {
+        selectionRevision++
+        val previous=job;job=null
+        authority=null;imageRows=emptyMap();pendingRead=null;more=null;moreImages=emptyList();pendingMore=null;mutable.value=null
+        previous?.cancel()
+    }
     private fun begin(source: ImportSource,moreId:String?=null): ImportPreview {
-        val change={ selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null;more=null;moreImages=emptyList();pendingMore=null }
+        val change={ clearOwnedImport() }
         if(moreId!=null) controller.continueImportPending(moreId,change) else controller.setImportPending(true,change)
         return ImportPreview(source = source, rightsAccepted = rightsSeen()).also { mutable.value = it }
     }
-    fun cancel() { controller.setImportPending(false) {
-        selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null;more=null;moreImages=emptyList();pendingMore=null
-    } }
+    // Explicit user cancellation always advances controller authority, including picker-only work.
+    fun cancel() { controller.setImportPending(false) {clearOwnedImport()} }
 
     fun text(text: String, source: ImportSource = ImportSource.PASTE) {
         val preview = begin(source)

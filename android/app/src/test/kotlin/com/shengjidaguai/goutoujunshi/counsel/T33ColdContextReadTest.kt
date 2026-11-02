@@ -21,7 +21,7 @@ class T33ColdContextReadTest {
         // Use the real controller with tracked persistence, preserving its existing assembler/provider seams.
         val c=CounselController(p,com.shengjidaguai.goutoujunshi.data.TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("合成系统","合成输入",listOf(KnowledgeReference("synthetic","a".repeat(64),1)),"v1")
-        }),f.provider,f.scope)
+        }),f.provider,f.scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             val imports=ImportCoordinator(c,f.scope,{true},{})
             assertNotNull(imports.beginCapture(77) {true})

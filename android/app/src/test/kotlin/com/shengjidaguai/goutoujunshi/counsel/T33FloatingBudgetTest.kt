@@ -36,7 +36,7 @@ class T33FloatingBudgetTest {
             val provider=OpenAiCompatibleProvider(ModelConnection(server.url("/v1/").toString(),"synthetic","Mock"),frozen,CredentialSource { "sk-synthetic".toByteArray() },allowLocalhostHttpForTests=true)
             base.people+=Contact("a","合成甲",RelationType.FRIEND)
             base.saved["a"]=StoredCounsel(Conversation("budget-conversation","a",false),"合成问题",emptyList(),if(lines.isEmpty()) emptyList() else listOf(EvidenceBlock("budget-evidence","synthetic",lines)))
-            controller=CounselController(base,TemporarySessionStore(),frozen,provider,scope,settings,{provider})
+            controller=CounselController(base,TemporarySessionStore(),frozen,provider,scope,settings,{provider}, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             controller.initialize()
         }
         suspend fun ready()=withTimeout(5000) { while(controller.state.value.loading || controller.state.value.conversation==null || controller.state.value.currentContact?.id!="a") yield() }

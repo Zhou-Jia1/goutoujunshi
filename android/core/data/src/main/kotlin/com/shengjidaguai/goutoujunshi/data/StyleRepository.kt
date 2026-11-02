@@ -140,6 +140,10 @@ class StyleRepository(private val session: DataSession) {
 
 /** Called only inside the mutation transaction. Clear generated descriptions before recomputing. */
 internal suspend fun JunshiDao.invalidateAndRecompute(ownerId:String?=null) {
+    contacts().forEach {owner->conversations(owner.id).forEach {row->
+        val conversation=decode<Conversation>(row.payload)
+        if(conversation.coolingDraft?.let {it.sourceRevision!=owner.revision}==true) put(row.copy(payload=encode(conversation.copy(coolingDraft=null))))
+    }}
     pruneDerivedMemories(ownerId=ownerId)
     RelationGroup.entries.forEach {group ->
         val qualified=qualifiedStyleSamples(group).map {it.id}.toSet()

@@ -60,8 +60,8 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
         view.setViewTreeLifecycleOwner(owner);view.setViewTreeViewModelStoreOwner(owner);view.setViewTreeSavedStateRegistryOwner(owner)
         view.setContent {
             val state by controller.state.collectAsState()
-            JunshiTheme(calm=(state.emotion ?: 0)>=8) {
-                FloatingPanelContent(state, onTip={id->controller.toggleTip(origin,id)},onTipScene={id->controller.toggleTip(origin,id,true)},onHabit={id,never->controller.dismissHabit(origin,id,never)}, onInteraction=copyCollapse::newInteraction,onClose={ close() },onCopy={ text -> copy(text) },
+            JunshiTheme(calm=state.safetyPresentation().calm) {
+                FloatingPanelContent(state, onTip={id->controller.toggleTip(origin,id)},onTipScene={id->controller.toggleTip(origin,id,true)},onHabit={id,never->controller.dismissHabit(origin,id,never)}, onInteraction=copyCollapse::newInteraction,onClose={ close() },onAuthorizedCopy={ receipt,text -> copy(text,receipt) },onSaveDraft=controller::saveCoolingDraft,onSafetyCollapse=controller::acknowledgeSafety,
                     onPreview={ controller.preparePreview(origin,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },onSendSnapshot={ expected -> controller.analyzeFloating(origin,expected) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },
                     onTone={ tone -> state.answer?.let { controller.rewrite(origin,it.id,com.shengjidaguai.goutoujunshi.domain.Tone.valueOf(tone.name),state.styleBias,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } } },
                     onMore={
@@ -92,12 +92,12 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
         update()
         if(enabled) view.requestFocus() else service.getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(view.windowToken,0)
     }
-    private fun copy(text:String) {
+    private fun copy(text:String,receipt:SafetyActionReceipt) {
         val current=controller.state.value
         if(closed || current.conversation?.id!=origin || controller.lockRevision!=lock || FloatingRuntime.runtimeTicket!=ticket || !current.hasCurrentAnswerSource() || current.streaming || current.error!=null || current.answer?.reply?.joinToString("\n")!=text) return
         val clip=ClipData.newPlainText(service.getString(R.string.app_name),text)
         clip.description.extras=PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE",true) }
-        service.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+        if(!controller.copyReply(receipt,text) {service.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)}) return
         android.widget.Toast.makeText(service,R.string.t33_copied,android.widget.Toast.LENGTH_SHORT).show()
         val copiedEpoch=controller.importAuthority
         val copiedAnswer=current.answer?.id
@@ -120,6 +120,7 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
 }
 
 @Composable internal fun FloatingPanelContent(state:CounselState,onClose:()->Unit={},onCopy:(String)->Unit={},onPreview:()->Unit={},onSend:()->Unit={},
+    onAuthorizedCopy:((SafetyActionReceipt,String)->Unit)?=null,onSaveDraft:(SafetyActionReceipt,String)->Unit={_,_->},onSafetyCollapse:(SafetyActionReceipt,Boolean)->Unit={_,_->},
     onTone:(Tone)->Unit={},onMore:()->Unit={},onFull:()->Unit={},onFocus:(Boolean)->Unit={},onSupplement:(String)->Unit={},onDrag:(Float)->Unit={},onSide:()->Unit={},onInteraction:()->Unit={},onSendSnapshot:((com.shengjidaguai.goutoujunshi.domain.AnalysisRequest)->Unit)?=null, onTip:(String)->Unit={}, onTipScene:(String)->Unit={}, onHabit:(String,Boolean)->Unit={_,_->}) {
     val interaction by rememberUpdatedState(onInteraction)
     fun acted(action:()->Unit) { interaction();action() }
@@ -128,8 +129,11 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
     val keyboard=LocalSoftwareKeyboardController.current
     LaunchedEffect(editing) { if(editing) { focusRequester.requestFocus();keyboard?.show() } }
     val field=remember(state.conversation?.id) { TextFieldState(state.draft) }
-    val streamSafety=SafetyLevel.entries.filter { Regex("\\b${it.name}\\b",RegexOption.IGNORE_CASE).containsMatchIn(state.partial[SectionId.SAFETY].orEmpty()) }.maxByOrNull { it.ordinal } ?: SafetyLevel.NONE
-    val safety=SafetyPolicy.evaluate(state.emotion,state.safety.upgrade(state.answer?.safety ?: SafetyLevel.NONE),streamSafety,state.lockState)
+    val safety=state.safetyPresentation()
+    val receipt=state.safetyActionReceipt()
+    var pendingCopy by remember(receipt) {mutableStateOf<String?>(null)}
+    var safetyNote by remember(receipt) {mutableStateOf<Int?>(null)}
+    fun performCopy(text:String) {if(onAuthorizedCopy!=null) onAuthorizedCopy(receipt,text) else onCopy(text)}
     val answer=state.answer
     // The button's closure carries the body it rendered, never the window's mutable owner.
     val renderedPreview=state.floatingPreviewRequest
@@ -148,16 +152,30 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
             }
             Box(Modifier.weight(1f)) {
                 if(!state.lockState.canDisplaySensitiveContent) BodyText(stringResource(R.string.counsel_locked))
-                else {
+                else if(safety.showSafetyCard) {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        com.shengjidaguai.goutoujunshi.ui.SafetySupport(state,{onSafetyCollapse(receipt,it)},{safetyNote=it})
+                        safetyNote?.let {BodyText(stringResource(it))}
+                        SecondaryButton(stringResource(R.string.t53_open_full),onFull)
+                        SecondaryButton(stringResource(R.string.close),onClose)
+                    }
+                } else {
                     val partial=SafeAliasRestorer.displayPartial(state.partial[SectionId.REPLY].orEmpty(),state.preview)
-                    FloatingAnswerPanel(AnswerUiState(verdict=answer?.verdict.orEmpty(),reply=answer?.reply ?: partial.split("+++").filter { it.isNotBlank() },
-                        crisis=safety.showSafetyCard,calm=(state.emotion ?: 0)>=8,demo=state.answerDemo,isStreaming=!current,
+                    FloatingAnswerPanel(AnswerUiState(empathy=answer?.empathy.orEmpty(),next=answer?.next.orEmpty(),verdict=answer?.verdict.orEmpty(),reply=answer?.reply ?: partial.split("+++").filter { it.isNotBlank() },
+                        crisis=safety.showSafetyCard,calm=state.safetyPresentation().calm,demo=state.answerDemo,isStreaming=!current,
                         relationLabel=stringResource(com.shengjidaguai.goutoujunshi.ui.relationLabel(state.relationType)),goalLabel=stringResource(com.shengjidaguai.goutoujunshi.ui.goalLabel(state.goal))),
                         state.currentContact?.alias ?: stringResource(R.string.temporary_title),
-                        onCopy={ acted { if(current && safety.showOrdinaryStrategy) onCopy(answer?.reply?.joinToString("\n").orEmpty()) } },
+                        onCopy={ acted { if(current && safety.showOrdinaryStrategy) if(safety.calm) pendingCopy=answer?.reply?.joinToString("\n") else performCopy(answer?.reply?.joinToString("\n").orEmpty()) } },
                         onChangeTone={ tone -> acted { if(current && safety.showOrdinaryStrategy) onTone(tone) } },onCaptureMore={ acted(onMore) },onOpenInApp={ acted(onFull) },onClose={ acted(onClose) },
                         footer={
-                            if(current && safety.showOrdinaryStrategy && state.teaching.answerId==answer?.id) com.shengjidaguai.goutoujunshi.ui.TeachingContent(state.teaching,{onTip(state.teaching.receipt)},{never->onHabit(state.teaching.receipt,never)},saveScene={onTipScene(state.teaching.receipt)})
+                            if(pendingCopy!=null && safety.showOrdinaryStrategy) BreathingPrompt(onContinue={pendingCopy?.let(::performCopy);pendingCopy=null},onSaveDraft={pendingCopy?.let {onSaveDraft(receipt,it)};pendingCopy=null})
+                            if(safety.calm && current && safety.showOrdinaryStrategy) SecondaryButton(stringResource(R.string.t53_save_ten),{answer?.reply?.joinToString("\n")?.let {onSaveDraft(receipt,it)}})
+                            state.visibleCoolingDraft()?.let {androidx.compose.runtime.key(state.conversation?.id) {com.shengjidaguai.goutoujunshi.ui.CoolingDraftContent(it,safety.calm)}}
+                            if(current && safety.showOrdinaryStrategy && state.teaching.answerId==answer?.id) {
+                                androidx.compose.runtime.key(answer?.id) {com.shengjidaguai.goutoujunshi.ui.CalmOrdinaryContent(safety.calm) {
+                                    com.shengjidaguai.goutoujunshi.ui.TeachingContent(state.teaching,{onTip(state.teaching.receipt)},{never->onHabit(state.teaching.receipt,never)},saveScene={onTipScene(state.teaching.receipt)})
+                                }}
+                            }
                             if(state.captureSourcePreferred) BodyText(stringResource(R.string.t33_capture_priority))
                             state.floatingCapture?.let { capture ->
                                 if(capture.canSwapPhysicalSide) {

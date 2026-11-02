@@ -73,13 +73,15 @@ class ConversationRepository(private val session: DataSession) {
     }
     /** Atomically advance a formal conversation and its sensitive draft, rejecting stale edits. */
     suspend fun updateDraft(contactId: String, expectedRevision: Long, next: Conversation, text: String,
-        expectedContactRevision: Long? = null) = session.transaction {
+        expectedContactRevision: Long? = null, current:()->Boolean={true}) = session.transaction {
+        check(current())
         require(next.canPersist && next.contactId == contactId && next.revision == expectedRevision + 1)
         val owner = requireContact(contactId)
         if (expectedContactRevision != null) check(owner.revision == expectedContactRevision) { "Contact source changed" }
         val previous = requireNotNull(conversation(contactId, next.id)) { "Conversation does not belong to contact" }
         check(decode<Conversation>(previous.payload).revision == expectedRevision) { "Conversation changed" }
         put(previous.copy(payload = encode(next), draft = text))
+        check(current())
     }
     suspend fun draft(contactId: String, conversationId: String): String? = session.transaction { conversation(contactId, conversationId)?.draft }
     suspend fun delete(contactId: String, conversationId: String) = session.transaction {

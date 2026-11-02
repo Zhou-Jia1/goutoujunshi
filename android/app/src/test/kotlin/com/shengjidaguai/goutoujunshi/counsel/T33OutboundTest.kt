@@ -43,7 +43,7 @@ class T33OutboundTest {
             val scope=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined)
             val frozen=FrozenPromptAssembler(builder())
             val provider=OpenAiCompatibleProvider(ModelConnection(server.url("/v1/").toString(),"synthetic","Mock"),frozen,CredentialSource { "sk-synthetic".toByteArray() },allowLocalhostHttpForTests=true)
-            val controller=CounselController(persistence,TemporarySessionStore(),frozen,provider,scope,settings,{provider})
+            val controller=CounselController(persistence,TemporarySessionStore(),frozen,provider,scope,settings,{provider}, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             try {
                 val imports=ImportCoordinator(controller,scope,{true},{})
                 val previewId=imports.beginCapture(33) { true }!!

@@ -65,6 +65,7 @@ interface CounselPersistence {
     suspend fun contactDetails(contact: Contact): ContactDetails { error("Contact details unavailable") }
     suspend fun deleteContact(id: String)
     suspend fun loadOrCreate(contact: Contact): StoredCounsel
+    suspend fun saveCooling(contact:Contact,previous:Conversation,next:Conversation,draft:String,current:()->Boolean) {check(current());update(contact,previous,next,draft);check(current())}
     suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String)
     suspend fun saveMessage(contact: Contact, conversation: Conversation, message: Message)
     suspend fun discardMessage(contact: Contact, message: Message)
@@ -140,6 +141,9 @@ class EncryptedCounselPersistence(
         val selected=LiveCaptureRepository(checkNotNull(session)).evidence(contact.id)
         val evidence = selected.evidence
         return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence, TimelineRepository(checkNotNull(session)).runs(contact.id), SummaryRepository(checkNotNull(session)).list(contact.id), PlanRepository(checkNotNull(session)).list(contact.id),sourceBlocked=selected.blocked,capturePreferred=selected.preferred)
+    }
+    override suspend fun saveCooling(contact:Contact,previous:Conversation,next:Conversation,draft:String,current:()->Boolean) {
+        conversationsRepo().updateDraft(contact.id,previous.revision,next,draft,contact.sourceRevision,current)
     }
     override suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String) {
         require(next.canPersist && next.contactId == contact.id && next.id == previous.id)
@@ -238,7 +242,6 @@ class CounselController(
         authorized(authority) {Unit}
         if(!state.value.lockState.canDisplaySensitiveContent || state.value.sourceSelectionBlocked || state.value.safety==SafetyLevel.CRISIS) return
         val current=state.value
-        try {localSafety("")} catch(_:Exception) {set(current.copy(error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return}
         val conversation=current.conversation ?: return
         val lease=PracticeSourceLease(current.currentContact?.id,current.currentContact?.sourceRevision ?: 0,conversation.id,conversation.revision,current.evidence,current.redactionProfile.revision,settings.saved.revision)
         if(lease.opponents().isEmpty()) {set(current.copy(error=CounselError("PRACTICE_NEEDS_MESSAGES")));return}
@@ -249,12 +252,25 @@ class CounselController(
         val retained=practiceSourcesCurrent(lease) {authorized(authority) {Unit}}
         authorized(authority) {if(!retained) {practiceSource=null;practiceMain=null;set(state.value.copy(error=CounselError("PRACTICE_SOURCE_CHANGED")))}}
         if(!retained) return
-        authorized(authority) {set(state.value.copy(practice=PracticeView(UUID.randomUUID().toString(),0),answer=null,answerRequest=null,teaching=TeachingView(),error=null))}
+        authorized(authority) {
+            val scanned=try {localSafety((listOf(current.draft)+lease.evidence.flatMap {it.lines}.map {it.text}).joinToString("\n"))}
+            catch(_:Exception) {
+                practiceSource=null;practiceMain=null;practiceSummary=null
+                set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS,teaching=TeachingView(),error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return
+            }
+            val highest=state.value.safety.upgrade(scanned)
+            if(highest==SafetyLevel.CRISIS) {
+                practiceSource=null;practiceMain=null;practiceSummary=null
+                set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=highest,teaching=TeachingView()));return
+            }
+            set(state.value.copy(safety=highest,practice=PracticeView(UUID.randomUUID().toString(),0),answer=null,answerRequest=null,teaching=TeachingView(),error=null))
+        }
     }
     fun editPracticeInput(origin:String?,id:String,text:String) {
         synchronized(intentLock) {
             if(state.value.conversation?.id!=origin || state.value.practice?.id!=id) return
-            val safety=try {localSafety(text)} catch(_:Exception) {epoch.incrementAndGet();invalidateRun();set(state.value.copy(error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return}
+            val safety=try {localSafety(text)} catch(_:Exception) {epoch.incrementAndGet();invalidateRun();set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS,teaching=TeachingView(),error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return}
+            if(safety==SafetyLevel.CAUTION) set(state.value.copy(safety=state.value.safety.upgrade(safety)))
             if(safety==SafetyLevel.CRISIS) {
                 epoch.incrementAndGet();invalidateRun();practiceSource=null;practiceMain=null;practiceSummary=null
                 set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS,teaching=TeachingView()));return
@@ -1036,7 +1052,7 @@ class CounselController(
         val teachingVisible=next.teaching.takeIf {next.answer?.id==it.answerId && !next.streaming && next.hasCurrentAnswerSource() && SafetyPolicy.evaluate(next.emotion,next.safety.upgrade(next.answer?.safety ?: SafetyLevel.NONE),SafetyLevel.NONE,authorityLock).showOrdinaryStrategy} ?: TeachingView()
         val practiceValid=next.practice==null || practiceSource?.let {it.contactId==next.currentContact?.id && it.sourceRevision==(next.currentContact?.sourceRevision ?: 0) && it.conversationId==next.conversation?.id && it.conversationRevision==next.conversation?.revision && it.evidence==next.evidence && it.privacyRevision==next.redactionProfile.revision && it.configRevision==settings.saved.revision}==true
         if(!practiceValid) {practiceSource=null;practiceMain=null;practiceSummary=null}
-        val visible = next.copy(practice=next.practice.takeIf {practiceValid},practicePreviewReceipt=next.practicePreviewReceipt.takeIf {practiceValid && next.practice!=null},teaching=teachingVisible,lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
+        val visible = next.copy(actionEpoch=epoch.get(),actionLock=lockGeneration,practice=next.practice.takeIf {practiceValid},practicePreviewReceipt=next.practicePreviewReceipt.takeIf {practiceValid && next.practice!=null},teaching=teachingVisible,lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
             if (authorityLock.canDisplaySensitiveContent) it else it.copy(practicePreviewReceipt=null,streaming=false, testingConnection=false,
                 partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         }
@@ -1189,15 +1205,17 @@ class CounselController(
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {
         val teachingAuthority=synchronized(intentLock) {epoch.get() to lockGeneration}
+        fun targetCurrent()=(expectedEpoch==null || epoch.get()==expectedEpoch) && (selectionToken==null || selectionEpoch.get()==selectionToken)
         clearInlineMemory()
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
+        if(!targetCurrent()) return false
         val memorySnapshot=if(saved.sourceBlocked) MemorySnapshot() else persistence.memoryContextSnapshot(contact.id)
+        if(!targetCurrent()) return false
         val memoryContext=MemoryPresentation.context(contact.id,memorySnapshot)
         if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
         if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
-        summaries = saved.summaries; plans = saved.plans
         val latestUser = saved.messages.lastOrNull { it.role == MessageRole.USER }
         val answerMessage = saved.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.answerJson != null &&
@@ -1206,6 +1224,7 @@ class CounselController(
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val profile = persistence.redactionProfile(contact.id)
+        if(!targetCurrent()) return false
         val completedCurrentAnswer = !saved.sourceBlocked && (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) && AnswerSourcePolicy.matches(answerRequest,
             saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
             saved.conversation, contact.id, contact.sourceRevision, saved.draft, saved.evidence, profile.revision, settings.saved.revision)
@@ -1217,7 +1236,10 @@ class CounselController(
                 r.evidence == saved.evidence && r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision &&
                 saved.messages.none { it.requestId == run.requestId && it.role == MessageRole.ASSISTANT }
         }?.let { it.copy(status = if (it.status == RunStatus.CANCELLED && it.requestSnapshot?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) RunStatus.CANCELLED else RunStatus.INTERRUPTED, requestSnapshot = it.requestSnapshot?.copy(redactionProfile = profile)) }
-        if (resumable != null) persistence.saveRun(contact, resumable.copy(requestSnapshot = resumable.requestSnapshot?.copy(redactionProfile = RedactionProfile(revision = profile.revision))))
+        if (resumable != null) {
+            persistence.saveRun(contact, resumable.copy(requestSnapshot = resumable.requestSnapshot?.copy(redactionProfile = RedactionProfile(revision = profile.revision))))
+            if(!targetCurrent()) return false
+        }
         val summarySafety = saved.runs.filter { run ->
             val r = run.requestSnapshot
             r != null && r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && r.contactId == contact.id &&
@@ -1225,11 +1247,18 @@ class CounselController(
                 r.sourceRevision == contact.sourceRevision && r.userText == saved.draft && r.evidence == saved.evidence &&
                 r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision
         }.maxByOrNull { it.highestSafety.ordinal }?.highestSafety ?: SafetyLevel.NONE
+        // Classify only the loaded target, before its first publication. A stored checkpoint
+        // contributes only through the existing current-answer/resume/summary source checks.
+        val local=evaluateLocalSafety(saved.draft,saved.evidence)
+        val safetyUnavailable=local.unavailable
+        val completedSafety=if(completedCurrentAnswer) saved.runs.lastOrNull {it.requestId==answerMessage?.requestId}?.highestSafety ?: SafetyLevel.NONE else SafetyLevel.NONE
+        val restoredSafety=local.level.upgrade(summarySafety).upgrade(resumable?.highestSafety ?: SafetyLevel.NONE).upgrade(completedSafety)
         val oldCredential = synchronized(intentLock) {
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
             if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
             val old = credential
+            summaries=saved.summaries;plans=saved.plans
             credential = null
             inputRevision++
             dirtyDraft = false
@@ -1243,14 +1272,14 @@ class CounselController(
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
                 formality = answerRequest?.manualFormality ?: answer?.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: "medium",
                 messages = saved.messages, evidence = saved.evidence, answer = answer, answerSourceRevision = answerRequest?.sourceRevision, answerRequest = answerRequest, answerConfigRevision = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.configRevision, draftSaved = true, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
-                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile, safety = summarySafety,sourceSelectionBlocked=saved.sourceBlocked,captureSourcePreferred=saved.capturePreferred,
-                error=if(saved.sourceBlocked) CounselError("CAPTURE_SOURCE_RECONFIRM") else null))
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile, safety = restoredSafety,emotion=resumable?.requestSnapshot?.emotionLevel,sourceSelectionBlocked=saved.sourceBlocked,captureSourcePreferred=saved.capturePreferred,
+                error=if(safetyUnavailable) CounselError("SAFETY_UNAVAILABLE") else if(saved.sourceBlocked) CounselError("CAPTURE_SOURCE_RECONFIRM") else null))
             recovery = resumable?.requestSnapshot?.let { r ->
                 inputRevision = r.inputRevision
                 set(state.value.copy(relationType = r.relationType ?: contact.relationType, goal = r.goal ?: Goal.REPLY,
                     tone = r.tone ?: Tone.NATURAL, emotion = r.emotionLevel, styleBias = r.styleBias,
                     manualRelation = r.manualRelation, manualGoal = r.manualGoal, manualFormality = r.manualFormality, formality = r.formality,
-                    error = CounselError("INTERRUPTED", true), currentRequest = r, draftSaved = true, safety = resumable.highestSafety.upgrade(summarySafety)))
+                    error = if(safetyUnavailable) CounselError("SAFETY_UNAVAILABLE") else CounselError("INTERRUPTED", true), currentRequest = r, draftSaved = true, safety = restoredSafety))
                 Recovery.Analysis(r)
             }
             old
@@ -1329,7 +1358,7 @@ class CounselController(
         invalidateRun()
         if (state.value.conversation == null) return
         inputRevision++
-        val next = transform(state.value).copy(answer = null, draftSaved = false)
+        val next = localSafetyState(transform(state.value).copy(answer = null, draftSaved = false,safetyCollapsed=false))
         set(next)
         dirtyDraft = true
         flushDraft()
@@ -1348,7 +1377,7 @@ class CounselController(
             check(temporary.put(token, session.copy(draft = current.draft)))
         }
         // Keep the last successful CAS version on failure, while preserving the dirty text.
-        set(state.value.copy(conversation = next, error = null, draftSaved = contact != null))
+        set(state.value.copy(conversation = next, error = current.error?.takeIf {it.code=="SAFETY_UNAVAILABLE"}, draftSaved = contact != null))
         dirtyDraft = false
         recovery = null
     }
@@ -1442,6 +1471,60 @@ class CounselController(
             actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
         }
     }
+    private fun safetyReceiptCurrent(receipt:SafetyActionReceipt)=synchronized(intentLock) {
+        receipt==state.value.safetyActionReceipt() && receipt.epoch==epoch.get() && receipt.lock==lockGeneration && authorityLock.canDisplaySensitiveContent
+    }
+    /** Clipboard effects execute inside the same authority check, with the rendered text only. */
+    fun copyReply(receipt:SafetyActionReceipt,text:String,write:(String)->Unit):Boolean=synchronized(intentLock) {
+        if(!safetyReceiptCurrent(receipt) || !ordinaryAllowed() || !state.value.hasCurrentAnswerSource() || state.value.streaming || state.value.error!=null || text.isBlank() ||
+            (text !in state.value.answer!!.reply && text!=state.value.answer!!.reply.joinToString("\n"))) return@synchronized false
+        write(text);true
+    }
+    fun acknowledgeSafety(receipt:SafetyActionReceipt,collapsed:Boolean)=enqueue {
+        if(!safetyReceiptCurrent(receipt) || state.value.safety!=SafetyLevel.CRISIS) return@enqueue
+        set(state.value.copy(safetyCollapsed=collapsed))
+    }
+    fun saveCoolingDraft(receipt:SafetyActionReceipt,text:String)=enqueue {
+        if(!safetyReceiptCurrent(receipt) || !ordinaryAllowed() || !state.value.hasCurrentAnswerSource() || text.isBlank() ||
+            (text !in state.value.answer!!.reply && text!=state.value.answer!!.reply.joinToString("\n"))) return@enqueue
+        val authority=authoritySnapshot(receipt.epoch)
+        val before=state.value
+        val previous=checkNotNull(before.conversation)
+        val draft=CoolingDraft(text,wallClockMillis(),before.currentContact?.sourceRevision ?: 0)
+        val next=previous.copy(revision=previous.revision+1,updatedAt=wallClockMillis(),coolingDraft=draft)
+        try {
+            before.currentContact?.let {persistence.saveCooling(it,previous,next,before.draft) {safetyReceiptCurrent(receipt)}}
+            authorized(authority) {
+                if(!safetyReceiptCurrent(receipt)) return@authorized
+                set(state.value.copy(conversation=next,error=null))
+            }
+        } catch(_:Exception) {authorized(authority) {if(safetyReceiptCurrent(receipt)) set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}}
+    }
+    private fun classifyLocal(draft:String,evidence:List<EvidenceBlock>)=localSafety((listOf(draft)+evidence.flatMap {it.lines}.map {it.text}).joinToString("\n"))
+    private data class LocalSafetyResult(val level:SafetyLevel,val unavailable:Boolean=false)
+    private fun evaluateLocalSafety(draft:String,evidence:List<EvidenceBlock>):LocalSafetyResult = try {LocalSafetyResult(classifyLocal(draft,evidence))}
+        catch(cancelled:CancellationException) {throw cancelled}
+        catch(_:Exception) {LocalSafetyResult(SafetyLevel.CRISIS,true)}
+    /** Evaluate a proposed input before exposing its fields, retaining this session's maximum. */
+    private fun localSafetyState(current:CounselState,result:LocalSafetyResult=evaluateLocalSafety(current.draft,current.evidence)):CounselState {
+        val highest=current.safety.upgrade(result.level)
+        return if(highest==SafetyLevel.CRISIS) current.copy(safety=highest,answer=null,answerRequest=null,practice=null,partial=emptyMap(),streaming=false,teaching=TeachingView(),currentRequest=null,preview=null,outboundBody=null,summaryReady=false,
+            error=if(result.unavailable) CounselError("SAFETY_UNAVAILABLE") else current.error)
+        else current.copy(safety=highest)
+    }
+    /** One actor-owned gate for typed text, imported evidence and every ordinary send. */
+    private fun localSafetyGate():Boolean {
+        val current=state.value
+        val result=evaluateLocalSafety(current.draft,current.evidence)
+        val highest=current.safety.upgrade(result.level)
+        if(highest==SafetyLevel.CRISIS) {
+            invalidateRun();stream?.cancel()
+            set(localSafetyState(state.value,result))
+            return false
+        }
+        if(highest!=current.safety) set(localSafetyState(current,result))
+        return true
+    }
     private fun ordinaryAllowed() = state.value.practice==null && !state.value.sourceSelectionBlocked && (floatingSideOperation?.let { it.epoch==epoch.get() }!=true) && pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
     private suspend fun answerSourceCurrent(current:CounselState=state.value,readOnly:Boolean=false): Boolean {
         if (!current.hasCurrentAnswerSource()) return false
@@ -1534,7 +1617,7 @@ class CounselController(
     fun preparePreview(originConversationId: String?, floating: Boolean = false, onPrepared: (AnalysisRequest)->Unit = {}) = enqueueFrom(originConversationId) preview@{ operationEpoch ->
         val authority=authoritySnapshot(operationEpoch)
         authorized(authority) { Unit }
-        if (!ordinaryAllowed()) return@preview
+        if (!localSafetyGate() || !ordinaryAllowed()) return@preview
         if (state.value.redactionError) return@preview
         if (importPending || state.value.loading || state.value.conversation == null) return@preview
         if (state.value.streaming) return@preview
@@ -1621,7 +1704,7 @@ class CounselController(
     private fun analyzeScoped(originConversationId:String?,floating:Boolean,expected:AnalysisRequest?,onStarted:(AnalysisRequest)->Unit) = enqueueFrom(originConversationId) analyze@{ submissionEpoch ->
         val authority=authoritySnapshot(submissionEpoch)
         authorized(authority) { Unit }
-        if (!ordinaryAllowed()) return@analyze
+        if (!localSafetyGate() || !ordinaryAllowed()) return@analyze
         if (state.value.redactionError) return@analyze
         if (state.value.testingConnection) return@analyze
         if(floating && (expected==null || expected!=previewRequest || !expected.floating || previewAuthority?.let(::authorityCurrent)!=true)) return@analyze
@@ -1655,6 +1738,16 @@ class CounselController(
                     if(!retained) return@enqueue
                 }
                 authorized(authority) {Unit}
+                authorized(authority) {
+                    // A valid historical model checkpoint does not authorize new local
+                    // crisis input (or a failed vocabulary) to leave this target.
+                    val local=evaluateLocalSafety(state.value.draft,state.value.evidence)
+                    if(local.level==SafetyLevel.CRISIS || local.unavailable) {
+                        set(localSafetyState(state.value,local).copy(error=if(local.unavailable) CounselError("SAFETY_UNAVAILABLE") else null))
+                        return@enqueue
+                    }
+                    if(local.level.ordinal>state.value.safety.ordinal) set(localSafetyState(state.value,local))
+                }
                 if (settings.saved.live || pending.request.purpose==OutboundPurpose.PRACTICE) {
                     val prepared = assembler.prepare(pending.request)
                     authorized(authority) {
@@ -1734,7 +1827,7 @@ class CounselController(
             }
         }
         val operationProvider = provider
-        val priorSafety = (if (state.value.currentRequest?.requestId == request.requestId) state.value.safety else SafetyLevel.NONE)
+        val priorSafety = state.value.safety
             .upgrade(ledger.runs.firstOrNull { it.requestId == request.requestId }?.highestSafety ?: SafetyLevel.NONE)
             .upgrade(request.originalAnswer?.safety ?: SafetyLevel.NONE)
             .upgrade(if (state.value.summaryReady) state.value.safety else SafetyLevel.NONE)
@@ -2049,9 +2142,15 @@ class CounselController(
                     set(state.value.copy(importDuplicate = duplicate))
                     if (!duplicate) {
                         val draft=continuing?.takeIf { it.id==preview.captureContinuationId }?.before?.draft ?: state.value.draft
-                        check(temporary.put(lease, session.copy(imports = session.imports + imported, lines = session.lines + lines,draft=draft)))
-                        inputRevision++
-                        set(state.value.copy(evidence = state.value.evidence + EvidenceBlock(id, preview.source.name, lines),draft=draft, answer = null))
+                        val authority=authoritySnapshot(intentEpoch)
+                        val next=authorized(authority) {localSafetyState(state.value.copy(evidence = state.value.evidence + EvidenceBlock(id, preview.source.name, lines),draft=draft, answer = null))}
+                        authorized(authority) {Unit}
+                        val retained=temporary.put(lease, session.copy(imports = session.imports + imported, lines = session.lines + lines,draft=draft))
+                        authorized(authority) {
+                            check(retained)
+                            inputRevision++
+                            set(next)
+                        }
                     }
                 }
                 recovery = null
@@ -2190,7 +2289,7 @@ class CounselController(
                         check(current() && temporary.put(lease,next))
                         authorized(authority) {
                             ledger=AnalysisLedger(messages=next.messages,runs=ledger.runs.filterNot { it.requestId in affectedRequests });summaries=emptyList();plans=next.plans
-                            set(state.value.copy(evidence=state.value.evidence.filterNot { it.id==operation.change.oldImportId }+EvidenceBlock(operation.change.replacement.id,ImportSource.SCREENSHOT.name,operation.change.lines),messages=next.messages))
+                            set(localSafetyState(state.value.copy(evidence=state.value.evidence.filterNot { it.id==operation.change.oldImportId }+EvidenceBlock(operation.change.replacement.id,ImportSource.SCREENSHOT.name,operation.change.lines),messages=next.messages)))
                         }
                     }
                     val updatedProvenance=operation.before.provenance?.let {requireNotNull(persistence.liveCaptureProvenance(requireNotNull(operation.before.contactId),it.lineageId))}

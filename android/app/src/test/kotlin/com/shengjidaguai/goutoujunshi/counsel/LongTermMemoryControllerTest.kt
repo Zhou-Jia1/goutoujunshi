@@ -99,7 +99,7 @@ class LongTermMemoryControllerTest {
         val provider=object: AnalysisProvider { override val kind=kind; override fun analyze(request: AnalysisRequest)=flow { providerCalls++;requests.send(request);for(item in outputs) { emit(item);delivered.send(Unit) } } }
         val controller=CounselController(persistence,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic","synthetic",listOf(KnowledgeReference("synthetic.md","a".repeat(64),9)),"test")
-        }),provider,scope,wallClockMillis={1000},memoryNoticeDelay={ noticeDelayMillis=it;noticeGate.await() })
+        }),provider,scope,wallClockMillis={1000},memoryNoticeDelay={ noticeDelayMillis=it;noticeGate.await() }, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         suspend fun complete(value: String="虚构猜测") {
             outputs.send(AnalysisChunk.Completed(StructuredAnswer(id="synthetic",reply=listOf("虚构回复"),memoryProposals=listOf(MemoryProposal(subjectId="ta",field="pattern",value=value)))))
             try { withTimeout(10_000) {

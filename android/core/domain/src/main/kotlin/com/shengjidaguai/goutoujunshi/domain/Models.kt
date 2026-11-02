@@ -31,7 +31,7 @@ fun RelationType.group(): RelationGroup = when(this) {
 
 @Serializable data class Contact(val id:String="", val alias:String="", val relationType:RelationType=RelationType.ACQUAINTANCE, val notes:String?=null, val archivedAt:Long?=null, val createdAt:Long=0, val sourceRevision:Long=0)
 /** A null contact is ephemeral: never serialize this conversation into persistent storage. */
-@Serializable data class Conversation(val id:String="", val contactId:String?=null, val isTemporary:Boolean=contactId == null, val updatedAt:Long=0, val revision:Long=0) {
+@Serializable data class Conversation(val id:String="", val contactId:String?=null, val isTemporary:Boolean=contactId == null, val updatedAt:Long=0, val revision:Long=0, val coolingDraft:CoolingDraft?=null) {
     val canPersist:Boolean get() = !isTemporary && !contactId.isNullOrBlank()
 }
 @Serializable data class AnalysisRun(val requestId:String="", val conversationId:String="", val mode:RequestMode=RequestMode.FULL_ANALYSIS, val parentAnswerId:String?=null, val inputRevision:Long=0, val status:RunStatus=RunStatus.PENDING, val conversationRevision:Long=0, val contactId:String?=null, val operationFingerprint:String="", val requestSnapshot:AnalysisRequest?=null, val configRevision:String="", val highestSafety:SafetyLevel=SafetyLevel.NONE)
@@ -63,3 +63,5 @@ fun RelationType.group(): RelationGroup = when(this) {
 @Serializable data class MemoryAnchor(val id: String, val fingerprint: String, val contentKey: String)
 
 @Serializable data class MemoryApprovalProof(val generation:Long, val consentBefore:Long, val sourceBefore:Long, val ownerRevision:Long?, val memoryBefore:Long?, val proposalHash:String)
+
+@Serializable data class CoolingDraft(val text:String,val savedAt:Long,val sourceRevision:Long=0) { fun ready(now:Long)=now>=savedAt && now-savedAt>=600_000L }
