@@ -38,6 +38,9 @@ import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
 /** Event boundary for rendering and exercising the home screen without opening storage. */
 data class CounselUiActions(
+    val rewrite: (String?, String, DomainTone, Float) -> Unit = { _, _, _, _ -> },
+    val changeScene: (String?, String, RelationType, Goal, String) -> Unit = { _, _, _, _, _ -> },
+    val feedback: (String?, String, String?) -> Unit = { _, _, _ -> },
     val initialize: () -> Unit = {},
     val editDraft: (String, DraftEditStamp) -> Unit = { _, _ -> },
     val pasteText: (String, DraftEditStamp) -> Unit = { _, _ -> },
@@ -86,6 +89,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val importing by viewModel.imports.state.collectAsStateWithLifecycle()
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(viewModel::importFile) }
     CounselContent(state, CounselUiActions(
+        rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
         initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = { text, _ -> viewModel.importPaste(text) },
         selectContact = viewModel::selectContact, createContact = viewModel::createContact, deleteContact = viewModel::deleteContact,
         setRelation = viewModel::setRelation, setGoal = viewModel::setGoal, setEmotion = viewModel::setEmotion,
@@ -111,6 +115,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     var createContact by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<Int?>(null) }
     var previewOpen by remember { mutableStateOf(false) }
+    val modalStamp = state.answerModalStamp()
+    val actionableAnswer = state.hasCurrentAnswerSource()
+    var sceneOpen by remember(modalStamp) { mutableStateOf(false) }
+    var feedbackMode by remember(modalStamp) { mutableStateOf<Int?>(null) }
+    val editedReply = remember(modalStamp) { TextFieldState(state.answer?.reply?.joinToString("\n").orEmpty()) }
     var rulesOpen by remember(state.conversation?.id) { mutableStateOf(false) }
     // Process memory only, keyed to the conversation so switching never exposes another draft.
     val origin = state.conversation?.id
@@ -133,15 +142,19 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         )
     }
     val clipboard = LocalCounselClipboard.current ?: platformClipboard
-    val canAnalyze = !importing && !state.loading && state.conversation != null && !state.streaming
+    val canAnalyze = presentation.showOrdinaryStrategy && !importing && !state.loading && state.conversation != null && !state.streaming
     fun paste() {
         val text = clipboard.read()
         if (text.isNullOrBlank()) note = R.string.clipboard_empty else {
             origin?.let { actions.pasteText(text, DraftEditStamp("import", 0, it)) }
         }
     }
+    val latestState by rememberUpdatedState(state)
     fun copy(text: String) {
-        if (text.isBlank()) return
+        val current = latestState
+        if (text.isBlank() || current.answer == null || current.streaming || current.error != null ||
+            (current.answerRequest != null && !current.hasCurrentAnswerSource()) ||
+            !SafetyPolicy.evaluate(current.emotion, current.safety.upgrade(current.answer.safety), SafetyLevel.NONE, current.lockState).showOrdinaryStrategy) return
         clipboard.write(text)
         haptic.performHapticFeedback(HapticFeedbackType.Confirm)
         note = R.string.copied
@@ -203,16 +216,21 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         if (state.streaming) item { ThinkingIndicator(
             when(state.waiting.stage) { 0 -> ThinkingStage.LISTENING; 1 -> ThinkingStage.SORTING; else -> ThinkingStage.PLANNING }, state.waiting.slow) }
         val answer = state.answer
+        val hasAnswerSource = actionableAnswer
         val partialReply = state.partial[SectionId.REPLY]?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
         if (presentation.showSafetyCard) item {
             JunshiColumn(Modifier.testTag("counsel-safety")) {
-                BodyText(stringResource(com.shengjidaguai.goutoujunshi.designsystem.R.string.ds_safety))
+                SafetyCard({ number -> context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))) },
+                    { note = R.string.safety_contact_notice }, { note = R.string.safety_hotline_notice }, { note = R.string.safety_stays_active })
             }
         }
         if (presentation.showOrdinaryStrategy && (answer != null || partialReply.isNotEmpty())) item {
             JunshiColumn(Modifier.testTag("counsel-answer")) {
                 if (state.answerDemo) DemoBadge()
-                val verdict = answer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
+                if (answer != null && hasAnswerSource) SceneChips(com.shengjidaguai.goutoujunshi.designsystem.RelationGroup.valueOf(state.relationType.group().name),
+                    stringResource(relationLabel(state.relationType)), stringResource(goalLabel(state.goal)),
+                    Formality.entries.firstOrNull { it.name.equals(state.formality, true) } ?: Formality.MEDIUM, { sceneOpen = true })
+                val verdict = answer?.verdict ?: state.currentRequest?.takeIf { it.mode == com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY }?.originalAnswer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
                 ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8, null,
@@ -221,12 +239,23 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                     BodyText(stringResource(R.string.answer_format_disordered))
                     BodyText(answer.freeText.ifBlank { answer.rawText })
                 }
-                if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
+                if (answer != null && hasAnswerSource) {
+                    AnswerActionBar({ copy(replies.joinToString("\n")) }, { tone ->
+                        actions.rewrite(origin, answer.id, DomainTone.valueOf(tone.name), state.styleBias); if (!state.demo) previewOpen = true
+                    }, { feedbackMode = 0 }, { feedbackMode = 1 }, { note = R.string.answer_not_sent_notice }, enabled = !state.streaming && state.error == null)
+                    var bias by remember(answer.id) { mutableStateOf(state.styleBias) }
+                    StyleBalanceSlider(bias, { bias = it })
+                    SecondaryButton(stringResource(R.string.answer_apply_style), {
+                        actions.rewrite(origin, answer.id, state.tone, bias); if (!state.demo) previewOpen = true
+                    }, enabled = !state.streaming && state.error == null)
+                    if (state.feedbackSaved) BodyText(stringResource(R.string.answer_feedback_saved))
+                    AnswerDetails(answer, state)
+                } else if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
                     BodyText(listOf(answer.empathy, answer.why.joinToString("\n"), answer.cost, answer.next).filter { it.isNotBlank() }.joinToString("\n\n"))
                 }
             }
         }
-        if (presentation.showOrdinaryStrategy && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
+        if (presentation.showOrdinaryStrategy && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
             BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))
         }
         state.error?.let { error -> item {
@@ -250,9 +279,20 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             }
         }
     }
+    if (presentation.showOrdinaryStrategy && state.answer != null && actionableAnswer) {
+        val answer = state.answer
+        if (sceneOpen) SceneEditDialog(state, { relation, goal, formality ->
+            actions.changeScene(origin, answer.id, relation, goal, formality); sceneOpen = false; if (!state.demo) previewOpen = true
+        }, { sceneOpen = false })
+        feedbackMode?.let { mode -> ContentDialog(stringResource(if (mode == 0) R.string.answer_confirm_sent else R.string.answer_edit_reply), stringResource(R.string.close), { feedbackMode = null },
+            stringResource(R.string.answer_save_feedback) to { actions.feedback(origin, answer.id, if (mode == 1) editedReply.text.toString() else null); feedbackMode = null }) {
+            if (mode == 1) ReplyEditField(editedReply, stringResource(R.string.answer_edit_reply))
+            BodyText(stringResource(R.string.answer_feedback_notice))
+        } }
+    }
     if (createContact) CreateContactDialog(actions.createContact) { createContact = false }
     note?.let { message -> ContentDialog(stringResource(R.string.app_name), stringResource(R.string.close), { note = null }) { BodyText(stringResource(message)) } }
-    if (previewOpen) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false },
+    if (previewOpen && presentation.showOrdinaryStrategy) ContentDialog(stringResource(R.string.preview_request), stringResource(R.string.close), { previewOpen = false },
         if (!state.demo && state.outboundBody != null && origin != null) stringResource(R.string.live_send) to { actions.analyze(origin); previewOpen = false } else null) {
         BodyText(stringResource(if (state.demo) R.string.preview_demo_notice else R.string.live_scope))
         BodyText(stringResource(R.string.redaction_honesty))
@@ -422,4 +462,63 @@ fun goalLabel(goal: Goal): Int = when (goal) {
     Goal.COMFORT -> R.string.goal_comfort; Goal.ADVANCE -> R.string.goal_advance; Goal.INVITE -> R.string.goal_invite
     Goal.BOUNDARY -> R.string.goal_boundary; Goal.ICEBREAK -> R.string.goal_icebreak; Goal.REPAIR -> R.string.goal_repair
     Goal.MEDIATE -> R.string.goal_mediate; Goal.CLOSE -> R.string.goal_close
+}
+
+@Composable private fun AnswerDetails(answer: com.shengjidaguai.goutoujunshi.domain.StructuredAnswer, state: CounselState) {
+    var selectedRefs by remember(state.answerModalStamp()) { mutableStateOf<List<String>?>(null) }
+    fun resolve(refs: List<String>) = com.shengjidaguai.goutoujunshi.domain.FactSourceResolver.resolve(refs,
+        state.currentContact?.id, state.currentContact?.sourceRevision ?: 0,
+        state.answerSourceRevision ?: state.currentRequest?.sourceRevision, state.evidence)
+    selectedRefs?.let { refs ->
+        val source = resolve(refs)
+        ContentDialog(stringResource(R.string.answer_source), stringResource(R.string.close), { selectedRefs = null }) {
+            if (source.userStatement) {
+                BodyText(stringResource(R.string.answer_user_statement))
+                BodyText(state.draft.ifBlank { stringResource(R.string.answer_source_unavailable) })
+            } else if (source.available) source.lines.forEach { line ->
+                BodyText(stringResource(when(line.speaker) {
+                    com.shengjidaguai.goutoujunshi.domain.Speaker.ME -> R.string.answer_speaker_me
+                    com.shengjidaguai.goutoujunshi.domain.Speaker.THEM -> R.string.answer_speaker_them
+                    else -> R.string.answer_speaker_other
+                }, line.text))
+            } else BodyText(stringResource(R.string.answer_source_unavailable))
+        }
+    }
+    listOf(R.string.answer_alt to answer.alternatives.joinToString("\n") { "${it.label}：${it.reply}" },
+        R.string.answer_why to answer.why.joinToString("\n"), R.string.answer_cost to answer.cost,
+        R.string.answer_situation to answer.situation).forEach { (title, body) ->
+        CollapsibleSection(stringResource(title), null) { BodyText(body.ifBlank { stringResource(R.string.answer_no_detail) }) }
+    }
+    CollapsibleSection(stringResource(R.string.answer_evidence), null) {
+        answer.facts.forEach { fact ->
+            val source = resolve(fact.messageRefs)
+            EvidenceChip(EvidenceKind.FACT, fact.text, stringResource(when {
+                source.userStatement -> R.string.answer_user_statement
+                source.available -> R.string.answer_source
+                else -> R.string.answer_source_unavailable
+            }), if (source.available) ({ selectedRefs = fact.messageRefs }) else null)
+        }
+        answer.guesses.forEach { guess -> EvidenceChip(EvidenceKind.GUESS, guess.text,
+            stringResource(R.string.answer_confidence, stringResource(when(guess.confidence) {
+                com.shengjidaguai.goutoujunshi.domain.Confidence.LOW -> R.string.answer_confidence_low
+                com.shengjidaguai.goutoujunshi.domain.Confidence.MEDIUM -> R.string.answer_confidence_medium
+                com.shengjidaguai.goutoujunshi.domain.Confidence.HIGH -> R.string.answer_confidence_high
+            })), null) }
+        answer.unknowns.forEach { EvidenceChip(EvidenceKind.UNKNOWN, it, null, null) }
+    }
+    listOf(R.string.answer_risk to answer.risk, R.string.answer_next to answer.next).forEach { (title, body) ->
+        CollapsibleSection(stringResource(title), null) { BodyText(body.ifBlank { stringResource(R.string.answer_no_detail) }) }
+    }
+}
+@Composable private fun SceneEditDialog(state: CounselState, save: (RelationType, Goal, String) -> Unit, close: () -> Unit) {
+    var relation by remember { mutableStateOf(state.relationType) }
+    var goal by remember { mutableStateOf(state.goal) }
+    var formality by remember { mutableStateOf(state.formality) }
+    ContentDialog(stringResource(R.string.answer_scene_edit), stringResource(R.string.close), close,
+        stringResource(R.string.answer_regenerate) to { save(relation, goal, formality) }) {
+        ChoiceField(stringResource(R.string.relation_label), stringResource(relationLabel(relation)), RelationType.entries.map { type -> stringResource(relationLabel(type)) to { relation = type } })
+        ChoiceField(stringResource(R.string.goal_label), stringResource(goalLabel(goal)), Goal.entries.map { value -> stringResource(goalLabel(value)) to { goal = value } })
+        ChoiceField(stringResource(R.string.answer_formality), stringResource(when(formality) { "low" -> R.string.answer_formality_low; "high" -> R.string.answer_formality_high; else -> R.string.answer_formality_medium }),
+            listOf("low" to R.string.answer_formality_low, "medium" to R.string.answer_formality_medium, "high" to R.string.answer_formality_high).map { (value, label) -> stringResource(label) to { formality = value } })
+    }
 }

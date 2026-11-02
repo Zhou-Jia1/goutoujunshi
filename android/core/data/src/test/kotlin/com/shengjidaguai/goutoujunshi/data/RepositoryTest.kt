@@ -21,6 +21,23 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun feedbackKeepsSourceAndDoesNotCreateLearningSamples() = runBlocking {
+        val conversations = ConversationRepository(session)
+        val c = Conversation("feedback-conv", "a", false)
+        conversations.save(c)
+        val message = Message(id="feedback-assistant", conversationId=c.id, contactId="a", role=MessageRole.ASSISTANT, requestId="feedback-request", answerJson="{}")
+        conversations.saveMessage(message)
+        val plan = ActionPlan(id="feedback", contactId="a", chosenReply="虚构用户修改", wasEdited=true, status=PlanStatus.SENT, sourceAnswerId=message.id, sourceRequestId=message.requestId, conversationId=c.id)
+        val repo=PlanRepository(session)
+        repo.saveFeedback(plan, 0); repo.saveFeedback(plan, 0)
+        val stored=repo.list("a").single()
+        assertEquals(message.id,stored.sourceAnswerId); assertFalse(stored.learningAuthorized)
+        assertTrue(StyleRepository(session).samples(RelationGroup.SOCIAL).isEmpty()); assertTrue(repo.list("b").isEmpty())
+        assertTrue(runCatching { repo.saveFeedback(plan.copy(conversationRevision=99),0) }.isFailure)
+        assertTrue(runCatching { repo.saveFeedback(plan.copy(sourceAnswerId="missing"),0) }.isFailure)
+        assertTrue(runCatching { repo.saveFeedback(plan,99) }.isFailure)
+    }
+
     @Test fun runCheckpointUsesSourceAndConversationCasAndCannotRecreateDeletedContact() = runBlocking {
         val conversations = ConversationRepository(session)
         val c = Conversation("t27-conversation", "a", false)

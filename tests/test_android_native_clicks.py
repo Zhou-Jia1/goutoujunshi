@@ -52,6 +52,34 @@ class NativeClickTests(unittest.TestCase):
         self.assertLess(abs(call[4] - call[6]), (560 - 80) / 2)
         self.assertGreaterEqual(call[7], 600)
 
+    def test_editor_reaches_composer_below_a_full_answer_card(self):
+        class LongAnswerDevice(FakeDevice):
+            def __init__(self):
+                super().__init__(f'<node package="{APP}" scrollable="true" bounds="[0,80][320,560]"/>')
+                self.swipes = 0
+            def tree(self):
+                if self.swipes >= 13:
+                    return ET.fromstring(f'<hierarchy><node package="{APP}" scrollable="true" bounds="[0,80][320,560]">'
+                        f'<node package="{APP}" class="android.widget.EditText" bounds="[16,400][304,480]" text="synthetic_saved_draft"/></node></hierarchy>')
+                return self.root
+            def swipe(self, root, upward):
+                self.assert_upward = upward
+                self.swipes += 1
+        device = LongAnswerDevice()
+        self.assertEqual("synthetic_saved_draft", device.editor().get("text"))
+        self.assertEqual(13, device.swipes)
+        self.assertTrue(device.assert_upward)
+        self.assertEqual([], device.calls)
+
+    def test_missing_editor_search_stays_bounded_and_redacts_private_content(self):
+        device = FakeDevice(f'<node package="{APP}" scrollable="true" bounds="[0,80][320,560]">'
+            f'<node package="{APP}" text="synthetic_private_body"/></node>')
+        with patch("builtins.print") as output:
+            with self.assertRaisesRegex(AssertionError, "not reachable"):
+                device.editor()
+        self.assertLessEqual(len(device.calls), 40)
+        self.assertNotIn("synthetic_private_body", repr(output.call_args_list))
+
     def test_cleanup_window_gap_only_waits_while_owned_activity_is_resumed(self):
         class GapDevice:
             def __init__(self, resumed): self.resumed, self.reads = resumed, 0
