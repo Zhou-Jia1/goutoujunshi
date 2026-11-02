@@ -139,7 +139,6 @@
     <string name="answer_formality_high">正式</string>
     <string name="safety_contact_notice">请主动联系你信任的人陪伴你。</string>
     <string name="safety_hotline_notice">如有紧急危险，请使用安全卡上的紧急求助入口。</string>
-    <string name="safety_stays_active">安全提示仍保留，请先确保你和身边人的安全。</string>
     <string name="answer_not_sent_notice">可以再改一改，准备好后再决定。</string>
     <string name="answer_source">查看来源</string>
     <string name="answer_user_statement">你说的</string>
@@ -429,4 +428,16 @@
     <string name="practice_safety_unavailable">安全检查暂时不可用，无法开始对练。请稍后重试。</string>
     <string name="practice_demo_play">确认并演示这一轮</string>
     <string name="practice_full_body">完整发送正文（点击展开）</string>
+    <string name="t53_later">等你平静一点再看</string>
+    <string name="t53_save_ten">放进草稿箱，10 分钟后再看</string>
+    <string name="t53_pause">先别急着发</string>
+    <string name="t53_draft_saved">已放进草稿箱</string>
+    <string name="t53_ten_notice">10 分钟后再回来看看；不会自动复制、发送或提醒。</string>
+    <string name="t53_safety_entry">安全帮助</string>
+    <string name="t53_resources_unavailable">安全资源暂不可用，请通过当地官方渠道求助。</string>
+    <string name="t53_safety_unavailable">本地安全词库暂不可用，普通建议已暂停。请重启后再试。</string>
+    <string name="t53_review_draft">10 分钟到了，可以重新看看草稿</string>
+    <string name="t53_open_full">在 App 中打开</string>
+    <string name="t53_stream_empathy">可以先给自己一点时间，缓一缓。</string>
+    <string name="t53_stream_next">先把手机放下一会儿，喝口水。</string>
 </resources>

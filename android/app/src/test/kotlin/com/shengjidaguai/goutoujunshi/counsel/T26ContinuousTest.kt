@@ -19,7 +19,7 @@ class T26ContinuousTest {
         }
         val controller = CounselController(p, TemporarySessionStore(), FrozenPromptAssembler(object : PromptAssembler {
             override fun prepare(request: AnalysisRequest) = PreparedPrompt("synthetic system", "${request.purpose}:${request.networkSelection}:${request.recentSummary}:${request.timelineSummary}", listOf(KnowledgeReference("synthetic", "a".repeat(64), 1)), "v1")
-        }), provider, scope, settings, { provider })
+        }), provider, scope, settings, { provider }, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         suspend fun setup() {
             controller.initialize(); controller.createContact("虚构甲", RelationType.FRIEND)
             val c = controller.state.value.currentContact!!

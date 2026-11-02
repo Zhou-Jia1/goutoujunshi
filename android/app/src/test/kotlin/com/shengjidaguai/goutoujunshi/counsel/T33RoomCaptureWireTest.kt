@@ -84,7 +84,7 @@ class T33RoomCaptureWireTest {
                 override suspend fun saveSummary(summary:TimelineSummary) {SummaryRepository(session).save(summary)}
                 override suspend fun discardSummary(summary:TimelineSummary) {SummaryRepository(session).discard(summary)}
             }
-            controller=CounselController(persistence,temporary,frozen,provider,scope,settings,{provider})
+            controller=CounselController(persistence,temporary,frozen,provider,scope,settings,{provider}, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             imports=ImportCoordinator(controller,scope,{true},{})
         }
         override fun close() {

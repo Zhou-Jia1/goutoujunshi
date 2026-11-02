@@ -45,24 +45,29 @@ class T41StyleControllerTest {
         val observed=mutableListOf<AnalysisRequest>()
         val controller=CounselController(persistence,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request:AnalysisRequest):PreparedPrompt {observed+=request;return PreparedPrompt("合成知识","冻结内容",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")}
-        }),provider,scope)
+        }),provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
+        suspend fun stage(label:String,predicate:()->Boolean) {
+            try {await(predicate)} catch(t:TimeoutCancellationException) {
+                throw AssertionError("T41 stage=$label calls=${provider.calls.size} commits=${persistence.commits} styleReceipt=${controller.stylePage.value.receipt} pageRevision=${controller.stylePage.value.snapshot?.stamp?.sourceRevision} storeRevision=${persistence.revision} streaming=${controller.state.value.streaming} purpose=${controller.state.value.currentRequest?.purpose} preview=${controller.state.value.preview!=null} error=${controller.state.value.error}",t)
+            }
+        }
         try {
-            controller.initialize();await {!controller.state.value.loading}
+            controller.initialize();stage("initialize") {!controller.state.value.loading}
             for(count in listOf(14,15,16)) {
                 persistence.count=count
                 val priorReceipt=controller.stylePage.value.receipt
-                controller.openStyle();await {controller.stylePage.value.receipt!=null && controller.stylePage.value.receipt!=priorReceipt}
+                controller.openStyle();stage("openStyle count=$count prior=$priorReceipt") {controller.stylePage.value.receipt!=null && controller.stylePage.value.receipt!=priorReceipt}
                 val receipt=controller.stylePage.value.receipt!!
                 controller.previewStyle(RelationGroup.SOCIAL,receipt)
                 if(count==14) {assertNull(controller.state.value.preview);assertTrue(provider.calls.isEmpty());continue}
-                await {controller.state.value.preview!=null}
+                stage("preview count=$count selected=$receipt") {controller.state.value.preview!=null}
                 assertEquals(count-15,provider.calls.size)
                 assertEquals(OutboundPurpose.STYLE_DESCRIPTION,observed.last().purpose)
                 assertEquals(listOf("虚构来源昵称"),observed.last().redactionTerms)
-                controller.analyze();controller.analyze();await {provider.calls.size==count-14}
+                controller.analyze();controller.analyze();stage("send count=$count") {provider.calls.size==count-14}
                 assertTrue(controller.state.value.streaming)
                 provider.outputs.last().send(AnalysisChunk.Completed(StructuredAnswer(freeText="你喜欢自然的短句，常用语气词。")))
-                await {!controller.state.value.streaming}
+                stage("complete count=$count") {!controller.state.value.streaming}
                 assertEquals(count-14,persistence.commits)
                 assertFalse(controller.state.value.messages.any {it.text.contains("请用不超过200字")})
                 persistence.description=""
@@ -75,7 +80,7 @@ class T41StyleControllerTest {
         val provider=Provider()
         val controller=CounselController(persistence,TemporarySessionStore(),object:PromptAssembler {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("合成知识","冻结内容",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")
-        },provider,scope)
+        },provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             controller.initialize();await {!controller.state.value.loading};controller.openStyle();await {controller.stylePage.value.receipt!=null}
             controller.previewStyle(RelationGroup.SOCIAL,controller.stylePage.value.receipt!!);await {controller.state.value.preview!=null}
@@ -92,7 +97,7 @@ class T41StyleControllerTest {
         val provider=Provider()
         val controller=CounselController(persistence,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request:AnalysisRequest):PreparedPrompt {observed+=request;return PreparedPrompt("synthetic","preview",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")}
-        }),provider,scope)
+        }),provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             controller.initialize();await {!controller.state.value.loading};controller.openStyle();await {controller.stylePage.value.receipt!=null}
             val answers=List(5) {"合成自己的选择$it"}
@@ -114,7 +119,7 @@ class T41StyleControllerTest {
         val provider=Provider()
         val controller=CounselController(persistence,TemporarySessionStore(),object:PromptAssembler {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("synthetic","preview",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")
-        },provider,scope)
+        },provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             controller.initialize();await {!controller.state.value.loading};controller.openStyle();await {controller.stylePage.value.receipt!=null}
             controller.previewStyle(RelationGroup.SOCIAL,controller.stylePage.value.receipt!!);await {controller.state.value.preview!=null}
@@ -138,12 +143,12 @@ class T41StyleControllerTest {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("synthetic","preview",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")
         }
         try {
-            val controller=CounselController(persistence,TemporarySessionStore(),assembler,demo,scope)
+            val controller=CounselController(persistence,TemporarySessionStore(),assembler,demo,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             controller.initialize();await {!controller.state.value.loading};controller.openStyle();await {controller.stylePage.value.receipt!=null}
             controller.previewStyle(RelationGroup.SOCIAL,controller.stylePage.value.receipt!!);await {controller.stylePage.value.modelRequired}
             assertTrue(demoCalls.isEmpty());assertEquals(0,persistence.commits);assertEquals("",persistence.description)
             val provider=Provider()
-            val real=CounselController(persistence,TemporarySessionStore(),assembler,provider,scope)
+            val real=CounselController(persistence,TemporarySessionStore(),assembler,provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
             real.initialize();await {!real.state.value.loading};real.openStyle();await {real.stylePage.value.receipt!=null}
             real.previewStyle(RelationGroup.SOCIAL,real.stylePage.value.receipt!!);await {real.state.value.preview!=null}
             real.analyze();await {provider.calls.size==1}
@@ -158,7 +163,7 @@ class T41StyleControllerTest {
         val provider=Provider();val observed=mutableListOf<AnalysisRequest>()
         val controller=CounselController(persistence,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request:AnalysisRequest):PreparedPrompt {observed+=request;return PreparedPrompt("synthetic","preview",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")}
-        }),provider,scope)
+        }),provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         suspend fun quiz() {
             val prior=controller.stylePage.value.receipt
             controller.openStyle();await {controller.stylePage.value.receipt!=null && controller.stylePage.value.receipt!=prior}
@@ -195,7 +200,7 @@ class T41StyleControllerTest {
         val requests=mutableListOf<AnalysisRequest>()
         val controller=CounselController(persistence,TemporarySessionStore(),object:PromptAssembler {
             override fun prepare(request:AnalysisRequest):PreparedPrompt {requests+=request;return PreparedPrompt("synthetic","preview",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")}
-        },Provider(),scope)
+        },Provider(),scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             controller.initialize();await {!controller.state.value.loading};controller.setRelation(RelationType.PARENT)
             controller.openStyle();await {controller.stylePage.value.receipt!=null}

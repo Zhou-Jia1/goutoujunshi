@@ -37,6 +37,9 @@ import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
 /** Event boundary for rendering and exercising the home screen without opening storage. */
 data class CounselUiActions(
+    val copyReply:((SafetyActionReceipt,String,(String)->Unit)->Boolean)?=null,
+    val acknowledgeSafety:(SafetyActionReceipt,Boolean)->Unit={_,_->},
+    val saveCoolingDraft:(SafetyActionReceipt,String)->Unit={_,_->},
     val enterPractice:(String?)->Unit={},
     val editPracticeInput:(String?,String,String)->Unit={_,_,_->},
     val practiceDifficulty:(String?,String,com.shengjidaguai.goutoujunshi.domain.PracticeDifficulty)->Unit={_,_,_->},
@@ -100,6 +103,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val memory by viewModel.memory.collectAsStateWithLifecycle()
     val shownMemory=memory
     CounselContent(state, CounselUiActions(
+        copyReply=viewModel::copyReply,acknowledgeSafety=viewModel::acknowledgeSafety,saveCoolingDraft=viewModel::saveCoolingDraft,
         enterPractice=viewModel::enterPractice,editPracticeInput=viewModel::editPracticeInput,practiceDifficulty=viewModel::practiceDifficulty,previewPractice=viewModel::previewPractice,sendPractice=viewModel::sendPractice,exitPractice=viewModel::exitPractice,savePracticeSummary=viewModel::savePracticeSummary,
         toggleTip=viewModel::toggleTip, saveTipScene=viewModel::saveTipScene, dismissHabit=viewModel::dismissHabit,
         rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
@@ -126,9 +130,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         EmptyState(Illustration.SHIELD, stringResource(R.string.counsel_locked), null)
         return
     }
-    val streamSafety = SafetyLevel.entries.filter { Regex("\\b${it.name}\\b", RegexOption.IGNORE_CASE)
-        .containsMatchIn(state.partial[SectionId.SAFETY].orEmpty()) }.maxByOrNull { it.ordinal } ?: SafetyLevel.NONE
-    val presentation = SafetyPolicy.evaluate(state.emotion, (state.answer?.safety ?: SafetyLevel.NONE).upgrade(state.safety), streamSafety, state.lockState)
+    val presentation = state.safetyPresentation()
     if(state.practice!=null && presentation.showOrdinaryStrategy) {PracticeContent(state,actions);return}
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -170,14 +172,18 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         }
     }
     val latestState by rememberUpdatedState(state)
+    val receipt=state.safetyActionReceipt()
+    var pendingCopy by remember(receipt) { mutableStateOf<String?>(null) }
+    fun performCopy(text:String) {
+        val accepted=actions.copyReply?.invoke(receipt,text,clipboard.write) ?: run {clipboard.write(text);true}
+        if(accepted) {haptic.performHapticFeedback(HapticFeedbackType.Confirm);note=R.string.copied}
+    }
     fun copy(text: String) {
         val current = latestState
         if (text.isBlank() || current.answer == null || current.streaming || current.error != null ||
             (current.answerRequest != null && !current.hasCurrentAnswerSource()) ||
             !SafetyPolicy.evaluate(current.emotion, current.safety.upgrade(current.answer.safety), SafetyLevel.NONE, current.lockState).showOrdinaryStrategy) return
-        clipboard.write(text)
-        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
-        note = R.string.copied
+        if(presentation.calm) pendingCopy=text else performCopy(text)
     }
     LazyColumn(Modifier.fillMaxSize().testTag("counsel-list"), contentPadding = PaddingValues(JunshiTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
@@ -230,6 +236,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 EmptyState(Illustration.LISTENING, stringResource(R.string.empty_counsel_title), stringResource(R.string.empty_counsel_body))
             }
         }
+        state.visibleCoolingDraft()?.let {draft->item(key="cooling-draft:${state.conversation?.id}") {CoolingDraftContent(draft,presentation.calm)}}
         if (state.importDuplicate) item { BodyText(stringResource(R.string.import_duplicate)) }
         state.messages.filter { it.role == MessageRole.USER }.takeLast(3).forEach { message ->
             item(key = message.id) { UserMessageBubble(message.text, emptyList()) }
@@ -246,12 +253,12 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         val partialReply = (if (state.currentRequest?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) null else state.partial[SectionId.REPLY])?.let { SafeAliasRestorer.displayPartial(it, state.preview) }?.split("+++")?.filter { it.isNotBlank() }.orEmpty()
         if (presentation.showSafetyCard) item {
             JunshiColumn(Modifier.testTag("counsel-safety")) {
-                SafetyCard({ number -> context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))) },
-                    { note = R.string.safety_contact_notice }, { note = R.string.safety_hotline_notice }, { note = R.string.safety_stays_active })
+                SafetySupport(state,{actions.acknowledgeSafety(receipt,it)},{note=it})
             }
         }
         if (presentation.showOrdinaryStrategy && (answer != null || partialReply.isNotEmpty())) item {
             JunshiColumn(Modifier.testTag("counsel-answer")) {
+                val ordinary: @Composable ()->Unit = {
                 if (state.answerDemo) DemoBadge()
                 if (answer != null && hasAnswerSource) SceneChips(com.shengjidaguai.goutoujunshi.designsystem.RelationGroup.valueOf(state.relationType.group().name),
                     stringResource(relationLabel(state.relationType)), stringResource(goalLabel(state.goal)),
@@ -259,7 +266,9 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 val verdict = answer?.verdict ?: state.currentRequest?.takeIf { it.mode == com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY }?.originalAnswer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
-                ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8,
+                if(presentation.calm) BodyText(stringResource(R.string.t53_pause))
+                if(presentation.calm) SecondaryButton(stringResource(R.string.t53_save_ten),{actions.saveCoolingDraft(receipt,replies.joinToString("\n"))})
+                ReplySuggestionCard(replies, answer == null, presentation.calm,
                     if(com.shengjidaguai.goutoujunshi.domain.StyleDeviationPolicy.addedEmoji(state.answerRequest?.styleSamples.orEmpty(),replies)) stringResource(R.string.style_emoji_note) else null,
                     { index -> if (answer != null) replies.getOrNull(index)?.let(::copy) }, { if (answer != null) copy(replies.joinToString("\n")) }, highlight=state.teaching.tip?.example?.takeIf {state.teaching.answerId==answer?.id})
                 if (answer != null && (answer.formatDisordered || answer.freeText.isNotBlank())) {
@@ -281,10 +290,20 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 } else if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
                     BodyText(listOf(answer.empathy, answer.why.joinToString("\n"), answer.cost, answer.next).filter { it.isNotBlank() }.joinToString("\n\n"))
                 }
+                }
+                if(presentation.calm) {
+                    BodyText(answer?.empathy ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.EMPATHY].orEmpty(),state.preview))
+                    BodyText(answer?.next ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.NEXT].orEmpty(),state.preview))
+                    CollapsibleSection(stringResource(R.string.t53_later),null) {ordinary()}
+                } else ordinary()
             }
         }
-        if (presentation.showOrdinaryStrategy && state.currentRequest?.purpose != OutboundPurpose.LONG_RECORD_SUMMARY && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item {
-            BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))
+        if (presentation.showOrdinaryStrategy && state.currentRequest?.purpose != OutboundPurpose.LONG_RECORD_SUMMARY && state.currentRequest?.mode != com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY && state.answer == null && state.partial[SectionId.FREE_TEXT]?.isNotBlank() == true) item(key="free-text:${state.conversation?.id}:${state.currentRequest?.requestId}") {
+            if(presentation.calm && state.partial[SectionId.REPLY].isNullOrBlank()) {
+                BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.EMPATHY].orEmpty(),state.preview).ifBlank {stringResource(R.string.t53_stream_empathy)})
+                BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.NEXT].orEmpty(),state.preview).ifBlank {stringResource(R.string.t53_stream_next)})
+            }
+            CalmOrdinaryContent(presentation.calm) {BodyText(SafeAliasRestorer.displayPartial(state.partial[SectionId.FREE_TEXT].orEmpty(), state.preview))}
         }
         if(memoryContent!=null && presentation.showOrdinaryStrategy) item { memoryContent() }
         state.error?.let { error -> item {
@@ -318,6 +337,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             if (mode == 1) ReplyEditField(editedReply, stringResource(R.string.answer_edit_reply))
             BodyText(stringResource(R.string.answer_feedback_notice))
         } }
+    }
+    pendingCopy?.takeIf {presentation.showOrdinaryStrategy}?.let {text->
+        ContentDialog(stringResource(R.string.t53_pause),stringResource(R.string.close),{pendingCopy=null}) {
+            BreathingPrompt(onContinue={performCopy(text);pendingCopy=null},onSaveDraft={actions.saveCoolingDraft(receipt,text);pendingCopy=null})
+        }
     }
     if (createContact) CreateContactDialog(actions.createContact) { createContact = false }
     note?.let { message -> ContentDialog(stringResource(R.string.app_name), stringResource(R.string.close), { note = null }) { BodyText(stringResource(message)) } }
@@ -495,6 +519,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 }
 
 fun errorLabel(code: String): Int = when (code) {
+    "SAFETY_UNAVAILABLE" -> R.string.t53_safety_unavailable
     "PRACTICE_NEEDS_MESSAGES" -> R.string.practice_needs_messages
     "PRACTICE_SOURCE_CHANGED" -> R.string.practice_source_changed
     "PRACTICE_SAFETY_UNAVAILABLE" -> R.string.practice_safety_unavailable
@@ -611,4 +636,34 @@ internal fun outboundBodyChunks(value:String):List<String> {
         chunks+=value.substring(offset,end);offset=end
     }
     return chunks.ifEmpty {listOf("")}
+}
+
+/** Production emergency numbers come only from the bundled reviewed-resource seam. */
+@Composable internal fun SafetySupport(state:CounselState,collapse:(Boolean)->Unit,note:(Int)->Unit) {
+    val context=LocalContext.current
+    val policeSlot=stringResource(com.shengjidaguai.goutoujunshi.designsystem.R.string.ds_police_number)
+    val numbers=remember(context) {runCatching {org.json.JSONObject(context.assets.open("safety/hotlines.json").bufferedReader().use {it.readText()})}.getOrNull()}
+    if(state.safetyCollapsed) SecondaryButton(stringResource(R.string.t53_safety_entry),{collapse(false)})
+    else SafetyCard({slot->
+        val number=numbers?.optString(if(slot==policeSlot) "police" else "ambulance").orEmpty()
+        if(number.matches(Regex("[0-9]{3}"))) context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL,android.net.Uri.parse("tel:$number")).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        else note(R.string.t53_resources_unavailable)
+    },{note(R.string.safety_contact_notice)},{note(R.string.safety_hotline_notice)},{collapse(true)})
+}
+
+/** Callers pass the shared SafetyPolicy presentation; stream text is never truncated. */
+@Composable internal fun CalmOrdinaryContent(calm:Boolean,content:@Composable ()->Unit) {
+    if(calm) CollapsibleSection(stringResource(R.string.t53_later),null,content=content) else content()
+}
+
+@Composable internal fun CoolingDraftContent(draft:com.shengjidaguai.goutoujunshi.domain.CoolingDraft,calm:Boolean) {
+    var ready by remember(draft) {mutableStateOf(draft.ready(System.currentTimeMillis()))}
+    LaunchedEffect(draft) {
+        if(!ready) {kotlinx.coroutines.delay((draft.savedAt+600_000L-System.currentTimeMillis()).coerceAtLeast(0));ready=draft.ready(System.currentTimeMillis())}
+    }
+    JunshiColumn(Modifier.testTag("cooling-draft")) {
+    BodyText(stringResource(if(ready) R.string.t53_review_draft else R.string.t53_draft_saved))
+    CalmOrdinaryContent(calm) {BodyText(draft.text)}
+    BodyText(stringResource(R.string.t53_ten_notice))
+    }
 }

@@ -96,7 +96,7 @@ class T43EncryptedMemoryIntegrationTest {
             val assembler=FrozenPromptAssembler(object: PromptAssembler {
                 override fun prepare(request: AnalysisRequest)=PreparedPrompt("synthetic system","synthetic outbound",listOf(KnowledgeReference("synthetic.md","a".repeat(64),9)),"synthetic")
             })
-            val controller=CounselController(persistence,temporary,assembler,provider,scope)
+            val controller=CounselController(persistence,temporary,assembler,provider,scope,localSafety={SafetyLevel.NONE})
             controller.initialize()
             await { !controller.state.value.loading && controller.state.value.currentContact?.id==owner }
             var root: MemoryEntry?=null

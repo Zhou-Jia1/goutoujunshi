@@ -31,7 +31,7 @@ class T51TeachingControllerTest {
         val scope=CoroutineScope(SupervisorJob()+Dispatchers.Unconfined)
         val controller=CounselController(persistence,TemporarySessionStore(),object:PromptAssembler {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("合成系统","合成提示",listOf(KnowledgeReference("synthetic.md","a".repeat(64),1)),"synthetic")
-        },if(real) object:AnalysisProvider by provider {override val kind=ProviderKind.BYOK} else provider,scope)
+        },if(real) object:AnalysisProvider by provider {override val kind=ProviderKind.BYOK} else provider,scope, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         suspend fun generate(id:String,name:String="技巧$id") {
             val previousReceipt=controller.state.value.teaching.receipt
             controller.editDraft("合成问题$id");await {controller.state.value.draft=="合成问题$id"}

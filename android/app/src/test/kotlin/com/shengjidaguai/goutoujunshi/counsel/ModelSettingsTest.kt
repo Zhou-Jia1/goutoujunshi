@@ -42,7 +42,7 @@ class ModelSettingsTest {
             override fun prepare(request: AnalysisRequest) = PreparedPrompt("synthetic knowledge", "redacted ${request.userText}", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 9)), "synthetic-v1")
         })
         val controller = CounselController(CounselControllerTest.MemoryPersistence(), TemporarySessionStore(), assembler,
-            demo, scope, repo, { Provider(ProviderKind.BYOK).also { lives += it } })
+            demo, scope, repo, { Provider(ProviderKind.BYOK).also { lives += it } }, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         init { controller.initialize() }
         fun live(host: String = "a.example", key: String? = "synthetic-key-1234") = controller.saveModelSettings(
             SavedModelSettings(true, "https://$host/v1", "synthetic-model", "synthetic"), key)

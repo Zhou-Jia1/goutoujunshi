@@ -44,16 +44,20 @@ class ScreenshotSelectionSessionTest {
         } finally { c.cancel();f.close() }
     }
     @Test fun ownerClearAndCancelInvalidateButKeepSlotUntilTerminalResult() {
-        for(change in listOf("owner","clear","cancel")) {
+        for(change in listOf("owner","formal_owner","clear","cancel")) {
             val f=Fixture();val c=ImportCoordinator(f.controller,f.scope,{true},{})
             try {
                 val vm=CounselViewModel(RuntimeEnvironment.getApplication(),f.controller,c)
                 assertTrue(vm.launchImagePicker {})
-                when(change) { "owner" -> vm.newTemporary(); "clear" -> vm.clearAll(); else -> c.cancel() }
+                when(change) { "owner" -> vm.newTemporary(); "formal_owner" -> f.controller.createContact("合成乙",com.shengjidaguai.goutoujunshi.domain.RelationType.FRIEND); "clear" -> vm.clearAll(); else -> c.cancel() }
                 assertFalse(vm.launchImagePicker { error("old result still outstanding") })
                 val epoch=f.controller.importAuthority
+                val owner=f.controller.state.value.currentContact?.id
+                val conversation=f.controller.state.value.conversation
                 vm.importImages(uris)
                 assertNull(c.state.value);assertEquals(epoch,f.controller.importAuthority)
+                assertEquals(owner,f.controller.state.value.currentContact?.id);assertEquals(conversation,f.controller.state.value.conversation)
+                if(change=="formal_owner") {assertNotNull(owner);assertTrue(f.controller.state.value.evidence.isEmpty())}
                 if(change=="clear") vm.initialize() // clear intentionally returns to an uninitialized welcome state
                 assertTrue(vm.launchImagePicker {})
                 vm.importImages(emptyList())

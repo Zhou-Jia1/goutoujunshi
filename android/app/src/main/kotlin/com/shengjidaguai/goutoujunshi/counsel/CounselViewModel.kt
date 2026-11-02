@@ -33,7 +33,9 @@ internal object CounselRuntime {
                 override fun prepare(request: AnalysisRequest) = delegate.prepare(request)
             }
             val assembler = FrozenPromptAssembler(builder)
-            val localSafety=localSafetyClassifier { application.assets.open("crisis-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} }
+            val localSafety=CachedLocalSafetyClassifier(
+                { application.assets.open("crisis-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} },
+                { application.assets.open("calm-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} })::classify
             CounselController(EncryptedCounselPersistence(store, temporary), temporary, assembler,
                 DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO),
                 VaultModelSettingsRepository(store.vault),
@@ -45,6 +47,9 @@ internal object CounselRuntime {
 class CounselViewModel internal constructor(application: Application, private val controller: CounselController, val imports: ImportCoordinator) : AndroidViewModel(application) {
     constructor(application: Application):this(application,CounselRuntime.get(application),CounselRuntime.imports(application))
     private val pickerSelection=ImportSelectionSession(imports)
+    fun copyReply(receipt:SafetyActionReceipt,text:String,write:(String)->Unit)=controller.copyReply(receipt,text,write)
+    fun acknowledgeSafety(receipt:SafetyActionReceipt,collapsed:Boolean)=controller.acknowledgeSafety(receipt,collapsed)
+    fun saveCoolingDraft(receipt:SafetyActionReceipt,text:String)=controller.saveCoolingDraft(receipt,text)
     fun removeTip(id:String,receipt:String)=controller.removeTip(id,receipt)
     fun saveTipScene(origin:String?,receipt:String)=controller.toggleTip(origin,receipt,true)
     fun openTips()=controller.openTips()

@@ -60,7 +60,7 @@ class T31LockAuthorityTest {
         }
         val controller=CounselController(p,TemporarySessionStore(),FrozenPromptAssembler(object:PromptAssembler {
             override fun prepare(request:AnalysisRequest)=PreparedPrompt("synthetic system","synthetic ${request.purpose}",listOf(KnowledgeReference("synthetic","a".repeat(64),1)),"v1")
-        }),provider,scope,settings,{provider})
+        }),provider,scope,settings,{provider}, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         suspend fun setup(summary:Boolean=false) {
             if(summary) {
                 val contact=Contact("a","虚构甲",RelationType.FRIEND)

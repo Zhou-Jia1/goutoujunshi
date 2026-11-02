@@ -1,4 +1,5 @@
 package com.shengjidaguai.goutoujunshi
+import com.shengjidaguai.goutoujunshi.counsel.safetyPresentation
 
 import android.os.Bundle
 import android.content.Intent
@@ -38,7 +39,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
             val captureNotice by com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.notice.collectAsStateWithLifecycle()
-            JunshiTheme(calm = (state.emotion ?: 0) >= 8) {
+            JunshiTheme(calm = state.safetyPresentation().calm) {
                 androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize()) {
                     if(captureNotice) Surface {
                         com.shengjidaguai.goutoujunshi.designsystem.JunshiColumn {

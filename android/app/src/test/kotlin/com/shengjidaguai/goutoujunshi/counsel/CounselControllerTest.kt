@@ -241,7 +241,8 @@ class CounselControllerTest {
     internal class Fixture(val persistence: MemoryPersistence = MemoryPersistence(),
         val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
         val clock: () -> Long = { System.nanoTime() / 1_000_000 },
-        val wallClock: () -> Long = { System.currentTimeMillis() }) {
+        val wallClock: () -> Long = { System.currentTimeMillis() },
+        val safetyClassifier:(String)->SafetyLevel={SafetyLevel.NONE}) {
         val provider = ControlledProvider()
         var prepares = 0
         val controller = CounselController(persistence, TemporarySessionStore(), FrozenPromptAssembler(object : PromptAssembler {
@@ -249,7 +250,7 @@ class CounselControllerTest {
                 prepares++
                 return PreparedPrompt("synthetic system", "synthetic ${request.userText}", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 9)), "synthetic-v1")
             }
-        }), provider, scope, monotonicMillis = clock, wallClockMillis = wallClock)
+        }), provider, scope, monotonicMillis = clock, wallClockMillis = wallClock, localSafety=safetyClassifier)
         fun close() { scope.cancel() }
     }
     private suspend fun await(predicate: () -> Boolean) = withTimeout(2_000) { while (!predicate()) yield() }
@@ -291,6 +292,7 @@ class CounselControllerTest {
             assertEquals(preview, f.controller.state.value.preview)
             assertEquals(RedactionProfile(), f.controller.state.value.redactionProfile)
             f.controller.selectContact(a)
+            await { f.controller.state.value.currentContact?.id == a }
             assertEquals(listOf("虚构甲公司"), f.controller.state.value.redactionProfile.terms)
             f.controller.saveRedactionProfile(f.controller.state.value.conversation!!.id, listOf("x".repeat(201)), emptyList())
             assertTrue(f.controller.state.value.redactionError)

@@ -159,7 +159,7 @@ class RecoveryTest {
         first.close()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val provider = CounselControllerTest.ControlledProvider()
-        val controller = CounselController(p, TemporarySessionStore(), FrozenPromptAssembler(assembler), provider, scope, settings, { provider })
+        val controller = CounselController(p, TemporarySessionStore(), FrozenPromptAssembler(assembler), provider, scope, settings, { provider }, localSafety={com.shengjidaguai.goutoujunshi.domain.SafetyLevel.NONE})
         try {
             controller.initialize()
             assertEquals("INTERRUPTED", controller.state.value.error?.code)

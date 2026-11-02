@@ -13,6 +13,7 @@ data class DraftEditStamp(val editorId: String, val sequence: Long, val originCo
 
 /** Never put this state into SavedStateHandle: it can contain temporary private data. */
 data class CounselState(
+    val actionEpoch:Long=0, val actionLock:Long=0, val safetyCollapsed:Boolean=false,
     val practice:PracticeView?=null,
     val teaching: TeachingView = TeachingView(),
     val savedTips: List<Tip> = emptyList(),
@@ -94,3 +95,15 @@ fun CounselState.answerModalStamp(): List<Any?> = listOf(conversation, currentCo
 data class ContactDetailState(val ownerId: String? = null, val loading: Boolean = false,
     val data: com.shengjidaguai.goutoujunshi.data.ContactDetails? = null, val failed: Boolean = false,
     val saved: Boolean = false, val undoAvailable: Boolean = false, val deletePending: Boolean = false)
+
+fun CounselState.safetyPresentation():SafetyPresentation {
+    val streamSafety=SafetyLevel.entries.filter { Regex("\\b${it.name}\\b",RegexOption.IGNORE_CASE)
+        .containsMatchIn(partial[SectionId.SAFETY].orEmpty()) }.maxByOrNull {it.ordinal} ?: SafetyLevel.NONE
+    return SafetyPolicy.evaluate(emotion,safety.upgrade(answer?.safety ?: SafetyLevel.NONE),streamSafety,lockState)
+}
+
+/** Exact displayed authority, RAM only; never reconstruct from the latest answer after a delay. */
+data class SafetyActionReceipt(val stamp:List<Any?>,val epoch:Long,val lock:Long)
+fun CounselState.safetyActionReceipt()=SafetyActionReceipt(answerModalStamp()+listOf(safety,practice?.id,practice?.revision,currentRequest?.requestId),actionEpoch,actionLock)
+
+fun CounselState.visibleCoolingDraft()=conversation?.coolingDraft?.takeIf {safetyPresentation().showOrdinaryStrategy && lockState.canDisplaySensitiveContent && !sourceSelectionBlocked && it.sourceRevision==(currentContact?.sourceRevision ?: 0)}
