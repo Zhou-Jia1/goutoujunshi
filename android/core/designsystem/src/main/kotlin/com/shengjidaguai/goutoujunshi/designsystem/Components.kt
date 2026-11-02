@@ -362,7 +362,7 @@ fun Composer(text: String, onTextChange: (String) -> Unit, attachments: List<Att
     val description = stringResource(when(state) { FloatingBallState.NEED_AUTH -> R.string.ds_need_auth; FloatingBallState.ANALYZING -> R.string.ds_planning; FloatingBallState.IDLE -> R.string.ds_floating_idle; FloatingBallState.HINT -> R.string.ds_floating_hint })
     Box(contentAlignment = Alignment.Center) { Image(painterResource(R.drawable.ic_junshi_foreground), description, Modifier.fillMaxSize()) }
 } }
-@Composable fun FloatingAnswerPanel(state: AnswerUiState, contactLabel: String, onCopy: () -> Unit, onChangeTone: (Tone) -> Unit, onCaptureMore: () -> Unit, onOpenInApp: () -> Unit, onClose: () -> Unit, safetyActions: AnswerActions? = null) {
+@Composable fun FloatingAnswerPanel(state: AnswerUiState, contactLabel: String, onCopy: () -> Unit, onChangeTone: (Tone) -> Unit, onCaptureMore: () -> Unit, onOpenInApp: () -> Unit, onClose: () -> Unit, safetyActions: AnswerActions? = null, footer: (@Composable ColumnScope.() -> Unit)? = null) {
     val context = LocalContext.current
     val defaultSafety = AnswerActions(
         onDial = { number -> context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number")).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) },
@@ -372,6 +372,7 @@ fun Composer(text: String, onTextChange: (String) -> Unit, attachments: List<Att
         JunshiColumn(Modifier.verticalScroll(rememberScrollState())) {
             Text(contactLabel); CounselAnswerCard(state, (safetyActions ?: defaultSafety).copy(onCopyOne = { onCopy() }, onCopyAll = onCopy, onChangeTone = onChangeTone), compact = true)
             FlowRow { if (!state.crisis) SecondaryButton(stringResource(R.string.ds_capture_more), onCaptureMore); SecondaryButton(stringResource(R.string.ds_open_full), onOpenInApp); TextButton(onClose) { Text(stringResource(R.string.ds_close)) } }
+            footer?.invoke(this)
         }
     }
 }

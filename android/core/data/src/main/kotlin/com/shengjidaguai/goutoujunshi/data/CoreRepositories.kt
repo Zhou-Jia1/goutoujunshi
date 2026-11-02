@@ -132,7 +132,7 @@ class ImportRepository(private val session: DataSession) {
     suspend fun save(imported: ChatImport, lines: List<ChatLine>, expectedSourceRevision: Long? = null): String = session.transaction {
         val contactId = requireNotNull(imported.contactId)
         val source = requireContact(contactId)
-        require(imported.id.isNotBlank() && imported.contentHash.isNotBlank())
+        require(imported.id.isNotBlank() && imported.contentHash.isNotBlank() && !imported.id.startsWith(LiveCaptureFingerprint.PREFIX))
         require(ownerOfImport(imported.id).let { it == null || it == contactId })
         imports(contactId).firstOrNull { it.hash == imported.contentHash }?.let { return@transaction it.id }
         if (expectedSourceRevision != null) check(source.revision == expectedSourceRevision) { "Contact source changed" }
@@ -154,6 +154,7 @@ class ImportRepository(private val session: DataSession) {
             files(contactId).filter { it.importId == importId }.forEach {
                 put(PendingFileCleanupRow(it.path)); removeFile(it.path)
             }
+            invalidateCaptureWitness(contactId,importId)
             deleteImport(contactId, importId)
             put(owner.copy(revision = owner.revision + 1, payload = encode(decode<Contact>(owner.payload).copy(sourceRevision = owner.revision + 1))))
             invalidateAndRecompute()
@@ -166,7 +167,10 @@ class ImportRepository(private val session: DataSession) {
 class FileCleanupRepository(private val session: DataSession) {
     suspend fun register(contactId: String, importId: String?, file: File, ownedRoot: File) = session.transaction {
         requireContact(contactId)
-        if (importId != null) requireNotNull(imported(contactId, importId))
+        if (importId != null) {
+            requireNotNull(imported(contactId, importId))
+            require(!importId.startsWith(LiveCaptureFingerprint.PREFIX)) {"Live captures must remain fileless"}
+        }
         val root = ownedRoot.canonicalFile.toPath()
         val path = file.canonicalFile.toPath()
         require(file.isFile) { "Only permanent files may be registered" }

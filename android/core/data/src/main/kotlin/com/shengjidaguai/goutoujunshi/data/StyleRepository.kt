@@ -31,11 +31,15 @@ class StyleRepository(private val session: DataSession) {
                 require(source.importId == sample.sourceImportId && domain.speaker == Speaker.ME && domain.speakerConfirmed)
                 require(domain.text == sample.text) { "Import sample must be an actual confirmed user line" }
                 requireNotNull(imported(contact, source.importId))
+                require(captureImportEligible(contact,source.importId)) {"Source is not eligible for analysis"}
                 require(sample.sourceAnswerId == null)
             }
             StyleOrigin.EDITED_REPLY -> {
                 val source = requireNotNull(message(requireNotNull(sample.sourceContactId), requireNotNull(sample.sourceAnswerId)))
-                require(decode<Message>(source.payload).role == MessageRole.ASSISTANT)
+                val message=decode<Message>(source.payload)
+                require(message.role == MessageRole.ASSISTANT)
+                val owner=requireNotNull(sample.sourceContactId)
+                records(owner,OwnedRecordKind.ANALYSIS_RUN.name).map {decode<AnalysisRun>(it.payload)}.firstOrNull {it.requestId==message.requestId}?.requestSnapshot?.evidence?.forEach {b->require(captureImportEligible(owner,b.id))}
                 require(sample.text.isNotBlank())
                 require(sample.sourceImportId == null && sample.sourceMessageId == null)
             }
@@ -68,8 +72,8 @@ class StyleRepository(private val session: DataSession) {
 }
 
 /** Called only inside the mutation transaction. Clear generated descriptions before recomputing. */
-internal suspend fun JunshiDao.invalidateAndRecompute() {
-    pruneDerivedMemories()
+internal suspend fun JunshiDao.invalidateAndRecompute(ownerId:String?=null) {
+    pruneDerivedMemories(ownerId=ownerId)
     val revision = (metadata()?.styleRevision ?: 0) + 1
     put(MetadataRow(styleRevision = revision))
     clearProfiles()

@@ -56,6 +56,11 @@ class CounselControllerTest {
             people.replaceAll { if (it.id == next.id) after else it }
             return com.shengjidaguai.goutoujunshi.data.ContactEditReceipt(before, after)
         }
+        val floatingIdentities=mutableMapOf<String,FloatingIdentityBinding>()
+        override suspend fun saveFloatingIdentity(binding:FloatingIdentityBinding) {
+            check(people.any {it.id==binding.contactId && it.sourceRevision==binding.contactRevision})
+            floatingIdentities[binding.id]=binding
+        }
         val people = mutableListOf<Contact>()
         val saved = mutableMapOf<String, StoredCounsel>()
         val imports = mutableMapOf<String, ChatImport>()
@@ -64,6 +69,58 @@ class CounselControllerTest {
         var beforeContacts: CompletableDeferred<Unit>? = null
         var beforeCreate: CompletableDeferred<Unit>? = null
         var failImportAfterCommit = false
+        var capturedReplaceGate:CompletableDeferred<Unit>?=null
+        var capturedReplaceEntered:CompletableDeferred<Unit>?=null
+        var capturedAfterCommitFailures=0
+        val capturedReplaceIds=mutableListOf<String>()
+        val liveProvenances=mutableMapOf<String,LiveCaptureProvenance>()
+        val archivedEvidence=mutableMapOf<String,EvidenceBlock>()
+        override suspend fun liveCaptureProvenance(owner:String,lineage:String)=liveProvenances[lineage]?.takeIf {it.contactId==owner}
+        override suspend fun saveCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,current:()->Boolean):LiveCaptureReceipt {
+            beforeImport?.await();check(current())
+            val owner=people.first {it.id==contact.id};val normalized=LiveCaptureFingerprint.normalized(lines);val semantic=LiveCaptureFingerprint.semantic(lines)
+            val before=liveProvenances.values.singleOrNull {it.contactId==contact.id && it.semanticHash==semantic}
+            if(before?.operationId==imported.id && owner.sourceRevision==contact.sourceRevision+1) return LiveCaptureReceipt(before.winner,before,true)
+            check(owner.sourceRevision==contact.sourceRevision)
+            saved[contact.id]?.evidence?.forEach {archivedEvidence[it.id]=it}
+            val history=before?.normalizedHistory.orEmpty()+normalized
+            val aliases=before?.aliases.orEmpty()+imports.values.filter {it.contactId==contact.id && !it.id.startsWith(LiveCaptureFingerprint.PREFIX) && it.contentHash in history}.associate {raw->
+                raw.id to CaptureAliasWitness(raw.id,raw.contentHash,raw.sourceType,raw.contentHash)
+            }
+            if(before!=null && before.normalizedHash==normalized && before.aliases==aliases) return LiveCaptureReceipt(before.winner,before,true)
+            val id=LiveCaptureFingerprint.id(imported.id);val actual=imported.copy(id=id,contentHash=LiveCaptureFingerprint.stored(before?.lineageId ?: imported.id,normalized))
+            val actualLines=lines.mapIndexed {i,line->line.copy(id="$id:$i",importId=id,seq=i)}
+            val evidence=EvidenceBlock(id,"SCREENSHOT",actualLines)
+            before?.let {imports.remove(it.winner.id)};imports[id]=actual;archivedEvidence[id]=evidence
+            people.replaceAll {if(it.id==contact.id) it.copy(sourceRevision=it.sourceRevision+1) else it}
+            val previous=saved[contact.id] ?: StoredCounsel(Conversation("conversation:${contact.id}",contact.id,false),"",emptyList())
+            saved[contact.id]=previous.copy(evidence=previous.evidence.filterNot {it.id in aliases || it.id==before?.winner?.id}+evidence,capturePreferred=aliases.isNotEmpty())
+            val proof=LiveCaptureProvenance(before?.lineageId ?: imported.id,contact.id,actual,normalized,semantic,(before?.revision ?: 0)+1,aliases,history,operationId=imported.id,expectedSourceRevision=contact.sourceRevision,
+                historyVersion=LiveCaptureFingerprint.FRAME_HISTORY_VERSION,frames=before?.frames.orEmpty()+CaptureFrameWitness(normalized,semantic))
+            liveProvenances[proof.lineageId]=proof
+            if(failImportAfterCommit) {failImportAfterCommit=false;error("synthetic capture acknowledgement failure")}
+            return LiveCaptureReceipt(actual,proof,false)
+        }
+
+        override suspend fun replaceCaptured(change:CapturedImportReplacement,current:()->Boolean):Contact {
+            capturedReplaceIds+=change.replacement.id;capturedReplaceEntered?.complete(Unit);capturedReplaceGate?.await()
+            check(current())
+            val owner=checkNotNull(change.replacement.contactId)
+            val before=people.first { it.id==owner }
+            val already=imports[change.replacement.id]
+            if(already!=null) { check(before.sourceRevision==change.expectedSourceRevision+1 && already==change.replacement);return before }
+            check(before.sourceRevision==change.expectedSourceRevision && imports[change.oldImportId]?.contentHash==change.oldHash)
+            val next=before.copy(sourceRevision=before.sourceRevision+1)
+            people.replaceAll { if(it.id==owner) next else it }
+            imports.remove(change.oldImportId);imports[change.replacement.id]=change.replacement
+            val proof=requireNotNull(change.provenance)
+            liveProvenances[proof.lineageId]=proof.copy(winner=change.replacement,normalizedHash=LiveCaptureFingerprint.normalized(change.lines),semanticHash=LiveCaptureFingerprint.semantic(change.lines),
+                revision=proof.revision+1,normalizedHistory=proof.normalizedHistory+LiveCaptureFingerprint.normalized(change.lines),operationId=change.replacement.id,expectedSourceRevision=change.expectedSourceRevision,
+                frames=proof.frames+CaptureFrameWitness(LiveCaptureFingerprint.normalized(change.lines),LiveCaptureFingerprint.semantic(change.lines)))
+            saved[owner]=saved.getValue(owner).let { it.copy(evidence=it.evidence.filterNot { it.id==change.oldImportId || it.id in proof.aliases }+EvidenceBlock(change.replacement.id,"SCREENSHOT",change.lines)) }
+            if(capturedAfterCommitFailures>0) { capturedAfterCommitFailures--;error("synthetic acknowledgement lost after replacement commit") }
+            return next
+        }
         override suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String {
             beforeImport?.await()
             imports.values.firstOrNull { it.contactId == contact.id && it.contentHash == imported.contentHash }?.let { return it.id }
@@ -85,6 +142,7 @@ class CounselControllerTest {
         var messageWrites = 0
         var runFailures = 0
         var draftWrites = 0
+        var messageEntered: CompletableDeferred<Unit>? = null
         var beforeMessage: CompletableDeferred<Unit>? = null
         var beforeUpdate: CompletableDeferred<Unit>? = null
         var updateEntered: CompletableDeferred<Unit>? = null
@@ -147,6 +205,7 @@ class CounselControllerTest {
             saved[contact.id] = saved.getValue(contact.id).copy(conversation = next, draft = draft)
         }
         override suspend fun saveMessage(contact: Contact, conversation: Conversation, message: Message) {
+            messageEntered?.complete(Unit)
             beforeMessage?.await()
             check(saved[contact.id]?.conversation == conversation)
             if (message.role == MessageRole.ASSISTANT && assistantFailures > 0) {
@@ -165,7 +224,7 @@ class CounselControllerTest {
             val prior = saved.getValue(contact.id)
             saved[contact.id] = prior.copy(runs = prior.runs.filterNot { it.requestId == run.requestId } + run)
         }
-        override suspend fun clearAll(): Boolean { people.clear(); saved.clear(); return true }
+        override suspend fun clearAll(): Boolean { people.clear(); saved.clear();imports.clear();liveProvenances.clear();archivedEvidence.clear();floatingIdentities.clear();return true }
     }
     internal class ControlledProvider : AnalysisProvider {
         override val kind = ProviderKind.DEMO

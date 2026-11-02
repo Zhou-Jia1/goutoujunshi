@@ -37,15 +37,22 @@ data class MemorySnapshot(val consent: ConsentState = ConsentState(), val stamp:
 }
 
 class MemoryRepository(private val session: DataSession) {
-    suspend fun snapshot(contactId: String?): MemorySnapshot = session.transaction {
-        if(contactId!=null) pruneDerivedMemories(ownerId=contactId)
+    /** Management-only compatibility API; destructive display authority is not model context. */
+    suspend fun snapshot(contactId:String?):MemorySnapshot = readSnapshot(contactId,management=true)
+    /** Null reads consent/version metadata only; non-null reads just this owner's retained sources. */
+    suspend fun contextSnapshot(contactId:String?):MemorySnapshot = readSnapshot(contactId,management=false)
+    private suspend fun readSnapshot(contactId:String?,management:Boolean):MemorySnapshot = session.transaction {
+        if(contactId!=null) {
+            if(!management) check(!effectiveCaptureSelection(contactId).blocked) {"CAPTURE_SOURCE_RECONFIRM"}
+            pruneDerivedMemories(ownerId=contactId)
+        }
         val consent = currentConsent()
         val contact = contactId?.let { requireContact(it) }
         MemorySnapshot(consent, WriteStamp(consent.consentVersion, metadata()?.styleRevision ?: 0, session.generation, contact?.revision, contactId?.let { memoryRevision(it) }),
             if(contactId==null) emptyList() else memories(contactId).map { decode(it.payload) },
             if(contactId==null) null else operations(contactId).lastOrNull()?.id,
             if(contactId==null) emptySet() else records(contactId, OwnedRecordKind.MEMORY_REJECTION.name).map { decode<String>(it.payload) }.toSet(),
-            if(contactId==null) emptyMap() else memoryAnchors(contactId).associate { it.id to it.fingerprint },clearMemoryAuthority(session),
+            if(contactId==null) emptyMap() else memoryAnchors(contactId).associate { it.id to it.fingerprint },if(management) clearMemoryAuthority(session) else null,
             if(contactId==null) emptySet() else records(contactId,OwnedRecordKind.MEMORY_SOURCE.name).map { it.id.removePrefix("MEMORY_SOURCE:") }.toSet())
     }
 
@@ -237,6 +244,7 @@ private fun sourceHash(value: String)=java.security.MessageDigest.getInstance("S
 private suspend fun JunshiDao.verifiedMemoryReceipt(owner: String,requestId: String): MemorySourceReceipt {
     val run=decode<AnalysisRun>(requireNotNull(record(owner,OwnedRecordKind.ANALYSIS_RUN.name,requestId)).payload)
     val request=requireNotNull(run.requestSnapshot)
+    require(!effectiveCaptureSelection(owner).blocked) {"Capture source needs confirmation"}
     require(run.status==RunStatus.COMPLETED && request.contactId==owner && request.mode==RequestMode.FULL_ANALYSIS && request.purpose==OutboundPurpose.ANALYSIS)
     require(request.sourceRevision==requireContact(owner).revision) { "Memory source revision changed" }
     require(request.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
@@ -256,11 +264,12 @@ internal suspend fun JunshiDao.memorySourceRetained(owner: String,receipt: Memor
     val entries=memories(owner).map { decode<MemoryEntry>(it.payload) }.associateBy { it.id }
     val anchors=memoryAnchors(owner).associateBy { it.id }
     if(!receipt.memoryDependencies.all { (id,hash) -> entries[id]?.let { it.active && MemoryContextPolicy.entryFingerprint(it)==hash }==true || anchors[id]?.fingerprint==hash }) return false
-    return receipt.lines.all { (id,hash) -> line(owner,id)?.let { sourceHash(encode(decode<ChatLine>(it.payload)))==hash }==true }
+    val eligible=effectiveCaptureSelection(owner).imports.map {it.id}.toSet()
+    return receipt.lines.all { (id,hash) -> line(owner,id)?.let { it.importId in eligible && sourceHash(encode(decode<ChatLine>(it.payload)))==hash }==true }
 }
 /** Called in the same source mutation transaction; no stale derived value remains in undo payloads. */
 internal suspend fun JunshiDao.pruneDerivedMemories(collect: Boolean = true, ownerId: String? = null) {
-    contacts().filter { ownerId==null || it.id==ownerId }.forEach { contact ->
+    (if(ownerId==null) contacts() else listOfNotNull(contact(ownerId))).forEach { contact ->
         do {
             val existingIds=memories(contact.id).map { it.id }.toSet()+memoryAnchors(contact.id).map { it.id }
             val sources=records(contact.id,OwnedRecordKind.MEMORY_SOURCE.name).associateBy { it.id.removePrefix("MEMORY_SOURCE:") }

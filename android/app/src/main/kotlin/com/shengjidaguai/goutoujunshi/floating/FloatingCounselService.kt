@@ -34,6 +34,7 @@ class FloatingCounselService : Service() {
     private fun touchSession() { timeoutJob?.cancel();timeoutJob=scope.launch { delay(FloatingRuntime.timeoutMinutes*60_000L);close() } }
     private var window: FloatingBallWindow? = null
     private var owners: OverlayOwners? = null
+    private var answerWindow: FloatingAnswerWindow? = null
     private lateinit var wm: WindowManager
     private lateinit var params: WindowManager.LayoutParams
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -98,6 +99,8 @@ class FloatingCounselService : Service() {
                 CaptureDebugSnapshot(debugCaptureCalls,debugCaptureAccepted,debugPointerDowns,debugPointerUps,projection?.debugSnapshot())
             }
             FloatingRuntime.stopCapture=::clearCapture
+            FloatingRuntime.showAnswer={ if(FloatingRuntime.active.value && ownedTicket==FloatingRuntime.runtimeTicket) { if(answerWindow?.isClosed!=false) answerWindow=FloatingAnswerWindow(this,scope) } }
+            FloatingRuntime.hideAnswer={ answerWindow?.close();answerWindow=null }
             FloatingRuntime.timeoutChanged=::touchSession
             touchSession()
             if (window == null) attach()
@@ -207,9 +210,10 @@ class FloatingCounselService : Service() {
     private fun capture() {
         if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureCalls++
         if(!floatingContentAllowed(CounselRuntime.get(application).state.value.lockState)) { FloatingRuntime.unlock(this);return }
+        if(CounselRuntime.get(application).reuseFloatingRequest()) { FloatingRuntime.showAnswer?.invoke();return }
         val ownUi=CaptureOwnUi.snapshot()
-        if(!ownUi.clear) { ownUiBlocked();return }
-        if(!captureState.advance(captureEpoch,CaptureState.Phase.CAPTURING)) return
+        if(!ownUi.clear) { sessionTicket?.let { CounselRuntime.imports(application).discardPreparedCaptureMore(it) };ownUiBlocked();return }
+        if(!captureState.advance(captureEpoch,CaptureState.Phase.CAPTURING)) { sessionTicket?.let { CounselRuntime.imports(application).discardPreparedCaptureMore(it) };return }
         if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureAccepted++
         ownUiStamp=ownUi
         touchSession()
@@ -244,6 +248,7 @@ class FloatingCounselService : Service() {
             catch(_:Exception) { if(captureState.revision==epoch) android.widget.Toast.makeText(this@FloatingCounselService,R.string.capture_no_frame,android.widget.Toast.LENGTH_LONG).show() }
             finally {
                 bitmap?.recycle()
+                if(previewOwner==null) imports.discardPreparedCaptureMore(ticket)
                 if(captureState.revision==epoch) {
                     if(!CaptureOwnUi.valid(ownUi)) {
                         if(previewOwner!=null && previewOwner!=previousPreview) imports.cancelCapture(ticket)
@@ -266,7 +271,7 @@ class FloatingCounselService : Service() {
         debugCaptureCalls=0;debugCaptureAccepted=0;debugPointerDowns=0;debugPointerUps=0
         captureJob?.cancel();captureJob=null;timeoutJob?.cancel();timeoutJob=null
         projection?.close();projection=null;ownedLockRevision=null
-        sessionTicket?.let { CounselRuntime.imports(application).cancelCapture(it);ProjectionGrantStore.clear(it) };sessionTicket=null
+        sessionTicket?.let { CounselRuntime.get(application).closeFloatingCapture(it);CounselRuntime.imports(application).cancelCapture(it);ProjectionGrantStore.clear(it) };sessionTicket=null
     }
     private fun openMenu() { if(window!=null && FloatingRuntime.active.value) { touchSession();FloatingRuntime.open(this, contacts = true) } }
     private fun dock() {
@@ -284,7 +289,7 @@ class FloatingCounselService : Service() {
         ownedTicket?.let(FloatingRuntime::hideWindows)
         clearCapture()
         if(ownedTicket!=null && FloatingRuntime.runtimeTicket==ownedTicket) {
-            FloatingRuntime.runtimeTicket=null;FloatingRuntime.captureAction=null;FloatingRuntime.stopCapture=null;FloatingRuntime.timeoutChanged=null
+            FloatingRuntime.runtimeTicket=null;FloatingRuntime.captureAction=null;FloatingRuntime.stopCapture=null;FloatingRuntime.timeoutChanged=null;FloatingRuntime.showAnswer=null;FloatingRuntime.hideAnswer=null
             FloatingRuntime.active.value=false
         }
         window?.let { view -> window=null; view.handleMotion={false}; try { wm.removeViewImmediate(view) } catch (_: RuntimeException) { }; view.composeView.disposeComposition() }

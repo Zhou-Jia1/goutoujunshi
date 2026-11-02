@@ -24,9 +24,11 @@ object FloatingRuntime {
     internal fun debugSnapshot():CaptureDebugSnapshot? = if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) captureDiagnostics?.invoke() else null
     internal var captureAction:(()->Unit)?=null
     internal var stopCapture:(()->Unit)?=null
+    internal var showAnswer:(()->Unit)?=null
+    internal var hideAnswer:(()->Unit)?=null
     internal val windows=mutableMapOf<android.app.Activity,Long>()
     internal fun bindWindow(activity:android.app.Activity,ticket:Long=runtimeTicket ?: session.epoch()) { windows[activity]=ticket }
-    internal fun hideWindows(ticket:Long?=null) { windows.toMap().filterValues { ticket==null || it==ticket }.keys.forEach { it.finish() } }
+    internal fun hideWindows(ticket:Long?=null) { if(ticket==null || ticket==runtimeTicket) hideAnswer?.invoke(); windows.toMap().filterValues { ticket==null || it==ticket }.keys.forEach { it.finish() } }
     internal var timeoutChanged:(()->Unit)?=null
     internal val timeout=MutableStateFlow(10)
     var timeoutMinutes:Int
@@ -66,11 +68,16 @@ object FloatingRuntime {
             .setAction(if (contacts) CONTACTS else null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     internal fun showCapture(context:Context) {
-        context.startActivity(Intent(context,FloatingCounselActivity::class.java).setAction(CAPTURE_CONFIRM).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val preview=CounselRuntime.imports(context.applicationContext as Application).state.value ?: return
+        val ticket=preview.captureSession?.takeIf {it==runtimeTicket} ?: return
+        context.startActivity(Intent(context,FloatingCounselActivity::class.java).setAction(CAPTURE_CONFIRM)
+            .putExtra(CAPTURE_PREVIEW,preview.id).putExtra(CAPTURE_TICKET,ticket).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     fun unlock(context: Context) {
         context.startActivity(Intent(context,FloatingCounselActivity::class.java).setAction(UNLOCK).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
+    internal const val CAPTURE_PREVIEW="capture-preview"
+    internal const val CAPTURE_TICKET="capture-ticket"
     const val CAPTURE_CONFIRM = "com.shengjidaguai.goutoujunshi.CAPTURE_CONFIRM"
     const val UNLOCK = "com.shengjidaguai.goutoujunshi.FLOATING_UNLOCK"
     const val TILE_START = "com.shengjidaguai.goutoujunshi.FLOATING_TILE_START"

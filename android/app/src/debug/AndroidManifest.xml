@@ -2,5 +2,7 @@
     <application>
         <provider android:name=".testing.SyntheticOcrProvider" android:authorities="${applicationId}.synthetic-ocr" android:exported="false" />
         <activity android:name=".capture.SyntheticChatActivity" android:label="@string/capture_synthetic_title" android:exported="false" android:taskAffinity="${applicationId}.syntheticcapture" />
+    <activity android:name=".floating.T33SyntheticInputActivity" android:excludeFromRecents="true" android:autoRemoveFromRecents="true" android:exported="false" android:label="@string/t33_synthetic_input" android:taskAffinity="${applicationId}.t33input" />
+        <activity android:name=".floating.T33SyntheticCaptureActivity" android:excludeFromRecents="true" android:autoRemoveFromRecents="true" android:exported="false" android:label="@string/t33_synthetic_capture" android:taskAffinity="${applicationId}.t33capture" />
     </application>
 </manifest>

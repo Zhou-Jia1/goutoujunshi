@@ -42,6 +42,7 @@ import com.shengjidaguai.goutoujunshi.importing.*
                     side = { viewModel.imports.side(p.id,it) },
                     move = { id,delta -> viewModel.imports.moveImage(p.id,id,delta) },
                     editStable = { id,update -> viewModel.imports.editRow(p.id,id,update) },
+                    onFloatingSource=viewModel.imports::floatingSource,onContinueCapture=viewModel.imports::continueCaptureMore,
                     recapture = { viewModel.imports.ifCurrent(p.id) {
                         if(p.captureSession!=null && com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.runtimeTicket==p.captureSession)
                             com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.captureAction?.invoke()
@@ -58,13 +59,24 @@ import com.shengjidaguai.goutoujunshi.importing.*
     recognize: () -> Unit = {}, side:(OcrSide)->Unit = {}, move:(String,Int)->Unit = { _,_ -> },
     editStable: ((String,(ImportRow)->ImportRow)->Unit)? = null,
     recapture:()->Unit=retry,
+    onFloatingSource:((FloatingSourceContext?)->Unit)?=null,
+    onContinueCapture:()->Unit={},
 ) {
     var alias by remember(preview.id) { mutableStateOf("") }
+    var sourceApp by remember(preview.id) { mutableStateOf(preview.floatingSource?.app.orEmpty()) }
+    var sourceAccount by remember(preview.id) { mutableStateOf(preview.floatingSource?.account.orEmpty()) }
     val dragThreshold=with(LocalDensity.current) { (JunshiTheme.spacing.xl*2).toPx() }
     LazyColumn(Modifier.fillMaxWidth().testTag("import-preview"), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { BodyText(stringResource(R.string.import_confirmation)) }
         if(preview.captureSession!=null) {
             item {
+                if(onFloatingSource!=null) {
+                BodyText(stringResource(R.string.t33_identity_hint))
+                ImportTextField(sourceApp,{ sourceApp=it;onFloatingSource(null) },stringResource(R.string.t33_source_app),singleLine=true)
+                ImportTextField(sourceAccount,{ sourceAccount=it;onFloatingSource(null) },stringResource(R.string.t33_source_account),singleLine=true)
+                SecondaryButton(stringResource(R.string.t33_confirm_source),{ if(sourceApp.isNotBlank() && sourceAccount.isNotBlank()) onFloatingSource(FloatingSourceContext(sourceApp.trim(),sourceAccount.trim())) })
+                if(preview.floatingSource!=null) BodyText(stringResource(R.string.t33_source_confirmed))
+                }
                 BodyText(stringResource(R.string.capture_more_hint))
                 SecondaryButton(stringResource(R.string.capture_retry),recapture,enabled=!preview.busy)
             }
@@ -112,6 +124,7 @@ import com.shengjidaguai.goutoujunshi.importing.*
                 "OCR_READ" -> R.string.ocr_read
                 "IMPORT_TOO_LARGE" -> R.string.import_too_large
                 "IMPORT_SAVE" -> R.string.import_save_error
+                "CAPTURE_HISTORY_REVIEW" -> R.string.t33_capture_history_review
                 "IMPORT_INITIALIZE" -> R.string.import_initialize_error
                 else -> R.string.import_read_error
             }))
@@ -125,6 +138,12 @@ import com.shengjidaguai.goutoujunshi.importing.*
                     contacts.map { it.alias to { target(ImportTarget(contact = it)) } })
             key(preview.id) { ImportTextField(alias, { alias = it }, stringResource(R.string.contact_alias_hint),singleLine=true) }
             SecondaryButton(stringResource(R.string.import_new_contact), { if (alias.isNotBlank()) target(ImportTarget(newAlias = alias)) })
+        }
+        if(preview.captureMoreAvailable) item {
+            BodyText(stringResource(R.string.t33_continue_capture_hint))
+            SecondaryButton(stringResource(R.string.t33_continue_capture),onContinueCapture,enabled=preview.captureMoreEligible && !preview.busy)
+            if(preview.captureMoreNeedsContinuation) BodyText(stringResource(R.string.t33_more_owner_conflict))
+            if(preview.captureContinuationId!=null) BodyText(stringResource(R.string.t33_capture_continued))
         }
         itemsIndexed(preview.rows, key={ _,row -> row.id }) { index, row ->
             fun change(update:(ImportRow)->ImportRow) { if(editStable!=null) editStable(row.id,update) else edit(index,update(row)) }
@@ -166,6 +185,8 @@ import com.shengjidaguai.goutoujunshi.importing.*
 /** State belongs only to this live composition, never rememberSaveable. */
 @Composable private fun ImportTextField(value:String,onChange:(String)->Unit,label:String,singleLine:Boolean=false) {
     val field=remember { TextFieldState(value) }
-    LaunchedEffect(field) { snapshotFlow { field.text.toString() }.distinctUntilChanged().collect { if(it!=value) onChange(it) } }
+    val currentValue by rememberUpdatedState(value)
+    val currentChange by rememberUpdatedState(onChange)
+    LaunchedEffect(field) { snapshotFlow { field.text.toString() }.distinctUntilChanged().collect { if(it!=currentValue) currentChange(it) } }
     ReplyEditField(field,label,singleLine=singleLine)
 }
