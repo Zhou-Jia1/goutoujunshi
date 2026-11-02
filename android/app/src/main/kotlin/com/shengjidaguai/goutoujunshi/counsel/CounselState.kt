@@ -71,3 +71,8 @@ fun CounselState.hasCurrentAnswerSource(): Boolean {
 /** Process-local modal ownership; changing any input authority discards edits and selected source refs. */
 fun CounselState.answerModalStamp(): List<Any?> = listOf(conversation, currentContact?.id, currentContact?.sourceRevision,
     redactionProfile.revision, draft, evidence, modelSettings.saved.revision, answer?.id, answerRequest, answerConfigRevision)
+
+/** Route-owned profile state is process-local and is never an outbound model context. */
+data class ContactDetailState(val ownerId: String? = null, val loading: Boolean = false,
+    val data: com.shengjidaguai.goutoujunshi.data.ContactDetails? = null, val failed: Boolean = false,
+    val saved: Boolean = false, val undoAvailable: Boolean = false, val deletePending: Boolean = false)

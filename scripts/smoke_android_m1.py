@@ -17,6 +17,22 @@ DRAFT = "synthetic_m1_saved_draft"
 TEMPORARY = "synthetic_m1_ephemeral_only"
 
 
+def resource_text(name):
+    resources = Path(__file__).resolve().parents[1] / "android/app/src/main/res/values/strings.xml"
+    node = ET.parse(resources).getroot().find(f"string[@name='{name}']")
+    if node is None:
+        raise AssertionError("Required checked-in Android UI resource is missing")
+    return "".join(node.itertext())
+
+
+# ChoiceField renders one Text("$label：$value"), not separate label/value nodes.
+CONTACTS_ACTIVE = f"{resource_text('nav_contacts')}：{resource_text('contacts_active')}"
+CONTACT_OVERVIEW = f"{resource_text('contact_profile')}：{resource_text('contact_overview')}"
+DELETE_CONTACT = resource_text("delete_contact")
+CONFIRM_DELETE = resource_text("confirm_delete")
+EMPTY_CONTACTS = resource_text("no_contacts")
+
+
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -131,7 +147,7 @@ class Device:
                  node.get("clickable"), node.get("scrollable"), node.get("selected"))
                 for node in root.iter("node") if node.get("package") == APP][:200]
 
-    def click(self, text, scroll=False):
+    def click(self, text, scroll=False, unique=False):
         observed_public = set()
         previous = None
         for upward in ([True, False] if scroll else [True]):
@@ -139,6 +155,9 @@ class Device:
                 root = self.tree()
                 for row in self.redacted_controls(root):
                     observed_public.update(value for value in row[:2] if value != "<redacted>")
+                if unique:
+                    matches = [node for node in root.iter("node") if node.get("package") == APP and node.get("text") == text]
+                    require(len(matches) <= 1, "Refusing ambiguous debug action")
                 node = self.action(root, text)
                 if node is not None:
                     left, top, right, bottom = self.visible_bounds(root, node)
@@ -184,10 +203,14 @@ class Device:
         self.click("联系人")
         root = self.tree()
         labels = [node.get("text") for node in root.iter("node") if node.get("package") == APP]
-        require(ALIAS in labels and labels.count("删除联系人") == 1, "Refusing ambiguous deletion")
-        self.click("删除联系人")
-        self.click("删除这些记录")
-        require(all(node.get("text") != ALIAS for node in self.tree().iter("node")), "Synthetic contact was not removed")
+        require(labels.count(ALIAS) == 1 and CONTACTS_ACTIVE in labels, "Refusing ambiguous deletion")
+        self.click(ALIAS)
+        detail = [node.get("text") for node in self.tree().iter("node") if node.get("package") == APP]
+        require(detail.count(ALIAS) == 1 and CONTACT_OVERVIEW in detail, "Unexpected contact detail owner")
+        self.click(DELETE_CONTACT, scroll=True, unique=True)
+        self.click(CONFIRM_DELETE, unique=True)
+        final = [node.get("text") for node in self.tree().iter("node") if node.get("package") == APP]
+        require(ALIAS not in final and EMPTY_CONTACTS in final, "Synthetic contact was not removed")
         self.click("军师")
 
 

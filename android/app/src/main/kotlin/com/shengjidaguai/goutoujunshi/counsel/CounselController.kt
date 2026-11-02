@@ -32,6 +32,8 @@ interface CounselPersistence {
     suspend fun initialize()
     suspend fun contacts(): List<Contact>
     suspend fun createContact(contact: Contact)
+    suspend fun editContact(next: Contact, expectedSource: Long): ContactEditReceipt { error("Contact editing unavailable") }
+    suspend fun contactDetails(contact: Contact): ContactDetails { error("Contact details unavailable") }
     suspend fun deleteContact(id: String)
     suspend fun loadOrCreate(contact: Contact): StoredCounsel
     suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String)
@@ -58,6 +60,8 @@ class EncryptedCounselPersistence(
     override suspend fun initialize() { session = store.open() }
     override suspend fun contacts() = contactsRepo().list()
     override suspend fun createContact(contact: Contact) { contactsRepo().save(contact) }
+    override suspend fun editContact(next: Contact, expectedSource: Long) = contactsRepo().update(next, expectedSource)
+    override suspend fun contactDetails(contact: Contact) = ContactDetailsRepository(checkNotNull(session)).load(contact.id, contact.sourceRevision)
     override suspend fun deleteContact(id: String) { check(contactsRepo().delete(id).isEmpty()) }
     private suspend fun requireCurrent(contact: Contact, conversation: Conversation) {
         check(contactsRepo().get(contact.id)?.sourceRevision == contact.sourceRevision)
@@ -112,6 +116,7 @@ class CounselController(
     private val modelSettings: ModelSettingsRepository? = null,
     private val liveProvider: ((SavedModelSettings) -> AnalysisProvider)? = null,
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val wallClockMillis: () -> Long = { System.currentTimeMillis() },
 ) {
     private val demoProvider = provider
     private var settings = ModelSettingsSnapshot()
@@ -119,6 +124,83 @@ class CounselController(
     private var testGeneration = 0L
     private val mutableState = MutableStateFlow(CounselState(modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
     val state: StateFlow<CounselState> = mutableState.asStateFlow()
+    private val detailEpoch = AtomicLong()
+    private val selectionEpoch = AtomicLong()
+    private val mutableDetails = MutableStateFlow(ContactDetailState())
+    val details: StateFlow<ContactDetailState> = mutableDetails.asStateFlow()
+    private var contactUndo: ContactEditReceipt? = null
+
+    fun closeContactDetails() { synchronized(intentLock) {
+        detailEpoch.incrementAndGet()
+        mutableDetails.value = ContactDetailState()
+    } }
+    fun openContactDetails(id: String) {
+        val token = synchronized(intentLock) {
+            detailEpoch.incrementAndGet().also { mutableDetails.value = ContactDetailState(ownerId = id, loading = true) }
+        }
+        enqueue {
+            try {
+                val owner = persistence.contacts().firstOrNull { it.id == id } ?: error("Missing owner")
+                val loaded = persistence.contactDetails(owner)
+                synchronized(intentLock) {
+                    if (detailEpoch.get() == token && state.value.lockState.canDisplaySensitiveContent)
+                        mutableDetails.value = ContactDetailState(id, data = loaded, saved = contactUndo?.after == owner, undoAvailable = contactUndo?.after == owner)
+                }
+            } catch (_: Exception) {
+                synchronized(intentLock) { if (detailEpoch.get() == token) mutableDetails.value = ContactDetailState(id, failed = true) }
+            }
+        }
+    }
+    /** Only this owner's operations revoke its request. An old A form cannot cancel B. */
+    private fun revokeContact(id: String) = synchronized(intentLock) {
+        if (mutableDetails.value.ownerId == id) {
+            detailEpoch.incrementAndGet(); mutableDetails.value = ContactDetailState(id, loading = true)
+        }
+        if (state.value.currentContact?.id == id) {
+            epoch.incrementAndGet(); stream?.cancel()
+            set(state.value.copy(answer = null, answerRequest = null, preview = null, currentRequest = null, outboundBody = null))
+        }
+    }
+    fun editContact(next: Contact, expectedSource: Long) {
+        revokeContact(next.id)
+        enqueue {
+            val currentOwner = state.value.currentContact?.id == next.id
+            if (currentOwner) {
+                try { flushDraft() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    // No contact edit has been attempted. Preserve the only dirty draft,
+                    // its owner/CAS version and Recovery.SaveDraft; retry saves that draft
+                    // only and never silently submits the unexecuted contact operation.
+                    set(state.value.copy(loading = false, streaming = false,
+                        error = CounselError("STORAGE_UNAVAILABLE", true)))
+                    synchronized(intentLock) { if (mutableDetails.value.ownerId == next.id)
+                        mutableDetails.value = ContactDetailState(next.id, failed = true) }
+                    return@enqueue
+                }
+                invalidateRun()
+            }
+            try {
+                val receipt = persistence.editContact(next, expectedSource)
+                contactUndo = receipt
+                set(state.value.copy(contacts = persistence.contacts()))
+                if (currentOwner) {
+                    if (receipt.after.archivedAt != null) beginTemporary() else loadContact(receipt.after, epoch.get())
+                }
+                synchronized(intentLock) { if (mutableDetails.value.ownerId == next.id) openContactDetails(next.id) }
+            } catch (_: Exception) {
+                // Result can be unknown: refetch before another edit, never retry an upsert.
+                runCatching { persistence.contacts() }.getOrNull()?.let { set(state.value.copy(contacts = it)) }
+                if (currentOwner) beginTemporary()
+                if (mutableDetails.value.ownerId == next.id) mutableDetails.value = ContactDetailState(next.id, failed = true)
+            }
+        }
+    }
+    fun undoContactEdit() {
+        val receipt = contactUndo ?: return
+        editContact(receipt.before, receipt.after.sourceRevision)
+    }
+
     private val mailbox = Channel<suspend () -> Unit>(Channel.UNLIMITED)
     private val epoch = AtomicLong()
     private val intentLock = Any()
@@ -151,7 +233,7 @@ class CounselController(
         data class Feedback(val origin: String?, val answerId: String, val edited: String?) : Recovery
         data class Analysis(val request: AnalysisRequest) : Recovery
         data class Checkpoint(val request: AnalysisRequest, val code: String, val retryable: Boolean) : Recovery
-        data class Complete(val request: AnalysisRequest, val token: Long, val answer: StructuredAnswer) : Recovery
+        data class Complete(val request: AnalysisRequest, val token: Long, val answer: StructuredAnswer, val completedAtMillis: Long? = null) : Recovery
         data class FinishSummary(val request: AnalysisRequest) : Recovery
         data object Preview : Recovery
         data object RefreshContacts : Recovery
@@ -266,7 +348,7 @@ class CounselController(
             val contacts = persistence.contacts()
             initialized = true
             set(state.value.copy(contacts = contacts, loading = false))
-            if (contacts.isEmpty()) beginTemporary() else loadContact(contacts.first())
+            contacts.firstOrNull { it.archivedAt == null }?.let { loadContact(it) } ?: beginTemporary()
         }
     }
     /** Explicit completion avoids relying on conflated loading/error transitions for a retry. */
@@ -293,18 +375,20 @@ class CounselController(
             conversation = Conversation(checkNotNull(credential).sessionId), modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
-    private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null): Boolean {
+    private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
+        if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
+        if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
         summaries = saved.summaries; plans = saved.plans
         val latestUser = saved.messages.lastOrNull { it.role == MessageRole.USER }
         val answerMessage = saved.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.answerJson != null &&
                 it.requestId == latestUser?.requestId && latestUser?.text == saved.draft
         }
-        val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
+        val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val profile = persistence.redactionProfile(contact.id)
         val completedCurrentAnswer = AnswerSourcePolicy.matches(answerRequest,
             saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
@@ -328,6 +412,7 @@ class CounselController(
         val oldCredential = synchronized(intentLock) {
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
+            if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
             val old = credential
             credential = null
             inputRevision++
@@ -355,8 +440,15 @@ class CounselController(
         oldCredential?.let { temporary.remove(it) }
         return true
     }
-    fun selectContact(id: String) = enqueue(true) {
-        state.value.contacts.firstOrNull { it.id == id }?.let { flushDraft(); loadContact(it) }
+    fun selectContact(id: String) {
+        synchronized(intentLock) {
+            if (state.value.contacts.none { it.id == id && it.archivedAt == null }) return
+            epoch.incrementAndGet(); stream?.cancel()
+            val token = selectionEpoch.incrementAndGet()
+            mailbox.trySend {
+                state.value.contacts.firstOrNull { it.id == id && it.archivedAt == null }?.let { flushDraft(); loadContact(it, selectionToken = token) }
+            }
+        }
     }
     fun createContact(alias: String, relation: RelationType) = enqueue(true) {
         if (alias.isBlank()) { set(state.value.copy(error = CounselError("CONTACT_ALIAS_REQUIRED"))); return@enqueue }
@@ -369,10 +461,40 @@ class CounselController(
         set(state.value.copy(contacts = persistence.contacts()))
         loadContact(contact)
     }
-    fun deleteContact(id: String) = enqueue(true) { performDelete(id) }
+    fun deleteContact(id: String) {
+        revokeContact(id)
+        enqueue {
+            if (state.value.currentContact?.id == id || recovery is Recovery.Delete) {
+                val detailToken = detailEpoch.get()
+                val requestedFromDetails = mutableDetails.value.ownerId == id
+                try { performDelete(id) }
+                catch (_: Exception) {
+                    // The contact row may already be gone while its files still need cleanup.
+                    // Preserve the original idempotent delete recovery and show a concrete retry.
+                    set(state.value.copy(loading = false, streaming = false, error = CounselError("STORAGE_UNAVAILABLE", true)))
+                    synchronized(intentLock) {
+                        if (requestedFromDetails && detailEpoch.get() == detailToken)
+                            mutableDetails.value = ContactDetailState(id, failed = true, deletePending = true)
+                    }
+                }
+            } else {
+                try {
+                    persistence.deleteContact(id)
+                    set(state.value.copy(contacts = persistence.contacts()))
+                    if (mutableDetails.value.ownerId == id) closeContactDetails()
+                    if (contactUndo?.after?.id == id) contactUndo = null
+                } catch (_: Exception) {
+                    // Keep B's request/recovery intact; A retains its own cleanup retry.
+                    synchronized(intentLock) { if (mutableDetails.value.ownerId == id)
+                        mutableDetails.value = ContactDetailState(id, failed = true, deletePending = true) }
+                }
+            }
+        }
+    }
     private suspend fun performDelete(id: String) {
+        if (contactUndo?.after?.id == id) contactUndo = null
         val pendingError = if (recovery is Recovery.Delete) state.value.error else null
-        invalidateRun()
+        if (state.value.currentContact?.id == id) invalidateRun()
         // The durable delete can commit before cleanup or refresh fails. Stop exposing the
         // deleted contact immediately, and retain the complete idempotent operation to retry.
         if (state.value.currentContact?.id == id) beginTemporary()
@@ -380,6 +502,7 @@ class CounselController(
         recovery = Recovery.Delete(id)
         persistence.deleteContact(id)
         set(state.value.copy(contacts = persistence.contacts(), error = null))
+        if (mutableDetails.value.ownerId == id) closeContactDetails()
         recovery = null
     }
     private suspend fun edit(transform: (CounselState) -> CounselState) {
@@ -819,11 +942,17 @@ class CounselController(
                     }
                     return
                 }
+                // This is the local receipt time of a newly completed analysis, not a chat
+                // timestamp. Retain it across storage-only retries, including committed writes
+                // whose acknowledgement/checkpoint failed. Existing (even unknown=0) times win.
+                val completedAt = ledger.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT }?.createdAt
+                    ?: (recovery as? Recovery.Complete)?.takeIf { it.request == request && it.token == token }?.completedAtMillis
+                    ?: wallClockMillis().coerceAtLeast(0)
                 val completedLedger = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
-                val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(answerJson = json.encodeToString(StructuredAnswer.serializer(), answer), providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
+                val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(createdAt = completedAt, answerJson = json.encodeToString(StructuredAnswer.serializer(), answer), providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
                 val message = next.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT } ?: return
                 if (!isCurrent(request, token)) return
-                recovery = Recovery.Complete(request, token, highestAnswer)
+                recovery = Recovery.Complete(request, token, highestAnswer, completedAt)
                 if (answer.safety.ordinal > (ledger.runs.firstOrNull { it.requestId == request.requestId }?.highestSafety ?: SafetyLevel.NONE).ordinal)
                     checkpoint(request, RunStatus.RUNNING)
                 persistMessage(message)
@@ -864,7 +993,7 @@ class CounselController(
                 var contact = target.contact
                 if (target.newAlias != null) {
                     val id = "import-contact:${preview.id}"
-                    contact = persistence.contacts().firstOrNull { it.id == id }
+                    contact = persistence.contacts().firstOrNull { it.id == id && it.archivedAt == null }
                     if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
                     if (contact == null) {
                         val created = Contact(id, target.newAlias.trim(), RelationType.ACQUAINTANCE, createdAt = System.currentTimeMillis())
@@ -917,7 +1046,11 @@ class CounselController(
         recovery = frozen?.let { Recovery.Analysis(it) }
         set(state.value.copy(streaming = false, error = CounselError("CANCELLED", true)))
     }
-    fun clearAll() = enqueue(true) {
+    fun clearAll() {
+        closeContactDetails()
+        selectionEpoch.incrementAndGet()
+        enqueue(true) {
+        contactUndo = null
         testGeneration++; testJob?.cancel(); testJob = null
         settings = ModelSettingsSnapshot(); provider = demoProvider
         invalidateRun()
@@ -933,5 +1066,6 @@ class CounselController(
         modelSettings?.clear()
         set(state.value.copy(loading = false, error = if (cleared) null else CounselError("CLEANUP_INCOMPLETE", true)))
         if (cleared) recovery = null
+    }
     }
 }

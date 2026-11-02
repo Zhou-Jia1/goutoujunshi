@@ -37,6 +37,25 @@ class CounselControllerTest {
             feedbackPlans[plan.id] = plan
             saved[contact.id]?.let { saved[contact.id] = it.copy(plans = feedbackPlans.values.filter { p -> p.contactId == contact.id }) }
         }
+        var beforeDetails: CompletableDeferred<Unit>? = null
+        override suspend fun contactDetails(contact: Contact): com.shengjidaguai.goutoujunshi.data.ContactDetails {
+            beforeDetails?.await()
+            check(people.any { it.id == contact.id && it.sourceRevision == contact.sourceRevision })
+            val stored = saved[contact.id]
+            return com.shengjidaguai.goutoujunshi.data.ContactDetails(contact,
+                imports = imports.values.filter { it.contactId == contact.id },
+                evidence = stored?.evidence.orEmpty(), messages = stored?.messages.orEmpty(),
+                runs = stored?.runs.orEmpty(), plans = stored?.plans.orEmpty())
+        }
+        var contactEditAttempts = 0
+        override suspend fun editContact(next: Contact, expectedSource: Long): com.shengjidaguai.goutoujunshi.data.ContactEditReceipt {
+            contactEditAttempts++
+            val before = people.first { it.id == next.id }
+            check(before.sourceRevision == expectedSource)
+            val after = next.copy(sourceRevision = expectedSource + 1)
+            people.replaceAll { if (it.id == next.id) after else it }
+            return com.shengjidaguai.goutoujunshi.data.ContactEditReceipt(before, after)
+        }
         val people = mutableListOf<Contact>()
         val saved = mutableMapOf<String, StoredCounsel>()
         val imports = mutableMapOf<String, ChatImport>()
@@ -156,7 +175,8 @@ class CounselControllerTest {
     }
     internal class Fixture(val persistence: MemoryPersistence = MemoryPersistence(),
         val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
-        val clock: () -> Long = { System.nanoTime() / 1_000_000 }) {
+        val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+        val wallClock: () -> Long = { System.currentTimeMillis() }) {
         val provider = ControlledProvider()
         var prepares = 0
         val controller = CounselController(persistence, TemporarySessionStore(), FrozenPromptAssembler(object : PromptAssembler {
@@ -164,7 +184,7 @@ class CounselControllerTest {
                 prepares++
                 return PreparedPrompt("synthetic system", "synthetic ${request.userText}", listOf(KnowledgeReference("synthetic.md", "a".repeat(64), 9)), "synthetic-v1")
             }
-        }), provider, scope, monotonicMillis = clock)
+        }), provider, scope, monotonicMillis = clock, wallClockMillis = wallClock)
         fun close() { scope.cancel() }
     }
     private suspend fun await(predicate: () -> Boolean) = withTimeout(2_000) { while (!predicate()) yield() }

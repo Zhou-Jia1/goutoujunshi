@@ -43,6 +43,11 @@ class CounselViewModel(application: Application) : AndroidViewModel(application)
     private val controller = CounselRuntime.get(application)
     val imports = CounselRuntime.imports(application)
     val state = controller.state
+    val details = controller.details
+    fun openContactDetails(id: String) = controller.openContactDetails(id)
+    fun closeContactDetails() = controller.closeContactDetails()
+    fun editContact(next: Contact, expected: Long) = controller.editContact(next, expected)
+    fun undoContactEdit() = controller.undoContactEdit()
     fun receiveShare(intent: Intent) = imports.receive(intent, getApplication<Application>().contentResolver)
     fun importFile(uri: Uri) = imports.file(getApplication<Application>().contentResolver, uri)
     fun importPaste(text: String) = imports.text(text)

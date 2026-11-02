@@ -165,7 +165,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         item { JunshiTopBar(stringResource(R.string.nav_counsel)) }
         item {
             ContactSwitcher(ContactChipModel(state.currentContact?.id, state.currentContact?.alias ?: stringResource(R.string.temporary_title)),
-                listOf(ContactChipModel(null, stringResource(R.string.temporary_title))) + state.contacts.map { ContactChipModel(it.id, it.alias) },
+                listOf(ContactChipModel(null, stringResource(R.string.temporary_title))) + state.contacts.filter { it.archivedAt == null }.map { ContactChipModel(it.id, it.alias) },
                 { id -> if (id == null) actions.newTemporary() else actions.selectContact(id) }, { createContact = true })
         }
         item { Box(Modifier.testTag("model-status")) {
@@ -340,21 +340,23 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 
 @Composable fun ContactsScreen(viewModel: CounselViewModel, onOpen: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val details by viewModel.details.collectAsStateWithLifecycle()
+    DisposableEffect(Unit) { onDispose { viewModel.closeContactDetails() } }
     var creating by remember { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf<String?>(null) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
-        item { JunshiTopBar(stringResource(R.string.nav_contacts)) }
-        item { PrimaryButton(stringResource(R.string.create_contact), { creating = true }) }
-        if (state.contacts.isEmpty()) item { EmptyState(Illustration.SLEEPING, stringResource(R.string.no_contacts), stringResource(R.string.contact_alias_hint)) }
-        state.contacts.forEach { contact -> item(key = contact.id) {
-            ContactCard(ContactCardModel(contact.id, contact.alias, stringResource(relationLabel(contact.relationType))), { viewModel.selectContact(contact.id); onOpen() })
-            SecondaryButton(stringResource(R.string.delete_contact), { deleting = contact.id })
-        } }
-        item { SecondaryButton(stringResource(R.string.temporary_title), { viewModel.newTemporary(); onOpen() }) }
+    if (!state.lockState.canDisplaySensitiveContent) {
+        EmptyState(Illustration.SHIELD, stringResource(R.string.counsel_locked), null)
+        return
+    }
+    if (details.ownerId != null) {
+        androidx.activity.compose.BackHandler { viewModel.closeContactDetails() }
+        ContactDetailContent(details, viewModel::closeContactDetails, viewModel::openContactDetails,
+            viewModel::editContact, viewModel::deleteContact, viewModel::undoContactEdit,
+            { id -> viewModel.selectContact(id); viewModel.closeContactDetails(); onOpen() })
+    } else {
+        ContactsContent(state.contacts, { creating = true }, viewModel::openContactDetails,
+            { viewModel.newTemporary(); onOpen() })
     }
     if (creating) CreateContactDialog(viewModel) { creating = false }
-    deleting?.let { id -> DangerConfirmDialog(stringResource(R.string.delete_contact), stringResource(R.string.delete_contact_consequence),
-        stringResource(R.string.confirm_delete), { viewModel.deleteContact(id); deleting = null }, { deleting = null }) }
 }
 
 @Composable private fun CreateContactDialog(viewModel: CounselViewModel, onClose: () -> Unit) {
