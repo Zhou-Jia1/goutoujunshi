@@ -10,6 +10,65 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
 class OutboundPrivacyTest {
+    @Test fun thousandRecordSummaryAndFullUseBoundedRealKnowledgeAndExactHttpPreview() = runBlocking {
+        val source = request().copy(evidence = listOf(EvidenceBlock("e1", "SHARE", (1..1000).map { n ->
+            ChatLine("e1:$n", "e1", n, Speaker.ME, "$privateText 虚构消息$n", speakerConfirmed = true, contactId = "fictional-a")
+        })))
+        val plan = ContinuousAnalysis.plan(source.evidence)
+        for (purpose in listOf(OutboundPurpose.LONG_RECORD_SUMMARY, OutboundPurpose.ANALYSIS)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: {\"choices\":[{\"delta\":{\"content\":\"[[FREE_TEXT]]虚构结果\"}}]}\n\ndata: [DONE]\n\n"))
+            val selected = if (purpose == OutboundPurpose.LONG_RECORD_SUMMARY) plan.summarySelection else plan.recent
+            val snapshot = source.copy(purpose = purpose, networkSelection = selected.map { it.id })
+            val assembler = com.shengjidaguai.goutoujunshi.counsel.FrozenPromptAssembler(builder())
+            val prepared = assembler.prepare(snapshot)
+            assertTrue(prepared.system.codePointCount(0, prepared.system.length) + prepared.user.codePointCount(0, prepared.user.length) <= 48000)
+            assertFalse(prepared.user.contains(phone)); assertFalse(prepared.user.contains(name))
+            assertTrue(prepared.user.contains("omitted=")); assertTrue(prepared.user.contains("序号"))
+            val connection = ModelConnection(server.url("/v1/").toString(), "synthetic", "Mock")
+            val body = CompletionBody.encode(connection, prepared)
+            OpenAiCompatibleProvider(connection, assembler, CredentialSource { "sk-synthetic".toByteArray() }, allowLocalhostHttpForTests = true).analyze(snapshot).toList()
+            assertEquals(body, server.takeRequest().body.readUtf8())
+        }
+        assertEquals(1000, source.evidence.single().lines.size)
+    }
+    @Test fun summaryTokensCannotBecomeAnotherPersonsAliasesWhenFullOrderChanges() {
+        val a="虚构原昵称A"; val b="虚构原昵称B"
+        val profile=RedactionProfile(1, aliases=listOf(RedactionAlias(a,"甲代号"),RedactionAlias(b,"乙代号")))
+        val evidence=listOf(EvidenceBlock("batch","PASTE",(1..1000).map { n -> ChatLine("batch:$n","batch",n,Speaker.ME,"$a 13800138000 虚构事件$n",speakerConfirmed=true,contactId="c") }))
+        val plan=ContinuousAnalysis.plan(evidence)
+        val summary=AnalysisRequest(contactId="c",evidence=evidence,speakersConfirmed=true,redactionProfile=profile,purpose=OutboundPurpose.LONG_RECORD_SUMMARY,networkSelection=plan.summarySelection.map { it.id })
+        val prompt=builder().prepare(summary)
+        assertEquals("甲代号",prompt.safeAliases["[昵称1]"])
+        val ref=plan.summarySelection.first().id
+        val restored=SafeAliasRestorer.restore(StructuredAnswer(freeText="[$ref] [昵称1] 联系[手机号1]"),prompt).freeText
+        val cached=ContinuousAnalysis.scopeHistoricalTokens(restored,"早期节选")
+        assertTrue(cached.contains("甲代号"));assertFalse(cached.contains("[手机号1]"));assertTrue(cached.contains("〈早期节选·手机号1〉"))
+        val full=builder().prepare(summary.copy(purpose=OutboundPurpose.ANALYSIS,userText="$b 13987654321",networkSelection=plan.recent.map { it.id },timelineSummary=cached))
+        assertEquals("乙代号",full.safeAliases["[昵称1]"])
+        assertTrue(full.user.contains("甲代号 联系〈早期节选·手机号1〉"))
+        assertTrue(full.user.contains("<user_request>[昵称1] [手机号1]</user_request>"))
+        assertFalse(full.user.contains("13800138000"));assertFalse(full.user.contains("13987654321"))
+        assertTrue(full.user.contains("不与当前证据的占位符合并"))
+    }
+    @Test fun thirdRoundKeepsOldFullTokensSeparateFromNewSummaryTokens() {
+        val lines=(1..1000).map { n -> ChatLine("batch:$n","batch",n,Speaker.ME,"虚构事件$n",speakerConfirmed=true,contactId="c") }
+        val evidence=listOf(EvidenceBlock("batch","PASTE",lines))
+        val plan=ContinuousAnalysis.plan(evidence)
+        val ref=plan.summarySelection.first().id
+        val firstCacheKey="a".repeat(64);val secondCacheKey="b".repeat(64)
+        val firstSummary=ContinuousAnalysis.scopeHistoricalTokens("[$ref] A使用[手机号1]和[邮箱1]及[昵称999]", "早期节选#$firstCacheKey")
+        // The second-round Full response echoes its already scoped summary token.
+        val secondFull=StructuredAnswer(verdict="历史判断：$firstSummary",next="保留边界")
+        val history=ContinuousAnalysis.scopeHistoricalTokens("VERDICT=${secondFull.verdict} NEXT=${secondFull.next}","历史第二轮")
+        val newSummary=ContinuousAnalysis.scopeHistoricalTokens("[$ref] B使用[手机号1]和[邮箱1]及[昵称999]", "早期节选#$secondCacheKey")
+        val third=builder().prepare(AnalysisRequest(contactId="c",userText="第三轮虚构问题",evidence=evidence,speakersConfirmed=true,networkSelection=plan.recent.map { it.id },recentSummary=history,timelineSummary=newSummary))
+        for(kind in listOf("手机号1","邮箱1","昵称999")) {
+            assertTrue(third.user.contains("〈早期节选#$firstCacheKey·$kind〉"))
+            assertTrue(third.user.contains("〈早期节选#$secondCacheKey·$kind〉"))
+            assertFalse(third.user.contains("[$kind]"))
+        }
+        assertEquals(firstSummary,ContinuousAnalysis.scopeHistoricalTokens(firstSummary,"历史另一轮"))
+    }
     private fun builder(): PromptBuilder {
         val root = File(System.getProperty("junshi.repositoryRoot")!!)
         val bundled = File(System.getProperty("junshi.generatedKnowledge")!!)

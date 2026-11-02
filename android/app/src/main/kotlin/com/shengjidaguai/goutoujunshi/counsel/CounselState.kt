@@ -39,6 +39,7 @@ data class CounselState(
     val lockState: LockState = LockState(),
     val messages: List<Message> = emptyList(),
     val streaming: Boolean = false,
+    val summaryReady: Boolean = false,
     val waiting: WaitingPhase = WaitingPhase.at(12_000),
     val draftSaved: Boolean = false,
     val partial: Map<SectionId, String> = emptyMap(),

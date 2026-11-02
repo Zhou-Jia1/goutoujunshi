@@ -72,6 +72,7 @@ internal suspend fun JunshiDao.invalidateAndRecompute() {
     val revision = (metadata()?.styleRevision ?: 0) + 1
     put(MetadataRow(styleRevision = revision))
     clearProfiles()
+    clearSummaries()
     val consent = currentConsent()
     if (!consent.enabled || consent.paused) return
     RelationGroup.entries.forEach { group ->

@@ -72,3 +72,31 @@ private suspend fun JunshiDao.putOwned(contactId: String, id: String, kind: Owne
     require(ownerOfRecord(storageId).let { it == null || it == contactId })
     put(OwnedRecordRow(storageId, contactId, kind, payload))
 }
+
+/** Encrypted contact-owned cache; writes cannot recreate a removed owner or obsolete input. */
+class SummaryRepository(private val session: DataSession) {
+    suspend fun discard(summary: TimelineSummary) = session.transaction {
+        val contactId = requireNotNull(summary.request.contactId)
+        val stored = record(contactId, OwnedRecordKind.SUMMARY.name, summary.key)?.let { decode<TimelineSummary>(it.payload) }
+        if (stored?.request?.requestId == summary.request.requestId) deleteRecord(contactId, OwnedRecordKind.SUMMARY.name, summary.key)
+    }
+    suspend fun list(contactId: String): List<TimelineSummary> = session.transaction {
+        records(contactId, OwnedRecordKind.SUMMARY.name).map { decode(it.payload) }
+    }
+    suspend fun save(summary: TimelineSummary) = session.transaction {
+        val request = summary.request
+        val contactId = requireNotNull(request.contactId)
+        check(requireContact(contactId).revision == request.sourceRevision)
+        val row = requireNotNull(conversation(contactId, request.conversationId))
+        check(decode<Conversation>(row.payload).revision == request.conversationRevision && row.draft == request.userText)
+        val privacy = records(contactId, OwnedRecordKind.REDACTION.name).singleOrNull()?.let { decode<RedactionProfile>(it.payload) } ?: RedactionProfile()
+        check(privacy.revision == request.redactionProfile.revision)
+        check(request.evidence.all { block ->
+            imported(contactId, block.id)?.let { decode<ChatImport>(it.payload).sourceType.name == block.source } == true &&
+                lines(contactId, block.id).map { decode<ChatLine>(it.payload) } == block.lines
+        }) { "Summary sources no longer match stored imports" }
+        val selected = request.evidence.flatMap { it.lines }.filter { it.id in request.networkSelection.orEmpty() }
+        check(ContinuousAnalysis.validSummary(summary.text, selected))
+        putOwned(contactId, summary.key, OwnedRecordKind.SUMMARY, encode(summary.copy(request = request.copy(redactionProfile = RedactionProfile(revision = privacy.revision)))))
+    }
+}

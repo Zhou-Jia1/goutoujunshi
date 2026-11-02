@@ -11,7 +11,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
 
-data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>, val evidence: List<EvidenceBlock> = emptyList(), val runs: List<AnalysisRun> = emptyList())
+data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>, val evidence: List<EvidenceBlock> = emptyList(), val runs: List<AnalysisRun> = emptyList(), val summaries: List<TimelineSummary> = emptyList(), val plans: List<ActionPlan> = emptyList())
 
 /** Share this assembler with the provider so preview and playback consume the same snapshot. */
 class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssembler {
@@ -38,6 +38,8 @@ interface CounselPersistence {
     suspend fun saveMessage(contact: Contact, conversation: Conversation, message: Message)
     suspend fun discardMessage(contact: Contact, message: Message)
     suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String { error("Import persistence unavailable") }
+    suspend fun discardSummary(summary: TimelineSummary) { error("Summary persistence unavailable") }
+    suspend fun saveSummary(summary: TimelineSummary) { error("Summary persistence unavailable") }
     suspend fun saveRun(contact: Contact, run: AnalysisRun) {}
     suspend fun saveFeedback(contact: Contact, plan: ActionPlan, privacyRevision: Long) { error("Feedback persistence unavailable") }
     suspend fun clearAll(): Boolean
@@ -68,7 +70,7 @@ class EncryptedCounselPersistence(
             ?: Conversation(UUID.randomUUID().toString(), contact.id, false, System.currentTimeMillis()).also { repo.save(it) }
         val imports = ImportRepository(checkNotNull(session))
         val evidence = imports.list(contact.id).map { EvidenceBlock(it.id, it.sourceType.name, imports.lines(contact.id, it.id)) }
-        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence, TimelineRepository(checkNotNull(session)).runs(contact.id))
+        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence, TimelineRepository(checkNotNull(session)).runs(contact.id), SummaryRepository(checkNotNull(session)).list(contact.id), PlanRepository(checkNotNull(session)).list(contact.id))
     }
     override suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String) {
         require(next.canPersist && next.contactId == contact.id && next.id == previous.id)
@@ -85,6 +87,8 @@ class EncryptedCounselPersistence(
     override suspend fun saveImport(contact: Contact, imported: ChatImport, lines: List<ChatLine>): String {
         return ImportRepository(checkNotNull(session)).save(imported, lines, contact.sourceRevision)
     }
+    override suspend fun discardSummary(summary: TimelineSummary) = SummaryRepository(checkNotNull(session)).discard(summary)
+    override suspend fun saveSummary(summary: TimelineSummary) = SummaryRepository(checkNotNull(session)).save(summary)
     override suspend fun saveRun(contact: Contact, run: AnalysisRun) {
         TimelineRepository(checkNotNull(session)).saveCurrentRun(run, contact.sourceRevision)
     }
@@ -135,6 +139,11 @@ class CounselController(
     private var frozen: AnalysisRequest? = null
     private var previewRequest: AnalysisRequest? = null
     private var dirtyDraft = false
+    private var summaries = emptyList<TimelineSummary>()
+    private var plans = emptyList<ActionPlan>()
+    private var summaryKey: String? = null
+    private val blockedSummaryRequests = mutableSetOf<String>()
+    private val pendingSummaryCleanup = mutableMapOf<String, Pair<TimelineSummary, AnalysisRun?>>()
     private sealed interface Recovery {
         data object Initialize : Recovery
         data class Load(val contact: Contact) : Recovery
@@ -143,6 +152,7 @@ class CounselController(
         data class Analysis(val request: AnalysisRequest) : Recovery
         data class Checkpoint(val request: AnalysisRequest, val code: String, val retryable: Boolean) : Recovery
         data class Complete(val request: AnalysisRequest, val token: Long, val answer: StructuredAnswer) : Recovery
+        data class FinishSummary(val request: AnalysisRequest) : Recovery
         data object Preview : Recovery
         data object RefreshContacts : Recovery
         data class Delete(val contactId: String) : Recovery
@@ -177,15 +187,18 @@ class CounselController(
             }
         }
     }
-    private fun set(next: CounselState) = synchronized(intentLock) { mutableState.value = next }
+    private fun set(next: CounselState) = synchronized(intentLock) {
+        mutableState.value = if (pendingSummaryCleanup.isEmpty()) next else next.copy(error = CounselError("STORAGE_UNAVAILABLE", true))
+    }
     private fun invalidateRun() {
         testGeneration++; testJob?.cancel(); testJob = null
         waitingJob?.cancel(); waitingJob = null
         stream?.cancel(); stream = null; frozen = null
         previewRequest = null
+        summaryKey = null
         recovery = null
         (assembler as? FrozenPromptAssembler)?.clear()
-        set(state.value.copy(streaming = false, testingConnection = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, error = null))
+        set(state.value.copy(streaming = false, testingConnection = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, summaryReady = false, error = null))
     }
 
     private fun applyModelSettings() {
@@ -272,6 +285,7 @@ class CounselController(
         invalidateRun()
         credential?.let { temporary.remove(it) }
         credential = temporary.begin()
+        summaries = emptyList(); plans = emptyList()
         inputRevision++
         ledger = AnalysisLedger()
         dirtyDraft = false
@@ -283,6 +297,7 @@ class CounselController(
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
+        summaries = saved.summaries; plans = saved.plans
         val latestUser = saved.messages.lastOrNull { it.role == MessageRole.USER }
         val answerMessage = saved.messages.lastOrNull {
             it.role == MessageRole.ASSISTANT && it.answerJson != null &&
@@ -291,15 +306,25 @@ class CounselController(
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val profile = persistence.redactionProfile(contact.id)
-        val resumable = saved.runs.lastOrNull { run ->
+        val completedCurrentAnswer = AnswerSourcePolicy.matches(answerRequest,
+            saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
+            saved.conversation, contact.id, contact.sourceRevision, saved.draft, saved.evidence, profile.revision, settings.saved.revision)
+        val resumable = saved.runs.sortedBy { if (it.requestId == latestUser?.requestId) 1 else 0 }.lastOrNull { run ->
             val r = run.requestSnapshot
-            r != null && run.requestId == latestUser?.requestId && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
+            r != null && (run.requestId == latestUser?.requestId || (r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && !completedCurrentAnswer)) && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
                 r.conversationId == saved.conversation.id && r.conversationRevision == saved.conversation.revision &&
                 r.contactId == contact.id && r.sourceRevision == contact.sourceRevision && r.userText == saved.draft &&
                 r.evidence == saved.evidence && r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision &&
                 saved.messages.none { it.requestId == run.requestId && it.role == MessageRole.ASSISTANT }
-        }?.let { it.copy(status = RunStatus.INTERRUPTED, requestSnapshot = it.requestSnapshot?.copy(redactionProfile = profile)) }
+        }?.let { it.copy(status = if (it.status == RunStatus.CANCELLED && it.requestSnapshot?.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) RunStatus.CANCELLED else RunStatus.INTERRUPTED, requestSnapshot = it.requestSnapshot?.copy(redactionProfile = profile)) }
         if (resumable != null) persistence.saveRun(contact, resumable.copy(requestSnapshot = resumable.requestSnapshot?.copy(redactionProfile = RedactionProfile(revision = profile.revision))))
+        val summarySafety = saved.runs.filter { run ->
+            val r = run.requestSnapshot
+            r != null && r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && r.contactId == contact.id &&
+                r.conversationId == saved.conversation.id && r.conversationRevision == saved.conversation.revision &&
+                r.sourceRevision == contact.sourceRevision && r.userText == saved.draft && r.evidence == saved.evidence &&
+                r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision
+        }.maxByOrNull { it.highestSafety.ordinal }?.highestSafety ?: SafetyLevel.NONE
         val oldCredential = synchronized(intentLock) {
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
@@ -315,13 +340,13 @@ class CounselController(
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
                 formality = answerRequest?.manualFormality ?: answer?.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: "medium",
                 messages = saved.messages, evidence = saved.evidence, answer = answer, answerSourceRevision = answerRequest?.sourceRevision, answerRequest = answerRequest, answerConfigRevision = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.configRevision, draftSaved = true, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
-                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile))
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile, safety = summarySafety))
             recovery = resumable?.requestSnapshot?.let { r ->
                 inputRevision = r.inputRevision
                 set(state.value.copy(relationType = r.relationType ?: contact.relationType, goal = r.goal ?: Goal.REPLY,
                     tone = r.tone ?: Tone.NATURAL, emotion = r.emotionLevel, styleBias = r.styleBias,
                     manualRelation = r.manualRelation, manualGoal = r.manualGoal, manualFormality = r.manualFormality, formality = r.formality,
-                    error = CounselError("INTERRUPTED", true), currentRequest = r, draftSaved = true, safety = resumable.highestSafety))
+                    error = CounselError("INTERRUPTED", true), currentRequest = r, draftSaved = true, safety = resumable.highestSafety.upgrade(summarySafety)))
                 Recovery.Analysis(r)
             }
             old
@@ -409,6 +434,35 @@ class CounselController(
             state.value.currentContact?.let { persistence.saveRedactionProfile(it.id, previous.revision, next) }
         } catch (_: Exception) { set(state.value.copy(redactionError = true, error = CounselError("REDACTION_INVALID"))) }
     }
+    private fun history(current: CounselState): String {
+        val pieces = ledger.messages.filter { it.role == MessageRole.ASSISTANT && it.status == MessageStatus.COMPLETED && it.contactId == current.currentContact?.id }.mapNotNull { message ->
+            val run = ledger.runs.firstOrNull { it.requestId == message.requestId } ?: return@mapNotNull null
+            val original = run.requestSnapshot ?: return@mapNotNull null
+            if (original.purpose != OutboundPurpose.ANALYSIS || !ContinuousAnalysis.sourcesRetained(original, current.currentContact?.id, current.evidence) || original.redactionProfile.revision != current.redactionProfile.revision || run.configRevision != settings.saved.revision) return@mapNotNull null
+            val answer = runCatching { json.decodeFromString(StructuredAnswer.serializer(), message.answerJson ?: "") }.getOrNull() ?: return@mapNotNull null
+            val choice = plans.lastOrNull { it.sourceRequestId == message.requestId && it.sourceAnswerId == message.id }?.let { "${it.status}:${ContinuousAnalysis.historyExcerpt(it.chosenReply, 80)}" } ?: "未记录选择"
+            ContinuousAnalysis.scopeHistoricalTokens("历史建议（${if (message.providerKind == ProviderKind.DEMO) "虚构演示" else "模型分析，非聊天事实"}） VERDICT=${ContinuousAnalysis.historyExcerpt(answer.verdict, 100)} NEXT=${ContinuousAnalysis.historyExcerpt(answer.next, 100)} 用户选择=$choice", "历史${message.requestId.hashCode().toUInt().toString(16)}")
+        }
+        return ContinuousAnalysis.historyExcerpt(pieces.takeLast(2).joinToString("\n"), 900)
+    }
+    private suspend fun nextRequest(source: AnalysisRequest): AnalysisRequest {
+        if (source.networkSelection != null || source.mode != RequestMode.FULL_ANALYSIS || source.purpose != OutboundPurpose.ANALYSIS) return source
+        val plan = ContinuousAnalysis.plan(source.evidence)
+        if (!plan.needsSummary || !settings.saved.live) return source.copy(networkSelection = plan.recent.map { it.id })
+        val candidate = source.copy(purpose = OutboundPurpose.LONG_RECORD_SUMMARY, recentSummary = "", networkSelection = plan.summarySelection.map { it.id })
+        val key = cacheKey(candidate)
+        summaryKey = key
+        val cached = summaries.firstOrNull { it.request.requestId !in blockedSummaryRequests && ledger.runs.any { run -> run.requestId == it.request.requestId && run.status == RunStatus.COMPLETED } && it.key == key && it.request.sourceRevision == source.sourceRevision && ContinuousAnalysis.sourcesRetained(it.request, source.contactId, source.evidence) && ContinuousAnalysis.validSummary(it.text, plan.summarySelection) }
+        if (cached != null) set(state.value.copy(summaryReady = true))
+        return if (cached != null) source.copy(networkSelection = plan.recent.map { it.id }, timelineSummary = cached.text)
+        else candidate
+    }
+    private fun cacheKey(candidate: AnalysisRequest): String {
+        val prepared = assembler.prepare(candidate)
+        val version = prepared.knowledgeVersion + prepared.system
+        val identity = json.encodeToString(AnalysisRequest.serializer(), candidate.copy(requestId = "", inputRevision = 0)) + settings.saved.revision + version
+        return java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
     private fun request(): AnalysisRequest {
         val current = state.value
         val conversation = checkNotNull(current.conversation)
@@ -421,9 +475,9 @@ class CounselController(
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
             redactionProfile = current.redactionProfile,
-            evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
+            recentSummary = history(current), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
     }
-    private fun ordinaryAllowed() = SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
+    private fun ordinaryAllowed() = pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
     private suspend fun answerSourceCurrent(): Boolean {
         val current = state.value
         if (!current.hasCurrentAnswerSource()) return false
@@ -485,7 +539,8 @@ class CounselController(
         try {
             if (current.currentContact != null) persistence.saveFeedback(current.currentContact, plan, current.redactionProfile.revision)
             else { val lease = checkNotNull(credential); val session = checkNotNull(temporary.get(lease)); check(temporary.put(lease, session.copy(plans = session.plans.filterNot { it.id == plan.id } + plan))) }
-            if (epoch.get() == operationEpoch) { recovery = null; set(state.value.copy(feedbackSaved = true, error = null)) }
+            if (epoch.get() == operationEpoch) { recovery = null; plans = plans.filterNot { it.id == plan.id } + plan
+            set(state.value.copy(feedbackSaved = true, error = null)) }
         } catch (_: Exception) {
             recovery = Recovery.Feedback(origin, answerId, edited)
             set(state.value.copy(feedbackSaved = false, error = CounselError("STORAGE_UNAVAILABLE", true)))
@@ -503,14 +558,67 @@ class CounselController(
         recovery = Recovery.Preview
         try {
             // Preview belongs to the next send. Only retry may reuse a failed/cancelled run.
-            val snapshot = previewRequest ?: interrupted ?: request()
+            var snapshot = nextRequest(previewRequest ?: interrupted ?: request())
+            if (snapshot.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && finishSavedSummary(snapshot)) {
+                if (epoch.get() != operationEpoch) return@preview
+                snapshot = nextRequest(request())
+            }
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
             if (epoch.get() != operationEpoch) return@preview
             previewRequest = snapshot
-            set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared), error = null))
+            set(state.value.copy(currentRequest = if (snapshot.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) snapshot else state.value.currentRequest, preview = prepared, outboundBody = outboundBody(prepared), error = null))
             recovery = null
         }
-        catch (_: Exception) { set(state.value.copy(error = CounselError("PROMPT_UNAVAILABLE", true))) }
+        catch (_: Exception) { set(state.value.copy(error = CounselError(if (recovery is Recovery.FinishSummary) "STORAGE_UNAVAILABLE" else "PROMPT_UNAVAILABLE", true))) }
+    }
+    private suspend fun finishSavedSummary(request: AnalysisRequest): Boolean {
+        val key = cacheKey(request)
+        val selected = request.evidence.flatMap { it.lines }.filter { it.id in request.networkSelection.orEmpty() }
+        val completed = summaries.any { cache -> cache.key == key && cache.request.requestId !in blockedSummaryRequests &&
+            cache.request.sourceRevision == request.sourceRevision && ContinuousAnalysis.sourcesRetained(cache.request, request.contactId, request.evidence) &&
+            ContinuousAnalysis.validSummary(cache.text, selected) && ledger.runs.any { it.requestId == cache.request.requestId && it.status == RunStatus.COMPLETED } }
+        if (completed) {
+            recovery = null
+            set(state.value.copy(summaryReady = true, currentRequest = null, error = null))
+            return true
+        }
+        val run = ledger.runs.firstOrNull { it.requestId == request.requestId } ?: return false
+        if (run.status !in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED) || request.requestId in blockedSummaryRequests) return false
+        if (summaries.none { it.key == key && it.request.requestId == request.requestId && ContinuousAnalysis.sourcesRetained(it.request, request.contactId, request.evidence) && ContinuousAnalysis.validSummary(it.text, selected) }) return false
+        recovery = Recovery.FinishSummary(request)
+        val token = epoch.get()
+        checkpoint(request, RunStatus.COMPLETED)
+        if (epoch.get() != token) return true
+        recovery = null
+        set(state.value.copy(summaryReady = true, currentRequest = null, error = null))
+        return true
+    }
+    private suspend fun retrySummaryCleanup() {
+        for ((key, pending) in pendingSummaryCleanup.toMap()) {
+            val (cache, _) = pending
+            try { if (cache.request.contactId != null) persistence.discardSummary(cache); pendingSummaryCleanup.remove(key) }
+            finally { summaries = summaries.filterNot { it.key == cache.key && it.request.requestId == cache.request.requestId } }
+        }
+        recovery = null
+        set(state.value.copy(error = null))
+    }
+    private suspend fun rejectCancelledSummary(cache: TimelineSummary) {
+        blockedSummaryRequests += cache.request.requestId
+        try { if (cache.request.contactId != null) persistence.discardSummary(cache) }
+        catch (_: Exception) {
+            val run = ledger.runs.firstOrNull { it.requestId == cache.request.requestId }
+            pendingSummaryCleanup[cache.key + ":" + cache.request.requestId] = cache to run
+            // A failed deletion is visible and retryable. A durable cancellation also prevents
+            // another controller from treating the retained row as a completed cache receipt.
+            if (run != null && cache.request.contactId != null) runCatching {
+                val cancelled = run.copy(status = RunStatus.CANCELLED, highestSafety = run.highestSafety.upgrade(state.value.safety))
+                persistence.saveRun(Contact(id = checkNotNull(cache.request.contactId), sourceRevision = cache.request.sourceRevision), cancelled)
+                ledger = ledger.copy(runs = ledger.runs.map { if (it.requestId == run.requestId) cancelled else it })
+            }
+            set(state.value.copy(streaming = false, error = CounselError("STORAGE_UNAVAILABLE", true)))
+        } finally {
+            summaries = summaries.filterNot { it.key == cache.key && it.request.requestId == cache.request.requestId }
+        }
     }
     fun analyze() = analyze(state.value.conversation?.id)
     fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{
@@ -524,11 +632,12 @@ class CounselController(
         if (settings.saved.live && previewRequest == null) {
             set(state.value.copy(error = CounselError("PREVIEW_REQUIRED"))); return@analyze
         }
-        val snapshot = previewRequest ?: (recovery as? Recovery.Analysis)?.request?.takeIf { state.value.error?.code == "INTERRUPTED" } ?: request()
+        val snapshot = previewRequest ?: (recovery as? Recovery.Analysis)?.request?.takeIf { state.value.error?.code == "INTERRUPTED" } ?: nextRequest(request())
         previewRequest = null // A preview can authorize one new operation, never two sends.
         start(snapshot)
     }
     fun retry() = enqueue {
+        if (pendingSummaryCleanup.isNotEmpty()) { retrySummaryCleanup(); return@enqueue }
         if (state.value.streaming || state.value.error?.retryable != true) return@enqueue
         when (val pending = recovery) {
             is Recovery.Feedback -> feedback(pending.origin, pending.answerId, pending.edited)
@@ -536,8 +645,11 @@ class CounselController(
             is Recovery.Load -> loadContact(pending.contact)
             Recovery.SaveDraft -> flushDraft()
             is Recovery.Analysis -> {
-                if (settings.saved.live && state.value.preview == null) preparePreview()
-                else start(pending.request)
+                if (settings.saved.live) {
+                    val prepared = assembler.prepare(pending.request)
+                    previewRequest = pending.request
+                    set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared), error = null))
+                } else start(pending.request)
             }
             is Recovery.Checkpoint -> fail(pending.code, pending.retryable)
             is Recovery.Complete -> {
@@ -546,6 +658,7 @@ class CounselController(
                     receive(pending.request, pending.token, AnalysisChunk.Completed(pending.answer))
                 }
             }
+            is Recovery.FinishSummary -> { if (finishSavedSummary(pending.request)) preparePreview() }
             Recovery.Preview -> preparePreview()
             Recovery.RefreshContacts -> {
                 set(state.value.copy(contacts = persistence.contacts(), error = null))
@@ -571,10 +684,22 @@ class CounselController(
         }
     }
     private suspend fun start(request: AnalysisRequest) {
+        if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
+            summaryKey = cacheKey(request)
+            val previous = ledger.runs.firstOrNull { it.requestId == request.requestId }
+            if (previous?.status in setOf(RunStatus.CANCELLED, RunStatus.FAILED)) {
+                for (cache in summaries.filter { it.request.requestId == request.requestId }) {
+                    rejectCancelledSummary(cache)
+                    if (pendingSummaryCleanup.isNotEmpty()) return
+                }
+                blockedSummaryRequests.remove(request.requestId)
+            }
+        }
         val operationProvider = provider
         val priorSafety = (if (state.value.currentRequest?.requestId == request.requestId) state.value.safety else SafetyLevel.NONE)
             .upgrade(ledger.runs.firstOrNull { it.requestId == request.requestId }?.highestSafety ?: SafetyLevel.NONE)
             .upgrade(request.originalAnswer?.safety ?: SafetyLevel.NONE)
+            .upgrade(if (state.value.summaryReady) state.value.safety else SafetyLevel.NONE)
         val token = epoch.incrementAndGet()
         frozen = request
         recovery = Recovery.Analysis(request)
@@ -586,8 +711,8 @@ class CounselController(
             set(state.value.copy(preview = prepared))
         } catch (_: Exception) { fail("PROMPT_UNAVAILABLE", true); return }
         val begun = ledger.begin(request, "user:${request.requestId}")
-        val user = begun.messages.first { it.requestId == request.requestId && it.role == MessageRole.USER }
-        if (ledger.messages.none { it.id == user.id }) persistMessage(user)
+        val user = begun.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.USER }
+        if (user != null && ledger.messages.none { it.id == user.id }) persistMessage(user)
         ledger = begun
         checkpoint(request, RunStatus.RUNNING)
         if (!isCurrent(request, token)) return
@@ -606,7 +731,7 @@ class CounselController(
         }
         stream = scope.launch {
             try {
-                operationProvider.analyze(request).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
+                (if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) OutboundEngine(operationProvider).summarize(request) else operationProvider.analyze(request)).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
                 mailbox.send {
                     if (isCurrent(request, token) && state.value.streaming) fail("STREAM_INCOMPLETE", true)
                 }
@@ -662,6 +787,38 @@ class CounselController(
                 val displayAnswer = state.value.preview?.let { SafeAliasRestorer.restore(highestAnswer, it) } ?: highestAnswer
                 val answer = (AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return).let { it.copy(id = if (request.mode == RequestMode.REWRITE_REPLY || it.id.isBlank()) "answer:${request.requestId}" else it.id) }
                 set(state.value.copy(safety = state.value.safety.upgrade(answer.safety)))
+                if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
+                    recovery = Recovery.Complete(request, token, highestAnswer)
+                    checkpoint(request, RunStatus.RUNNING)
+                    if (answer.safety == SafetyLevel.CRISIS) {
+                        checkpoint(request, RunStatus.COMPLETED)
+                        waitingJob?.cancel(); frozen = null; recovery = null
+                        set(state.value.copy(streaming = false, preview = null, outboundBody = null))
+                        return
+                    }
+                    val text = ContinuousAnalysis.scopeHistoricalTokens(answer.freeText.ifBlank { answer.sections[SectionId.FREE_TEXT].orEmpty() }.trim(), "早期节选#${checkNotNull(summaryKey)}")
+                    val selected = request.evidence.flatMap { it.lines }.filter { it.id in request.networkSelection.orEmpty() }
+                    if (!ContinuousAnalysis.validSummary(text, selected) || text.codePointCount(0, text.length) > 1000) { fail("SUMMARY_INVALID", true); return }
+                    val cache = TimelineSummary(checkNotNull(summaryKey), request, text)
+                    try {
+                        if (request.contactId != null) persistence.saveSummary(cache)
+                        if (!isCurrent(request, token)) return
+                        checkpoint(request, RunStatus.COMPLETED)
+                        synchronized(intentLock) {
+                            if (!isCurrent(request, token)) return@synchronized
+                            summaries = summaries.filterNot { it.key == cache.key } + cache
+                            waitingJob?.cancel(); frozen = null; recovery = null; previewRequest = null
+                            set(state.value.copy(streaming = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, summaryReady = true, error = null))
+                        }
+                    } finally {
+                        // A submitted stop/edit revokes the token before this mailbox resumes.
+                        // Remove only this request's cache, never another operation with the same key.
+                        if (epoch.get() != token) {
+                            rejectCancelledSummary(cache)
+                        }
+                    }
+                    return
+                }
                 val completedLedger = ledger.complete(request, answer, "assistant:${request.requestId}", inputRevision, conversationRevision)
                 val next = completedLedger.copy(messages = completedLedger.messages.map { if (it.requestId == request.requestId && it.role == MessageRole.ASSISTANT) it.copy(answerJson = json.encodeToString(StructuredAnswer.serializer(), answer), providerKind = if (state.value.answerDemo) ProviderKind.DEMO else ProviderKind.BYOK) else it })
                 val message = next.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.ASSISTANT } ?: return
@@ -752,6 +909,7 @@ class CounselController(
         }
     }
     fun stop() = enqueue(true) {
+        if (pendingSummaryCleanup.isNotEmpty()) { set(state.value.copy(streaming = false, error = CounselError("STORAGE_UNAVAILABLE", true))); return@enqueue }
         if (!state.value.streaming) return@enqueue
         waitingJob?.cancel()
         stream?.cancel(); stream = null
@@ -769,6 +927,7 @@ class CounselController(
         // Clear UI before suspending so a failed physical cleanup cannot expose old content.
         set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
         val cleared = persistence.clearAll()
+        if (cleared) { pendingSummaryCleanup.clear(); blockedSummaryRequests.clear(); summaries = emptyList() }
         // The application store records durable wipe intent before destroying the shared
         // vault. Do not let a separate settings remove failure prevent that privacy boundary.
         modelSettings?.clear()
