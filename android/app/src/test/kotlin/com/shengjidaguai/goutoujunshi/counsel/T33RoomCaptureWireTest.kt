@@ -212,7 +212,14 @@ class T33RoomCaptureWireTest {
             assertTrue(f.controller.state.value.captureSourcePreferred)
             assertEquals(setOf("manual-a"),f.memories.list("a").map {it.id}.toSet());assertEquals(listOf("manual-b"),f.memories.list("b").map {it.id})
             assertTrue(f.memories.operations("a").isEmpty())
-            assertEquals(listOf("keep-style"),StyleRepository(f.session).samples(RelationType.FRIEND.group()).map {it.id})
+            val learnedLine=f.controller.state.value.evidence.single {it.id.startsWith(LiveCaptureFingerprint.PREFIX)}.lines.single {it.speaker==Speaker.ME}
+            val survivingStyle=StyleRepository(f.session).samples(RelationType.FRIEND.group())
+            assertEquals(setOf("keep-style","style:import:b-raw:0","style:import:${learnedLine.id}"),survivingStyle.map {it.id}.toSet())
+            assertFalse(survivingStyle.any {it.id in setOf("raw-style","edited-style")})
+            survivingStyle.forEach {sample ->
+                val actual=f.raw.lines(requireNotNull(sample.sourceContactId),requireNotNull(sample.sourceImportId)).single {it.id==sample.sourceMessageId}
+                assertEquals(Speaker.ME,actual.speaker);assertTrue(actual.speakerConfirmed);assertEquals(actual.text,sample.text)
+            }
             assertTrue(SummaryRepository(f.session).list("a").isEmpty())
             assertFalse(StyleRepository(f.session).profile(RelationType.FRIEND.group())?.description.orEmpty().contains("旧方向"))
             assertTrue(runCatching {f.memories.applyProposal("a",MemoryProposal(subjectId="ta",field="pattern",value="迟到旧方向",sourceRef="old-run"),stale)}.isFailure)

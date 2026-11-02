@@ -61,6 +61,7 @@ class CapturedImportReplacementRepository(private val session:DataSession) {
             check(previous?.revision==change.expectedBindingRevision && previous.contactRevision==owner.revision && previous.source==binding.source)
             put(OwnedRecordRow("FLOATING_IDENTITY:${binding.id}",ownerId,OwnedRecordKind.FLOATING_IDENTITY,encode(binding)))
         }
+        learnConfirmedStyle(ownerId,next.id)
         invalidateAndRecompute(ownerId=ownerId) // Includes transitive memory pruning, undo revocation, summary/profile clearing.
         check(current()) { "Capture correction authority changed before commit" }
         contact

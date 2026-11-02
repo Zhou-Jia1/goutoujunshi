@@ -12,7 +12,7 @@ import kotlinx.serialization.Serializable
     val inputRevision:Long=0, val contactId:String?=null, val relationType:RelationType?=null,
     val goal:Goal?=null, val userText:String="", val emotionLevel:Int?=null,
     val evidence:List<EvidenceBlock> = emptyList(), val styleBias:Float=0.5f, val tone:Tone?=null,
-    val styleContext:String="", val styleSamples:List<StyleSample> = emptyList(),
+    val styleContext:String="", val styleSource:StyleOutboundContext?=null, val styleSamples:List<StyleSample> = emptyList(),
     val contactContext:String="", val recentSummary:String="", val redactionTerms:List<String> = emptyList(),
     val sourceRevision:Long=0, val speakersConfirmed:Boolean=false,
     val conversationId:String="", val conversationRevision:Long=0,
