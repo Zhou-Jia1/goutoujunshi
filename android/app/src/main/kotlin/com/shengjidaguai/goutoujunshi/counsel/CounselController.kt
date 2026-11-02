@@ -29,6 +29,14 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
+    suspend fun styleContext(owner:String,group:RelationGroup):StyleOutboundContext = StyleOutboundContext()
+    suspend fun styleSnapshot():StyleManagementSnapshot { error("Style unavailable") }
+    suspend fun styleEdit(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) { error("Style unavailable") }
+    suspend fun styleGenerated(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) = styleEdit(group,text,stamp,current)
+    suspend fun styleEditSample(id:String,text:String,stamp:WriteStamp,current:()->Boolean) {error("Style unavailable")}
+    suspend fun styleDelete(id:String,stamp:WriteStamp) { error("Style unavailable") }
+    suspend fun styleReset(group:RelationGroup,stamp:WriteStamp) { error("Style unavailable") }
+    suspend fun styleQuiz(answers:List<String>,stamp:WriteStamp,current:()->Boolean) { error("Style unavailable") }
     suspend fun memorySnapshot(owner: String?): MemorySnapshot = MemorySnapshot()
     suspend fun memoryContextSnapshot(owner:String?):MemorySnapshot = MemorySnapshot()
     suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { error("Memory unavailable") }
@@ -73,6 +81,15 @@ class EncryptedCounselPersistence(
     private fun contactsRepo() = ContactRepository(checkNotNull(session))
     private fun conversationsRepo() = ConversationRepository(checkNotNull(session))
     private fun memoryRepo() = MemoryRepository(checkNotNull(session))
+    private fun styleRepo()=StyleRepository(checkNotNull(session))
+    override suspend fun styleContext(owner:String,group:RelationGroup)=styleRepo().context(owner,group)
+    override suspend fun styleSnapshot()=styleRepo().snapshot()
+    override suspend fun styleEdit(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) {styleRepo().editDescription(group,text,stamp,current=current)}
+    override suspend fun styleGenerated(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) {styleRepo().editDescription(group,text,stamp,generated=true,current=current)}
+    override suspend fun styleEditSample(id:String,text:String,stamp:WriteStamp,current:()->Boolean) {styleRepo().editSample(id,text,stamp,current)}
+    override suspend fun styleDelete(id:String,stamp:WriteStamp) {styleRepo().removeSample(id,stamp)}
+    override suspend fun styleReset(group:RelationGroup,stamp:WriteStamp) {styleRepo().reset(group,stamp)}
+    override suspend fun styleQuiz(answers:List<String>,stamp:WriteStamp,current:()->Boolean) {styleRepo().saveQuiz(answers,stamp,current)}
     override suspend fun memorySnapshot(owner: String?) = memoryRepo().snapshot(owner)
     override suspend fun memoryContextSnapshot(owner:String?) = memoryRepo().contextSnapshot(owner)
     override suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { ConsentRepository(checkNotNull(session)).update(enabled, paused, expected=stamp,expectedClear=if(!enabled) requireNotNull(clearAuthority) else null,onAuthorized=onAuthorized) }
@@ -150,7 +167,72 @@ class CounselController(
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val wallClockMillis: () -> Long = { System.currentTimeMillis() },
     private val memoryNoticeDelay: suspend (Long) -> Unit = { delay(it) },
+    private val styleBiasPreferences:StyleBiasPreferences=MemoryStyleBiasPreferences(),
 ) {
+    private val styleCoordinator=StyleCoordinator()
+    val stylePage:StateFlow<StyleUiState> = styleCoordinator.state.asStateFlow()
+    private var pendingStyle:StyleDescriptionLease?=null
+    fun closeStyle()=synchronized(intentLock) {styleCoordinator.close()}
+    fun openStyle()=enqueue {
+        if(!state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        styleCoordinator.open=true
+        styleCoordinator.state.value=StyleUiState(loading=true)
+        try {val snapshot=persistence.styleSnapshot();if(styleCoordinator.open && state.value.lockState.canDisplaySensitiveContent) styleCoordinator.display(snapshot)}
+        catch(_:Exception) {styleCoordinator.state.value=StyleUiState(failed=true)}
+    }
+    fun editStyle(group:RelationGroup,text:String,receipt:String)=enqueue(true) {
+        if(!styleCoordinator.current(receipt) || !state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        val stamp=checkNotNull(stylePage.value.snapshot).stamp
+        try {invalidateRun();persistence.styleEdit(group,text,stamp) {styleCoordinator.current(receipt) && state.value.lockState.canDisplaySensitiveContent};styleCoordinator.display(persistence.styleSnapshot())}
+        catch(_:Exception) {styleCoordinator.state.value=stylePage.value.copy(failed=true)}
+    }
+    fun editStyleSample(id:String,text:String,receipt:String)=enqueue(true) {
+        if(!styleCoordinator.current(receipt) || !state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        val stamp=checkNotNull(stylePage.value.snapshot).stamp
+        try {invalidateRun();persistence.styleEditSample(id,text,stamp) {styleCoordinator.current(receipt) && state.value.lockState.canDisplaySensitiveContent};styleCoordinator.display(persistence.styleSnapshot())}
+        catch(_:Exception) {styleCoordinator.state.value=stylePage.value.copy(failed=true)}
+    }
+    fun deleteStyle(id:String,receipt:String)=enqueue(true) {
+        if(!styleCoordinator.current(receipt) || !state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        try {invalidateRun();persistence.styleDelete(id,checkNotNull(stylePage.value.snapshot).stamp);styleCoordinator.display(persistence.styleSnapshot())}
+        catch(_:Exception) {styleCoordinator.state.value=stylePage.value.copy(failed=true)}
+    }
+    fun resetStyle(group:RelationGroup,receipt:String)=enqueue(true) {
+        if(!styleCoordinator.current(receipt) || !state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        try {invalidateRun();persistence.styleReset(group,checkNotNull(stylePage.value.snapshot).stamp);styleCoordinator.display(persistence.styleSnapshot())}
+        catch(_:Exception) {styleCoordinator.state.value=stylePage.value.copy(failed=true)}
+    }
+    fun saveStyleQuiz(answers:List<String>,receipt:String)=enqueue(true) {
+        if(!styleCoordinator.current(receipt) || !state.value.lockState.canDisplaySensitiveContent || answers.size!=5) return@enqueue
+        val snapshot=checkNotNull(stylePage.value.snapshot)
+        try {
+            invalidateRun()
+            val owner=state.value.currentContact?.id
+            val formal=owner!=null && state.value.conversation?.let {it.canPersist && it.contactId==owner}==true
+            if(formal && snapshot.consent.enabled && !snapshot.consent.paused) {persistence.styleQuiz(answers,snapshot.stamp) {styleCoordinator.current(receipt) && state.value.lockState.canDisplaySensitiveContent};styleCoordinator.display(persistence.styleSnapshot())}
+            else {
+                state.value.conversation?.id?.let {styleCoordinator.rememberQuiz(it,answers)}
+                styleCoordinator.state.value=stylePage.value.copy(temporaryQuiz=answers.toList())
+            }
+        } catch(_:Exception) {styleCoordinator.state.value=stylePage.value.copy(failed=true)}
+    }
+    fun previewStyle(group:RelationGroup,receipt:String)=enqueue {
+        if(!styleCoordinator.current(receipt) || state.value.streaming || !ordinaryAllowed() || state.value.conversation==null) return@enqueue
+        val snapshot=persistence.styleSnapshot()
+        val selected=snapshot.groups[group] ?: return@enqueue
+        if(snapshot.stamp!=stylePage.value.snapshot?.stamp || !snapshot.consent.enabled || snapshot.consent.paused || selected.samples.size<15 || selected.profile==null || !selected.profile?.description.isNullOrBlank() || selected.profile?.let {it.generatedFingerprint.isNotBlank() && it.generatedFingerprint==it.sourceFingerprint}==true) return@enqueue
+        if(provider.kind==ProviderKind.DEMO) {styleCoordinator.state.value=stylePage.value.copy(modelRequired=true);return@enqueue}
+        val authority=authoritySnapshot()
+        val base=request(authority)
+        val projected=StylePersistencePolicy.retainSamples(selected.samples).joinToString("\n") {it.effectiveText}
+        val selectedRelation=when(group) {RelationGroup.WORK->RelationType.BOSS;RelationGroup.INTIMATE->RelationType.PARTNER;RelationGroup.FAMILY->RelationType.PARENT;RelationGroup.SOCIAL->RelationType.FRIEND;RelationGroup.MEDIATION->RelationType.MEDIATION;RelationGroup.DEFAULT->RelationType.ACQUAINTANCE}
+        val next=base.copy(requestId=UUID.randomUUID().toString(),purpose=OutboundPurpose.STYLE_DESCRIPTION,relationType=selectedRelation,
+            userText="请用不超过200字描述这些本人样本的表达风格，保留个性并指出影响效果的习惯。",evidence=emptyList(),networkSelection=null,
+            styleContext=projected,styleSource=null,styleSamples=emptyList(),actualDataContext=OutboundDataContext(),recentSummary="",contactContext="",timelineSummary="",
+            redactionTerms=(base.redactionTerms+snapshot.sourceTerms[group].orEmpty()).distinct())
+        val prepared=withContext(Dispatchers.Default) {assembler.prepare(next)}
+        authorized(authority) {styleCoordinator.state.value=stylePage.value.copy(previewGroup=group);pendingStyle=StyleDescriptionLease(group,snapshot);previewRequest=next;previewAuthority=authority;set(state.value.copy(currentRequest=next,preview=prepared,outboundBody=outboundBody(prepared),error=null))}
+    }
     private val memoryDisplay=MemoryDisplayCoordinator(scope,{ task -> enqueue { task() } },memoryNoticeDelay)
     private val mutableMemory get()=memoryDisplay.inline
     val memory: StateFlow<MemoryUiState> = memoryDisplay.inline.asStateFlow()
@@ -181,6 +263,7 @@ class CounselController(
         mutableMemoryPage.value=MemoryUiState()
     }
     private fun clearInlineMemory() {
+        styleCoordinator.revoke()
         closeMemory();pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null;memoryDisplay.cancelNotice()
         mutableMemory.value=MemoryUiState(snapshot=MemorySnapshot(consent=memory.value.consent))
     }
@@ -656,6 +739,7 @@ class CounselController(
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
         revokeFloatingCaptureLocked()
         authorityLock = lock
+        styleCoordinator.revoke()
         lockGeneration++
         epoch.incrementAndGet()
         // Immediate display/network revocation; actor-owned fields are cleaned in mailbox order.
@@ -674,6 +758,7 @@ class CounselController(
         mutableState.value = if (pendingSummaryCleanup.isEmpty()) visible else visible.copy(error = CounselError("STORAGE_UNAVAILABLE", true))
     }
     private fun invalidateRun() {
+        pendingStyle=null
         activeRunAuthority=null;previewAuthority=null
         pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null
         mutableMemory.value=memory.value.copy(consentProposal=null,approvalFinishing=false,pendingOperation=false)
@@ -866,6 +951,7 @@ class CounselController(
             set(CounselState(loading = false, contacts = state.value.contacts, currentContact = contact,
                 conversation = saved.conversation, draft = saved.draft, memoryContext=memoryContext,memoryRetention=MemoryPresentation.retention(contact.id,memorySnapshot),
                 relationType = answerRequest?.manualRelation ?: answer?.scene?.relationType ?: contact.relationType,
+                styleBias=styleBiasPreferences.get((answerRequest?.manualRelation ?: answer?.scene?.relationType ?: contact.relationType).group()),
                 goal = answerRequest?.manualGoal ?: answer?.scene?.goal ?: Goal.REPLY,
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
                 formality = answerRequest?.manualFormality ?: answer?.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: "medium",
@@ -986,10 +1072,14 @@ class CounselController(
     /** Pasted text is a user statement, never confirmed dialogue evidence. */
     fun pasteText(text: String) = editDraft(text)
     fun pasteText(text: String, stamp: DraftEditStamp) = editDraft(text, stamp)
-    fun setRelation(value: RelationType) = enqueue(true) { edit { it.copy(relationType = value, manualRelation = value) } }
+    fun setRelation(value: RelationType) = enqueue(true) { edit { it.copy(relationType = value, manualRelation = value,styleBias=styleBiasPreferences.get(value.group())) } }
     fun setGoal(value: Goal) = enqueue(true) { edit { it.copy(goal = value, manualGoal = value) } }
     fun setEmotion(value: Int?) = enqueue(true) { edit { it.copy(emotion = value?.coerceIn(0, 10)) } }
-    fun setStyleBias(value: Float) = enqueue(true) { edit { it.copy(styleBias = if (value.isFinite()) value.coerceIn(0f, 1f) else 0.5f) } }
+    fun setStyleBias(value: Float) = enqueue(true) {
+        val selected=if(value.isFinite()) value.coerceIn(0f,1f) else 0.5f
+        styleBiasPreferences.set(state.value.relationType.group(),selected)
+        edit {it.copy(styleBias=selected)}
+    }
     fun setTone(value: Tone) = enqueue(true) { edit { it.copy(tone = value) } }
     fun saveRedactionProfile(origin: String?, terms: List<String>, aliases: List<RedactionAlias>) = enqueueFrom(origin, true) {
         invalidateRun()
@@ -1039,6 +1129,14 @@ class CounselController(
         val conversation = checkNotNull(current.conversation)
         val memorySnapshot=persistence.memoryContextSnapshot(current.currentContact?.id)
         val context=MemoryPresentation.context(current.currentContact?.id,memorySnapshot)
+        val styleGroup=ScenePredictor.predict(current.currentContact?.relationType,current.draft,current.evidence,current.manualRelation,current.manualGoal).relationType?.group() ?: RelationGroup.DEFAULT
+        val persistentStyle=current.currentContact?.let {persistence.styleContext(it.id,styleGroup)} ?: StyleOutboundContext()
+        val localStyle=StylePersistencePolicy.retainSamples(current.evidence.flatMap {it.lines}.filter {it.speaker==Speaker.ME && it.speakerConfirmed}.map {
+            StyleSample(id="ram:${it.id}",relationGroup=styleGroup,text=it.text,origin=StyleOrigin.IMPORT,sourceContactId=it.contactId,sourceImportId=it.importId,sourceMessageId=it.id)
+        }+plans.filter {it.wasEdited && it.sourceRevision==(current.currentContact?.sourceRevision ?: 0) && current.messages.any {message->message.id==it.sourceAnswerId && message.role==MessageRole.ASSISTANT}}.map {StyleSample(id="ram:${it.id}",relationGroup=styleGroup,text=it.chosenReply,origin=StyleOrigin.EDITED_REPLY,sourceContactId=it.contactId,sourceAnswerId=it.sourceAnswerId)})
+        val persistentAllowed=current.currentContact!=null && memorySnapshot.consent.enabled && !memorySnapshot.consent.paused
+        val ramQuiz=styleCoordinator.quizFor(conversation.id).mapIndexed {index,text->StyleSample("ram:quiz:$index",RelationGroup.DEFAULT,text,StyleOrigin.QUIZ)}
+        val style=if(persistentAllowed) persistentStyle else StyleOutboundContext(samples=if(localStyle.size>=3) localStyle.take(5) else ramQuiz)
         return authorized(authority) {
         mutableMemory.value=displayed(memory.value.copy(ownerId=current.currentContact?.id,snapshot=memorySnapshot),"inline")
         set(state.value.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot)))
@@ -1047,10 +1145,11 @@ class CounselController(
             relationType = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).relationType,
             goal = ScenePredictor.predict(current.currentContact?.relationType, current.draft, current.evidence, current.manualRelation, current.manualGoal).goal, formality = current.formality,
             manualRelation = current.manualRelation, manualGoal = current.manualGoal, manualFormality = current.manualFormality,
-            userText = current.draft, emotionLevel = current.emotion, styleBias = current.styleBias, tone = current.tone,
+            userText = current.draft, emotionLevel = current.emotion, styleBias = styleBiasPreferences.get(styleGroup), tone = current.tone,
             conversationId = conversation.id, conversationRevision = conversation.revision,
             sourceRevision = current.currentContact?.sourceRevision ?: 0,
             redactionProfile = current.redactionProfile,
+            styleSource=style.takeIf {persistentAllowed},styleContext=style.description,styleSamples=style.samples,redactionTerms=(style.sourceAliases+current.evidence.flatMap {it.lines}.mapNotNull {it.speakerName}+listOfNotNull(current.currentContact?.alias)).distinct(),
             actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
         }
     }
@@ -1101,9 +1200,12 @@ class CounselController(
         inputRevision++
         if(captureBefore!=null) floatingCapture=captureBefore.copy(epoch=authority.epoch,inputRevision=inputRevision)
         invalidateRun()
-        val snapshot = request(authority).copy(mode = RequestMode.REWRITE_REPLY, purpose = OutboundPurpose.REPLY_REWRITE,
-            parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = bias.coerceIn(0f, 1f), floating=requirePreview,
-            redactionTerms=if(requirePreview) state.value.evidence.flatMap { it.lines }.mapNotNull { it.speakerName }.distinct() else emptyList())
+        val base=request(authority)
+        val selectedBias=if(bias.isFinite()) bias.coerceIn(0f,1f) else 0.5f
+        styleBiasPreferences.set(state.value.relationType.group(),selectedBias)
+        val snapshot = base.copy(mode = RequestMode.REWRITE_REPLY, purpose = OutboundPurpose.REPLY_REWRITE,
+            parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = selectedBias, floating=requirePreview,
+            redactionTerms=(base.redactionTerms+if(requirePreview) state.value.evidence.flatMap { it.lines }.mapNotNull { it.speakerName } else emptyList()).distinct())
         try { requireFloatingBudget(snapshot) } catch(_:FloatingOpenFull) { floatingOpenFull(authority);return@enqueueFrom }
         if (settings.saved.live || requirePreview) {
             if(snapshot.actualDataContext!=MemoryPresentation.context(snapshot.contactId,persistence.memoryContextSnapshot(snapshot.contactId))) {
@@ -1237,7 +1339,7 @@ class CounselController(
         if(floating && (expected==null || expected!=previewRequest || !expected.floating || previewAuthority?.let(::authorityCurrent)!=true)) return@analyze
         if (importPending || state.value.loading || state.value.conversation == null) return@analyze
         if (state.value.streaming) return@analyze
-        if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
+        if (state.value.draft.isBlank() && state.value.evidence.isEmpty() && pendingStyle==null) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
         flushDraft()
         authorized(authority) { Unit }
         if (settings.saved.live && previewRequest == null) {
@@ -1314,7 +1416,9 @@ class CounselController(
         try { requireFloatingBudget(request) } catch(_:FloatingOpenFull) { floatingOpenFull(authority);return }
         val snapshot=persistence.memoryContextSnapshot(request.contactId)
         authorized(authority) { Unit }
-        if(request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { authorized(authority) { invalidateRun() }; return }
+        if(request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { authorized(authority) { invalidateRun() }; return }
+        if(request.styleSource!=null && request.contactId!=null && request.styleSource!=persistence.styleContext(requireNotNull(request.contactId),(request.relationType ?: RelationType.ACQUAINTANCE).group())) { authorized(authority) {invalidateRun()};return }
+        if(request.purpose==OutboundPurpose.STYLE_DESCRIPTION && pendingStyle?.snapshot?.stamp!=persistence.styleSnapshot().stamp) {authorized(authority) {invalidateRun()};return}
         authorized(authority) { proposalStamp=snapshot.stamp }
         if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
             summaryKey = cacheKey(request)
@@ -1359,7 +1463,7 @@ class CounselController(
             ledger.begin(request, "user:${request.requestId}")
         }
         val user = begun.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.USER }
-        if (user != null && ledger.messages.none { it.id == user.id }) persistMessage(user)
+        if (request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && user != null && ledger.messages.none { it.id == user.id }) persistMessage(user)
         synchronized(intentLock) {
             if(!isCurrent(request,token)) return
             ledger = begun
@@ -1386,7 +1490,7 @@ class CounselController(
             try {
                 if(!isCurrent(request,token)) return@launch
                 ensureActive()
-                (if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) OutboundEngine(operationProvider).summarize(request) else operationProvider.analyze(request)).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
+                (when(request.purpose) {OutboundPurpose.LONG_RECORD_SUMMARY->OutboundEngine(operationProvider).summarize(request);OutboundPurpose.STYLE_DESCRIPTION->OutboundEngine(operationProvider).describeStyle(request);else->operationProvider.analyze(request)}).collect { chunk -> mailbox.send { receive(request, token, chunk) } }
                 mailbox.send {
                     if (isCurrent(request, token) && state.value.streaming) fail("STREAM_INCOMPLETE", true)
                 }
@@ -1398,7 +1502,7 @@ class CounselController(
     private suspend fun checkpoint(request: AnalysisRequest, status: RunStatus) {
         val run = ledger.runs.firstOrNull { it.requestId == request.requestId } ?: return
         val next = run.copy(status = status, requestSnapshot = request.copy(redactionProfile = RedactionProfile(revision = request.redactionProfile.revision)), configRevision = settings.saved.revision, highestSafety = run.highestSafety.upgrade(state.value.safety))
-        state.value.currentContact?.let { persistence.saveRun(it, next) }
+        if(request.purpose!=OutboundPurpose.STYLE_DESCRIPTION) state.value.currentContact?.let { persistence.saveRun(it, next) }
         ledger = ledger.copy(runs = ledger.runs.map { if (it.requestId == next.requestId) next else it })
     }
     private suspend fun fail(code: String, retryable: Boolean) {
@@ -1443,6 +1547,19 @@ class CounselController(
                 val displayAnswer = state.value.preview?.let { SafeAliasRestorer.restore(highestAnswer, it) } ?: highestAnswer
                 val answer = (AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return).let { it.copy(id = if (request.mode == RequestMode.REWRITE_REPLY || it.id.isBlank()) "answer:${request.requestId}" else it.id) }
                 if(!publishRun(request,token,state.value.copy(safety = state.value.safety.upgrade(answer.safety)))) return
+                if(request.purpose==OutboundPurpose.STYLE_DESCRIPTION) {
+                    if(state.value.answerDemo) {fail("STYLE_REQUIRES_MODEL",false);return}
+                    val target=pendingStyle ?: return
+                    val text=highestAnswer.sections[SectionId.FREE_TEXT].orEmpty().ifBlank {highestAnswer.freeText}.trim()
+                    if(text.isBlank() || text.codePointCount(0,text.length)>200 || answer.safety==SafetyLevel.CRISIS) {fail("STYLE_INVALID",true);return}
+                    persistence.styleGenerated(target.group,text,target.snapshot.stamp) {isCurrent(request,token)}
+                    if(!isCurrent(request,token)) return
+                    waitingJob?.cancel();frozen=null;recovery=null;pendingStyle=null;previewRequest=null
+                    ledger=ledger.copy(messages=ledger.messages.filterNot {it.requestId==request.requestId})
+                    set(state.value.copy(streaming=false,partial=emptyMap(),currentRequest=null,preview=null,outboundBody=null,messages=ledger.messages))
+                    if(styleCoordinator.open) styleCoordinator.display(persistence.styleSnapshot())
+                    return
+                }
                 if (request.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) {
                     recovery = Recovery.Complete(request, token, highestAnswer)
                     checkpoint(request, RunStatus.RUNNING)
@@ -1809,6 +1926,7 @@ class CounselController(
         // Clear UI before suspending so a failed physical cleanup cannot expose old content.
         set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
         val cleared = persistence.clearAll()
+        styleBiasPreferences.clear()
         if (cleared) { pendingSummaryCleanup.clear(); blockedSummaryRequests.clear(); summaries = emptyList() }
         // The application store records durable wipe intent before destroying the shared
         // vault. Do not let a separate settings remove failure prevent that privacy boundary.

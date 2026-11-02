@@ -37,3 +37,11 @@ object StyleFeatureExtractor {
     fun extractConfirmedUserLines(lines:List<ChatLine>):StyleFeatures = extract(lines.filter { it.speaker==Speaker.ME && it.speakerConfirmed }.map { it.text })
     private fun isEmoji(cp:Int):Boolean = cp in 0x1F300..0x1FAFF || cp in 0x2600..0x27BF || cp in 0x1F1E6..0x1F1FF
 }
+
+/** Local source validation projects only style; no contact facts or foreign raw messages. */
+@Serializable data class StyleOutboundContext(val description:String="",val samples:List<StyleSample> = emptyList(),val revision:Long=0,val consentVersion:Long=0,val sourceAliases:List<String> = emptyList())
+
+object StyleDeviationPolicy {
+    fun addedEmoji(samples:List<StyleSample>,replies:List<String>):Boolean = samples.isNotEmpty() &&
+        StyleFeatureExtractor.extract(samples.map {it.effectiveText}).emojiCount==0 && StyleFeatureExtractor.extract(replies).emojiCount>0
+}

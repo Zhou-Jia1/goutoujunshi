@@ -246,7 +246,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 val verdict = answer?.verdict ?: state.currentRequest?.takeIf { it.mode == com.shengjidaguai.goutoujunshi.domain.RequestMode.REWRITE_REPLY }?.originalAnswer?.verdict ?: SafeAliasRestorer.displayPartial(state.partial[SectionId.VERDICT].orEmpty(), state.preview)
                 if (verdict.isNotBlank()) VerdictLine(verdict)
                 val replies = answer?.reply ?: partialReply
-                ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8, null,
+                ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8,
+                    if(com.shengjidaguai.goutoujunshi.domain.StyleDeviationPolicy.addedEmoji(state.answerRequest?.styleSamples.orEmpty(),replies)) stringResource(R.string.style_emoji_note) else null,
                     { index -> if (answer != null) replies.getOrNull(index)?.let(::copy) }, { if (answer != null) copy(replies.joinToString("\n")) })
                 if (answer != null && (answer.formatDisordered || answer.freeText.isNotBlank())) {
                     BodyText(stringResource(R.string.answer_format_disordered))
@@ -312,19 +313,24 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
             BodyText(stringResource(R.string.summary_step))
             BodyText(stringResource(R.string.summary_scope))
         }
-        BodyText(stringResource(if (state.demo) R.string.preview_demo_notice else R.string.live_scope))
-        BodyText(stringResource(R.string.redaction_honesty))
-        BodyText(stringResource(R.string.redaction_count, state.preview?.redactionCount ?: 0))
-        SecondaryButton(stringResource(R.string.redaction_rules), { rulesOpen = true; previewOpen = false })
-        if (!state.demo) BodyText(runCatching { state.modelSettings.saved.connection().safeDestination() }.getOrDefault(""))
-        state.preview?.let { preview -> BodyText(state.outboundBody ?: (preview.system + "\n\n" + preview.user)) }
-            ?: BodyText(stringResource(if (state.error == null) R.string.preparing_preview else errorLabel(state.error!!.code)))
+        OutboundPreviewContent(state,{rulesOpen=true;previewOpen=false})
     }
     if (rulesOpen && origin != null) ContentDialog(stringResource(R.string.redaction_rules), stringResource(R.string.close), { rulesOpen = false }) {
         RedactionRulesContent(state.redactionProfile, state.currentContact != null, state.redactionError) { terms, aliases ->
             actions.saveRedactionProfile(origin, terms, aliases)
         }
     }
+}
+
+/** Every preview displays its real destination and the same frozen payload used by the provider. */
+@Composable internal fun OutboundPreviewContent(state:CounselState,openRules:()->Unit,scope:String?=null) {
+    BodyText(scope ?: stringResource(if(state.demo) R.string.preview_demo_notice else R.string.live_scope))
+    BodyText(stringResource(R.string.redaction_honesty))
+    BodyText(stringResource(R.string.redaction_count,state.preview?.redactionCount ?: 0))
+    SecondaryButton(stringResource(R.string.redaction_rules),openRules)
+    if(!state.demo) BodyText(runCatching {state.modelSettings.saved.connection().safeDestination()}.getOrDefault(""))
+    state.preview?.let {preview->BodyText(state.outboundBody ?: (preview.system+"\n\n"+preview.user))}
+        ?: BodyText(stringResource(if(state.error==null) R.string.preparing_preview else errorLabel(state.error!!.code)))
 }
 
 @Composable fun RedactionRulesContent(profile: RedactionProfile, formal: Boolean, failed: Boolean,
@@ -390,6 +396,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 @Composable fun SettingsScreen(viewModel: CounselViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var memories by remember { mutableStateOf(false) }
+    var styles by remember { mutableStateOf(false) }
+    if(styles) {androidx.activity.compose.BackHandler {styles=false};StyleScreen(viewModel) {styles=false};return}
     if(memories) {
         androidx.activity.compose.BackHandler { memories=false }
         MemoryScreen(viewModel,null,{ memories=false }); return
@@ -398,12 +406,12 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     LaunchedEffect(Unit) { viewModel.openMemory(null) }
     ModelSettingsContent(state, viewModel::saveModelSettings, viewModel::testModelConnection,
         viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize,
-        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null)
+        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null,openStyle={styles=true})
 }
 
 @Composable fun ModelSettingsContent(state: CounselState,
     onSave: (SavedModelSettings, String?, Boolean) -> Unit, onTest: () -> Unit,
-    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null) {
+    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null,openStyle:(()->Unit)?=null) {
     var confirmClear by remember { mutableStateOf(false) }
     val snapshot = state.modelSettings
     val defaults = snapshot.saved.takeIf { it.baseUrl.isNotBlank() } ?: ModelPresets.openAi.let { SavedModelSettings(false, it.baseUrl, it.model, it.providerLabel) }
@@ -418,6 +426,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     LazyColumn(Modifier.fillMaxSize().testTag("model-settings"), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { JunshiTopBar(stringResource(R.string.nav_me)) }
         if(openMemory!=null) item { SecondaryButton(stringResource(R.string.memory_title),openMemory) }
+        if(openStyle!=null) item {SecondaryButton(stringResource(R.string.style_title),openStyle)}
         item { BodyText(stringResource(R.string.live_explanation)) }
         item { ChoiceField(stringResource(R.string.model_mode), stringResource(if (live) R.string.model_live else R.string.model_demo), listOf(
             stringResource(R.string.model_demo) to { live = false }, stringResource(R.string.model_live) to { live = true })) }

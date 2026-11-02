@@ -107,8 +107,15 @@ object MemoryPolicy {
 
 object StylePersistencePolicy {
     const val MAX_SAMPLES_PER_GROUP=30
-    fun retainSamples(samples:List<StyleSample>):List<StyleSample> = samples.groupBy { it.relationGroup }.values
-        .flatMap { it.sortedBy { sample -> sample.createdAt }.takeLast(MAX_SAMPLES_PER_GROUP) }
+    /** Prefer distinct, substantial examples, while reserving a few short expression signals.
+     * Text diversity affects ranking only; IDs and provenance are never merged or rewritten. */
+    fun retainSamples(samples:List<StyleSample>):List<StyleSample> = samples.groupBy { it.relationGroup }.toSortedMap(compareBy { it.ordinal }).values.flatMap { group ->
+        val ranked=group.sortedWith(compareByDescending<StyleSample> { it.effectiveText.trim().codePointCount(0,it.effectiveText.trim().length) }
+            .thenBy { it.effectiveText }.thenBy { it.id })
+        val distinct=ranked.distinctBy { it.effectiveText.trim() }
+        val short=distinct.filter { it.effectiveText.codePointCount(0,it.effectiveText.length)<=12 }.take(3)
+        (short+distinct.filterNot { it in short }+ranked).distinctBy { it.id }.take(MAX_SAMPLES_PER_GROUP)
+    }
     fun validate(sample:StyleSample,consent:ConsentState,currentSourceRevision:Long,isTemporary:Boolean) {
         MemoryPolicy.requireConsent(consent,sample.consentVersion)
         if(isTemporary) throw MemoryWriteRejected("TEMPORARY_SESSION","临时样本不得落库")

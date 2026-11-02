@@ -21,7 +21,7 @@ class T33CapturedReplacementTest {
         db=Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),JunshiDatabase::class.java).build();session=DataSession(db,1)
         ContactRepository(session).save(Contact("a","虚构甲"))
         val live=LiveCaptureRepository(session).save(ChatImport("old","a",ImportSource.SCREENSHOT,"old-hash"),listOf(ChatLine("old:0","old",0,Speaker.ME,"原方向",contactId="a",speakerConfirmed=true)),0)
-        ImportRepository(session).save(ChatImport("keep","a",ImportSource.PASTE,"keep-hash"),listOf(ChatLine("keep:0","keep",0,Speaker.THEM,"其他来源",contactId="a",speakerConfirmed=true)))
+        ImportRepository(session).save(ChatImport("keep","a",ImportSource.PASTE,"keep-hash"),listOf(ChatLine("keep:0","keep",0,Speaker.ME,"其他来源",contactId="a",speakerConfirmed=true)))
         val rows=listOf(ChatLine("$newId:0",newId,0,Speaker.THEM,"原方向",contactId="a",speakerConfirmed=true))
         change=CapturedImportReplacement(oldId,live.imported.contentHash,2,ChatImport(newId,"a",ImportSource.SCREENSHOT,LiveCaptureFingerprint.stored(live.provenance.lineageId,LiveCaptureFingerprint.normalized(rows))),rows,provenance=live.provenance)
     }
@@ -57,11 +57,11 @@ class T33CapturedReplacementTest {
         TimelineRepository(session).save(AnalysisRun(requestId="source-r",conversationId="conv",contactId="a",status=RunStatus.COMPLETED,requestSnapshot=request))
         memories.applyProposal("a",MemoryProposal(subjectId="ta",field="pattern",value="旧方向派生推测",sourceRef="source-r"),session.stamp("a"))
         val stamp=session.stamp("a")
-        val edited=StyleSample("edited",text="旧方向编辑样本",origin=StyleOrigin.EDITED_REPLY,sourceContactId="a",sourceAnswerId="assistant-r",sourceRevision=stamp.sourceRevision,consentVersion=stamp.consentVersion)
-        val keep=StyleSample("keep-sample",text="保留其他来源样本",origin=StyleOrigin.IMPORT,sourceContactId="a",sourceImportId="keep",sourceMessageId="keep:0",sourceRevision=stamp.sourceRevision,consentVersion=stamp.consentVersion)
+        val edited=StyleSample("edited",relationGroup=RelationGroup.SOCIAL,text="旧方向编辑样本",origin=StyleOrigin.EDITED_REPLY,sourceContactId="a",sourceAnswerId="assistant-r",sourceRevision=stamp.sourceRevision,consentVersion=stamp.consentVersion)
+        val keep=StyleSample("keep-sample",relationGroup=RelationGroup.SOCIAL,text="其他来源",origin=StyleOrigin.IMPORT,sourceContactId="a",sourceImportId="keep",sourceMessageId="keep:0",sourceRevision=stamp.sourceRevision,consentVersion=stamp.consentVersion)
         session.transaction {
-            put(StyleSampleRow(edited.id,"DEFAULT","a",null,null,"assistant-r",stamp.sourceRevision,stamp.consentVersion,encode(edited)))
-            put(StyleSampleRow(keep.id,"DEFAULT","a","keep","keep:0",null,stamp.sourceRevision,stamp.consentVersion,encode(keep)))
+            put(StyleSampleRow(edited.id,"SOCIAL","a",null,null,"assistant-r",stamp.sourceRevision,stamp.consentVersion,encode(edited)))
+            put(StyleSampleRow(keep.id,"SOCIAL","a","keep","keep:0",null,stamp.sourceRevision,stamp.consentVersion,encode(keep)))
         }
         val binding=FloatingIdentityBinding("binding","a",FloatingSourceContext("合成应用","合成账号"),"合成昵称",true,2)
         FloatingIdentityRepository(session).save(binding)
@@ -69,10 +69,10 @@ class T33CapturedReplacementTest {
         CapturedImportReplacementRepository(session).replace(change.copy(binding=updated,expectedBindingRevision=1))
         assertEquals(listOf("保留手工事实"),memories.list("a").map { it.value })
         assertTrue(memories.operations("a").isEmpty())
-        assertEquals(listOf("keep-sample"),session.transaction { samples("DEFAULT").map { it.id } })
+        assertEquals(listOf("keep-sample"),session.transaction { samples("SOCIAL").map { it.id } })
         assertEquals(updated,FloatingIdentityRepository(session).list("a").single())
         assertTrue(session.transaction { records("a",OwnedRecordKind.SUMMARY.name) }.isEmpty())
-        val profile=StyleRepository(session).profile(RelationGroup.DEFAULT)
+        val profile=StyleRepository(session).profile(RelationGroup.SOCIAL)
         assertFalse(profile?.description.orEmpty().contains("旧方向"))
         assertTrue(ImportRepository(session).lines("a",oldId).isEmpty())
     }

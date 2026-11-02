@@ -40,6 +40,7 @@ interface JunshiDao {
     @Query("SELECT * FROM style_profiles WHERE groupName=:groupName") suspend fun profile(groupName: String): StyleProfileRow?
     @Upsert suspend fun put(row: StyleProfileRow)
     @Query("DELETE FROM style_profiles") suspend fun clearProfiles()
+    @Query("DELETE FROM style_profiles WHERE groupName=:groupName") suspend fun deleteProfile(groupName:String)
     @Query("DELETE FROM style_samples") suspend fun clearSamples()
     @Query("SELECT * FROM memories WHERE contactId=:contactId ORDER BY rowid") suspend fun memories(contactId: String): List<MemoryRow>
     @Upsert suspend fun put(row: MemoryRow)

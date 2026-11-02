@@ -35,7 +35,7 @@ internal object CounselRuntime {
             CounselController(EncryptedCounselPersistence(store, temporary), temporary, assembler,
                 DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO),
                 VaultModelSettingsRepository(store.vault),
-                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) })
+                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) },styleBiasPreferences=LocalStyleBiasPreferences(application.getSharedPreferences("style-bias",0)))
         }.also { controller = it }
     }
 }
@@ -45,6 +45,15 @@ class CounselViewModel internal constructor(application: Application, private va
     private val pickerSelection=ImportSelectionSession(imports)
     val state = controller.state
     val memory = controller.memory
+    val stylePage=controller.stylePage
+    fun openStyle()=controller.openStyle()
+    fun closeStyle()=controller.closeStyle()
+    fun editStyle(group:RelationGroup,text:String,receipt:String)=controller.editStyle(group,text,receipt)
+    fun editStyleSample(id:String,text:String,receipt:String)=controller.editStyleSample(id,text,receipt)
+    fun deleteStyle(id:String,receipt:String)=controller.deleteStyle(id,receipt)
+    fun resetStyle(group:RelationGroup,receipt:String)=controller.resetStyle(group,receipt)
+    fun saveStyleQuiz(answers:List<String>,receipt:String)=controller.saveStyleQuiz(answers,receipt)
+    fun previewStyle(group:RelationGroup,receipt:String)=controller.previewStyle(group,receipt)
     val memoryPage = controller.memoryPage
     fun openMemory(owner: String?) = controller.openMemory(owner)
     fun closeMemory() = controller.closeMemory()

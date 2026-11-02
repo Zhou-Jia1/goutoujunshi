@@ -65,7 +65,7 @@ class PromptBuilder(
             if (selectedData.isNotBlank()) appendLine("<actual_data_context>${escape(redactor.redact(selectedData))}</actual_data_context>")
             appendLine("<style>${escape(redactor.redact(request.styleContext).limitCodePoints(600))}</style>")
             request.styleSamples.filter { it.relationGroup == group || it.relationGroup == RelationGroup.DEFAULT }.take(5).forEach {
-                appendLine("<style_sample>${escape(redactor.redact(it.text).limitCodePoints(200))}</style_sample>")
+                appendLine("<style_sample>${escape(redactor.redact(it.effectiveText).limitCodePoints(200))}</style_sample>")
             }
             if (request.contactId != null) {
                 appendLine("<current_contact>${escape(redactor.redact(request.contactContext).limitCodePoints(4_000))}</current_contact>")

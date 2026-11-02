@@ -145,6 +145,7 @@ class ImportRepository(private val session: DataSession) {
         // New source material invalidates in-flight computations as well as edits/deletions.
         val owner = requireContact(contactId)
         put(owner.copy(revision = owner.revision + 1, payload = encode(decode<Contact>(owner.payload).copy(sourceRevision = owner.revision + 1))))
+        learnConfirmedStyle(contactId,imported.id)
         invalidateAndRecompute()
         imported.id
     }

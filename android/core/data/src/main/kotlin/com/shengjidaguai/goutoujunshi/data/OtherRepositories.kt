@@ -20,10 +20,25 @@ class PlanRepository(private val session: DataSession) {
         require(plan.chosenReply.isNotBlank() && !plan.learningAuthorized)
         record(contactId, OwnedRecordKind.PLAN.name, plan.id)?.let { row ->
             val previous = decode<ActionPlan>(row.payload)
-            require(previous.copy(consentVersion = 0) == plan.copy(consentVersion = 0)) { "Feedback versions are immutable" }
+            require(previous.copy(consentVersion = 0,learningAuthorized=false) == plan.copy(consentVersion = 0,learningAuthorized=false)) { "Feedback versions are immutable" }
             return@transaction
         }
-        putOwned(contactId, plan.id, OwnedRecordKind.PLAN, encode(plan.copy(consentVersion = currentConsent().consentVersion)))
+        val consent=currentConsent()
+        val eligible=plan.wasEdited && consent.enabled && !consent.paused &&
+            !effectiveCaptureSelection(contactId).blocked && records(contactId,OwnedRecordKind.ANALYSIS_RUN.name).map {decode<AnalysisRun>(it.payload)}
+                .firstOrNull {it.requestId==answer.requestId}?.requestSnapshot?.evidence?.all {captureImportEligible(contactId,it.id)}==true
+        putOwned(contactId, plan.id, OwnedRecordKind.PLAN, encode(plan.copy(consentVersion = consent.consentVersion,learningAuthorized=eligible)))
+        if(eligible) {
+            val owner=decode<Contact>(requireContact(contactId).payload)
+            val sample=StyleSample(id="style:edited:${plan.id}",relationGroup=owner.relationType.group(),text=plan.chosenReply,
+                origin=StyleOrigin.EDITED_REPLY,sourceContactId=contactId,sourceAnswerId=answer.id,consentVersion=consent.consentVersion,
+                sourceRevision=metadata()?.styleRevision ?: 0,createdAt=System.currentTimeMillis())
+            put(StyleSampleRow(sample.id,sample.relationGroup.name,contactId,null,null,answer.id,sample.sourceRevision,consent.consentVersion,encode(sample)))
+            val rows=samples(sample.relationGroup.name).map {decode<StyleSample>(it.payload)}
+            val kept=StylePersistencePolicy.retainSamples(rows).map {it.id}.toSet()
+            rows.filterNot {it.id in kept}.forEach {deleteSample(it.id)}
+            invalidateAndRecompute()
+        }
     }
     suspend fun delete(contactId: String, id: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.PLAN.name, id) }
 }

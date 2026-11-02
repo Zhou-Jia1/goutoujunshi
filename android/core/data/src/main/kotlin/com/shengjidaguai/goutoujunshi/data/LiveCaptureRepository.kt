@@ -59,6 +59,7 @@ class LiveCaptureRepository(private val session:DataSession) {
         val nextContact=decode<Contact>(contact.payload).copy(sourceRevision=contact.revision+1)
         put(ContactRow(owner,nextContact.sourceRevision,encode(nextContact)))
         revokeCaptureDependents(owner,affected)
+        learnConfirmedStyle(owner,id)
         invalidateAndRecompute(ownerId=owner)
         check(current());LiveCaptureReceipt(winner,provenance,false)
     }
