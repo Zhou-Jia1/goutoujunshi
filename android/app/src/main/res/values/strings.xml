@@ -394,4 +394,17 @@
     <string name="style_configure_model">返回</string>
     <string name="style_outbound_scope">发送范围：下方冻结请求中的知识规则、风格生成要求及所选关系组的脱敏本人示例节选。不附带当前聊天证据或联系人的事实记忆。请核对实际服务商、模型及全部内容；仍可能漏检。</string>
     <string name="style_repreview">重新预览风格描述请求</string>
+    <string name="tip_book">技巧本</string>
+    <string name="tip_back">返回</string>
+    <string name="tip_empty">遇到有用的技巧时，可以主动收藏到这里。</string>
+    <string name="tip_save_scope">收藏仅保存所选技巧的名称、解释、对应回复片段和场景，不会另存整段聊天、联系人档案或完整分析，也不会开启长期记忆或风格学习。</string>
+    <string name="habit_positive">你愿意认真表达，已经迈出了很好的一步。可以试试：%1$s</string>
+    <string name="tip_scene_work">工作沟通</string>
+    <string name="tip_scene_intimate">亲密关系</string>
+    <string name="tip_scene_family">家人沟通</string>
+    <string name="tip_scene_social">朋友与社交</string>
+    <string name="tip_scene_mediation">调解沟通</string>
+    <string name="tip_scene_other">其他场景</string>
+    <string name="tip_how_used">在本次回复中：“%1$s”</string>
+    <string name="tip_save_scene">收藏本次场景（合并同名技巧）</string>
 </resources>

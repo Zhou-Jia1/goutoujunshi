@@ -43,6 +43,11 @@ internal object CounselRuntime {
 class CounselViewModel internal constructor(application: Application, private val controller: CounselController, val imports: ImportCoordinator) : AndroidViewModel(application) {
     constructor(application: Application):this(application,CounselRuntime.get(application),CounselRuntime.imports(application))
     private val pickerSelection=ImportSelectionSession(imports)
+    fun removeTip(id:String,receipt:String)=controller.removeTip(id,receipt)
+    fun saveTipScene(origin:String?,receipt:String)=controller.toggleTip(origin,receipt,true)
+    fun openTips()=controller.openTips()
+    fun toggleTip(origin:String?,answerId:String)=controller.toggleTip(origin,answerId)
+    fun dismissHabit(origin:String?,answerId:String,never:Boolean)=controller.dismissHabit(origin,answerId,never)
     val state = controller.state
     val memory = controller.memory
     val stylePage=controller.stylePage

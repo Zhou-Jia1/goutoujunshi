@@ -61,7 +61,7 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
         view.setContent {
             val state by controller.state.collectAsState()
             JunshiTheme(calm=(state.emotion ?: 0)>=8) {
-                FloatingPanelContent(state, onInteraction=copyCollapse::newInteraction,onClose={ close() },onCopy={ text -> copy(text) },
+                FloatingPanelContent(state, onTip={id->controller.toggleTip(origin,id)},onTipScene={id->controller.toggleTip(origin,id,true)},onHabit={id,never->controller.dismissHabit(origin,id,never)}, onInteraction=copyCollapse::newInteraction,onClose={ close() },onCopy={ text -> copy(text) },
                     onPreview={ controller.preparePreview(origin,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },onSendSnapshot={ expected -> controller.analyzeFloating(origin,expected) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },
                     onTone={ tone -> state.answer?.let { controller.rewrite(origin,it.id,com.shengjidaguai.goutoujunshi.domain.Tone.valueOf(tone.name),state.styleBias,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } } },
                     onMore={
@@ -120,7 +120,7 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
 }
 
 @Composable internal fun FloatingPanelContent(state:CounselState,onClose:()->Unit={},onCopy:(String)->Unit={},onPreview:()->Unit={},onSend:()->Unit={},
-    onTone:(Tone)->Unit={},onMore:()->Unit={},onFull:()->Unit={},onFocus:(Boolean)->Unit={},onSupplement:(String)->Unit={},onDrag:(Float)->Unit={},onSide:()->Unit={},onInteraction:()->Unit={},onSendSnapshot:((com.shengjidaguai.goutoujunshi.domain.AnalysisRequest)->Unit)?=null) {
+    onTone:(Tone)->Unit={},onMore:()->Unit={},onFull:()->Unit={},onFocus:(Boolean)->Unit={},onSupplement:(String)->Unit={},onDrag:(Float)->Unit={},onSide:()->Unit={},onInteraction:()->Unit={},onSendSnapshot:((com.shengjidaguai.goutoujunshi.domain.AnalysisRequest)->Unit)?=null, onTip:(String)->Unit={}, onTipScene:(String)->Unit={}, onHabit:(String,Boolean)->Unit={_,_->}) {
     val interaction by rememberUpdatedState(onInteraction)
     fun acted(action:()->Unit) { interaction();action() }
     var editing by remember { mutableStateOf(false) }
@@ -157,6 +157,7 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
                         onCopy={ acted { if(current && safety.showOrdinaryStrategy) onCopy(answer?.reply?.joinToString("\n").orEmpty()) } },
                         onChangeTone={ tone -> acted { if(current && safety.showOrdinaryStrategy) onTone(tone) } },onCaptureMore={ acted(onMore) },onOpenInApp={ acted(onFull) },onClose={ acted(onClose) },
                         footer={
+                            if(current && safety.showOrdinaryStrategy && state.teaching.answerId==answer?.id) com.shengjidaguai.goutoujunshi.ui.TeachingContent(state.teaching,{onTip(state.teaching.receipt)},{never->onHabit(state.teaching.receipt,never)},saveScene={onTipScene(state.teaching.receipt)})
                             if(state.captureSourcePreferred) BodyText(stringResource(R.string.t33_capture_priority))
                             state.floatingCapture?.let { capture ->
                                 if(capture.canSwapPhysicalSide) {

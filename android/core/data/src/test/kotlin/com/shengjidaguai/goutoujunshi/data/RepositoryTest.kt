@@ -21,6 +21,12 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun t51DuplicateFavoritePreservesOriginalSavedTime() = runBlocking {
+        val repo = TipRepository(session)
+        repo.save(Tip("first", "先接后转", "先理解再建议", "我理解", 10))
+        assertEquals("first", repo.save(Tip("second", "先接后转", "先理解再建议", "我明白", 20)))
+        assertEquals(10L, repo.list().single().savedAt)
+    }
     @Test fun floatingIdentityIsTypedOwnedVersionedAndCascades() = runBlocking {
         val repo=FloatingIdentityRepository(session)
         val binding=FloatingIdentityBinding("binding-a","a",FloatingSourceContext("合成应用","合成账号"),"同名",true,0)

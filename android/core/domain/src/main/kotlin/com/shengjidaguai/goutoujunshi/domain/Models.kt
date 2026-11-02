@@ -44,7 +44,7 @@ fun RelationType.group(): RelationGroup = when(this) {
 }
 /** Explicit user-authored style example; the original source text and FKs remain unchanged. */
 @Serializable data class UserStyleSampleEdit(val text:String,val provenanceFingerprint:String,val consentVersion:Long,val sourceRevision:Long,val editedAt:Long)
-@Serializable data class Tip(val id:String="", val name:String="", val explanation:String="", val example:String="", val savedAt:Long=0)
+@Serializable data class Tip(val id:String="", val name:String="", val explanation:String="", val example:String="", val savedAt:Long=0, val scenes:Set<TipScene> = emptySet())
 @Serializable data class Event(val id:String="", val contactId:String?=null, val occurredAt:String?=null, val timePrecision:TimePrecision=TimePrecision.UNKNOWN, val summary:String="", val lineRefs:List<String> = emptyList())
 @Serializable data class ActionPlan(val id:String="", val contactId:String?=null, val chosenReply:String="", val wasEdited:Boolean=false, val status:PlanStatus=PlanStatus.PENDING, val followUp:String?=null,
     val sourceAnswerId:String?=null, val sourceRequestId:String?=null, val conversationId:String="",

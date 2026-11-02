@@ -13,6 +13,9 @@ data class DraftEditStamp(val editorId: String, val sequence: Long, val originCo
 
 /** Never put this state into SavedStateHandle: it can contain temporary private data. */
 data class CounselState(
+    val teaching: TeachingView = TeachingView(),
+    val savedTips: List<Tip> = emptyList(),
+    val tipsReceipt:String? = null,
     val floatingCapture: FloatingCaptureView? = null,
     val floatingPreviewReady:Boolean=false,
     val floatingPreviewRequest:AnalysisRequest?=null,

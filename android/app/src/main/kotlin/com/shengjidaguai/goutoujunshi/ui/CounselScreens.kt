@@ -37,6 +37,9 @@ import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
 /** Event boundary for rendering and exercising the home screen without opening storage. */
 data class CounselUiActions(
+    val toggleTip: (String?,String)->Unit = {_,_->},
+    val saveTipScene: (String?,String)->Unit = {_,_->},
+    val dismissHabit: (String?,String,Boolean)->Unit = {_,_,_->},
     val rewrite: (String?, String, DomainTone, Float) -> Unit = { _, _, _, _ -> },
     val changeScene: (String?, String, RelationType, Goal, String) -> Unit = { _, _, _, _, _ -> },
     val feedback: (String?, String, String?) -> Unit = { _, _, _ -> },
@@ -90,6 +93,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val memory by viewModel.memory.collectAsStateWithLifecycle()
     val shownMemory=memory
     CounselContent(state, CounselUiActions(
+        toggleTip=viewModel::toggleTip, saveTipScene=viewModel::saveTipScene, dismissHabit=viewModel::dismissHabit,
         rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
         initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = { text, _ -> viewModel.importPaste(text) },
         selectContact = viewModel::selectContact, createContact = viewModel::createContact, deleteContact = viewModel::deleteContact,
@@ -248,7 +252,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 val replies = answer?.reply ?: partialReply
                 ReplySuggestionCard(replies, answer == null, (state.emotion ?: 0) >= 8,
                     if(com.shengjidaguai.goutoujunshi.domain.StyleDeviationPolicy.addedEmoji(state.answerRequest?.styleSamples.orEmpty(),replies)) stringResource(R.string.style_emoji_note) else null,
-                    { index -> if (answer != null) replies.getOrNull(index)?.let(::copy) }, { if (answer != null) copy(replies.joinToString("\n")) })
+                    { index -> if (answer != null) replies.getOrNull(index)?.let(::copy) }, { if (answer != null) copy(replies.joinToString("\n")) }, highlight=state.teaching.tip?.example?.takeIf {state.teaching.answerId==answer?.id})
                 if (answer != null && (answer.formatDisordered || answer.freeText.isNotBlank())) {
                     BodyText(stringResource(R.string.answer_format_disordered))
                     BodyText(answer.freeText.ifBlank { answer.rawText })
@@ -264,6 +268,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                     }, enabled = !state.streaming && state.error == null)
                     if (state.feedbackSaved) BodyText(stringResource(R.string.answer_feedback_saved))
                     AnswerDetails(answer, state)
+                    if(state.teaching.answerId==answer.id) TeachingContent(state.teaching,{actions.toggleTip(origin,state.teaching.receipt)},{actions.dismissHabit(origin,state.teaching.receipt,it)},saveScene={actions.saveTipScene(origin,state.teaching.receipt)})
                 } else if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
                     BodyText(listOf(answer.empathy, answer.why.joinToString("\n"), answer.cost, answer.next).filter { it.isNotBlank() }.joinToString("\n\n"))
                 }
@@ -397,6 +402,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val state by viewModel.state.collectAsStateWithLifecycle()
     var memories by remember { mutableStateOf(false) }
     var styles by remember { mutableStateOf(false) }
+    var tips by remember {mutableStateOf(false)}
+    if(tips) {androidx.activity.compose.BackHandler {tips=false};TipsScreen(viewModel) {tips=false};return}
     if(styles) {androidx.activity.compose.BackHandler {styles=false};StyleScreen(viewModel) {styles=false};return}
     if(memories) {
         androidx.activity.compose.BackHandler { memories=false }
@@ -406,12 +413,12 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     LaunchedEffect(Unit) { viewModel.openMemory(null) }
     ModelSettingsContent(state, viewModel::saveModelSettings, viewModel::testModelConnection,
         viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize,
-        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null,openStyle={styles=true})
+        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null,openStyle={styles=true},openTips={tips=true})
 }
 
 @Composable fun ModelSettingsContent(state: CounselState,
     onSave: (SavedModelSettings, String?, Boolean) -> Unit, onTest: () -> Unit,
-    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null,openStyle:(()->Unit)?=null) {
+    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null,openStyle:(()->Unit)?=null,openTips:(()->Unit)?=null) {
     var confirmClear by remember { mutableStateOf(false) }
     val snapshot = state.modelSettings
     val defaults = snapshot.saved.takeIf { it.baseUrl.isNotBlank() } ?: ModelPresets.openAi.let { SavedModelSettings(false, it.baseUrl, it.model, it.providerLabel) }
@@ -426,6 +433,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     LazyColumn(Modifier.fillMaxSize().testTag("model-settings"), contentPadding = PaddingValues(JunshiTheme.spacing.l), verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
         item { JunshiTopBar(stringResource(R.string.nav_me)) }
         if(openMemory!=null) item { SecondaryButton(stringResource(R.string.memory_title),openMemory) }
+        if(openTips!=null) item {SecondaryButton(stringResource(R.string.tip_book),openTips)}
         if(openStyle!=null) item {SecondaryButton(stringResource(R.string.style_title),openStyle)}
         item { BodyText(stringResource(R.string.live_explanation)) }
         item { ChoiceField(stringResource(R.string.model_mode), stringResource(if (live) R.string.model_live else R.string.model_demo), listOf(

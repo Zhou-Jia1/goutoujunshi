@@ -29,6 +29,10 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
+    suspend fun tips(): List<Tip> = emptyList()
+    suspend fun favorite(tip:Tip, request:AnalysisRequest?, answerId:String, saved:Boolean, current:()->Boolean) { error("Teaching unavailable") }
+    suspend fun habit(request:AnalysisRequest,answerId:String,day:String,disabled:String?=null,current:()->Boolean):Boolean = false
+
     suspend fun styleContext(owner:String,group:RelationGroup):StyleOutboundContext = StyleOutboundContext()
     suspend fun styleSnapshot():StyleManagementSnapshot { error("Style unavailable") }
     suspend fun styleEdit(group:RelationGroup,text:String,stamp:WriteStamp,current:()->Boolean) { error("Style unavailable") }
@@ -78,6 +82,9 @@ class EncryptedCounselPersistence(
     private val temporary: TemporarySessionStore,
 ) : CounselPersistence {
     private var session: DataSession? = null
+    override suspend fun tips() = TipRepository(checkNotNull(session)).list()
+    override suspend fun favorite(tip:Tip, request:AnalysisRequest?, answerId:String, saved:Boolean, current:()->Boolean) { TeachingRepository(checkNotNull(session)).favorite(tip,request,answerId,saved,current) }
+    override suspend fun habit(request:AnalysisRequest,answerId:String,day:String,disabled:String?,current:()->Boolean) = TeachingRepository(checkNotNull(session)).habit(request,answerId,day,disabled,current)
     private fun contactsRepo() = ContactRepository(checkNotNull(session))
     private fun conversationsRepo() = ConversationRepository(checkNotNull(session))
     private fun memoryRepo() = MemoryRepository(checkNotNull(session))
@@ -168,7 +175,88 @@ class CounselController(
     private val wallClockMillis: () -> Long = { System.currentTimeMillis() },
     private val memoryNoticeDelay: suspend (Long) -> Unit = { delay(it) },
     private val styleBiasPreferences:StyleBiasPreferences=MemoryStyleBiasPreferences(),
+    private val teachingZone:()->java.time.ZoneId = {java.time.ZoneId.systemDefault()},
 ) {
+    private val teaching=TeachingCoordinator(wallClockMillis, teachingZone)
+    fun openTips()=enqueue {
+        val authority=authoritySnapshot()
+        if(!state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        try { val tips=persistence.tips();authorized(authority) {set(state.value.copy(savedTips=tips,tipsReceipt=UUID.randomUUID().toString()))} }
+        catch(_:Exception) {set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}
+    }
+    fun removeTip(id:String,receipt:String)=enqueue {
+        val authority=authoritySnapshot()
+        if(receipt!=state.value.tipsReceipt || !state.value.lockState.canDisplaySensitiveContent) return@enqueue
+        val tip=state.value.savedTips.firstOrNull {it.id==id} ?: return@enqueue
+        try {
+            persistence.favorite(tip,null,"",false) {authorityCurrent(authority) && state.value.tipsReceipt==receipt}
+            val tips=persistence.tips()
+            authorized(authority) {set(state.value.copy(savedTips=tips,tipsReceipt=UUID.randomUUID().toString(),teaching=state.value.teaching.copy(saved=tips.any {it.name==state.value.teaching.tip?.name})))}
+        } catch(_:Exception) {if(authorityCurrent(authority)) set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}
+    }
+    fun toggleTip(origin:String?,receipt:String,saveScene:Boolean=false)=enqueueFrom(origin) { operationEpoch ->
+        if(receipt.isBlank() || receipt!=state.value.teaching.receipt) return@enqueueFrom
+        val answerId=state.value.teaching.answerId
+        val authority=authoritySnapshot(operationEpoch)
+        if(state.value.answer?.id!=answerId || state.value.streaming || !ordinaryAllowed() || !answerSourceCurrent()) return@enqueueFrom
+        val tip=state.value.teaching.takeIf {it.answerId==answerId}?.tip ?: return@enqueueFrom
+        val request=state.value.answerRequest?.takeIf {it.contactId!=null}
+        try {
+            persistence.favorite(tip,request,answerId,saveScene || !state.value.teaching.saved) {authorityCurrent(authority) && state.value.answer?.id==answerId && ordinaryAllowed()}
+            val tips=persistence.tips()
+            authorized(authority) {set(state.value.copy(savedTips=tips,teaching=state.value.teaching.copy(saved=tips.any {it.name==tip.name},sceneRecorded=tips.any {it.name==tip.name && it.scenes.containsAll(tip.scenes)})))}
+        } catch(_:Exception) {if(authorityCurrent(authority)) set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}
+    }
+    fun dismissHabit(origin:String?,receipt:String,never:Boolean)=enqueueFrom(origin) { operationEpoch ->
+        if(receipt.isBlank() || receipt!=state.value.teaching.receipt) return@enqueueFrom
+        val answerId=state.value.teaching.answerId
+        val authority=authoritySnapshot(operationEpoch)
+        val current=state.value
+        val text=current.teaching.habit ?: return@enqueueFrom
+        if(current.answer?.id!=answerId || current.teaching.answerId!=answerId || !ordinaryAllowed() || !answerSourceCurrent()) return@enqueueFrom
+        try {
+            if(never) {
+                val request=checkNotNull(current.answerRequest)
+                if(request.contactId!=null) persistence.habit(request,answerId,teaching.day(),text) {authorityCurrent(authority) && state.value.answer?.id==answerId}
+                else authorized(authority) {teaching.temporaryHabit(checkNotNull(origin),text,true)}
+            }
+            authorized(authority) {set(state.value.copy(teaching=current.teaching.copy(habit=null)))}
+        } catch(_:Exception) {if(authorityCurrent(authority)) set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}
+    }
+    private suspend fun showTeaching(request:AnalysisRequest,answer:StructuredAnswer,token:Long) {
+        if(TeachingPolicy.tip(answer)==null && (answer.habit.isBlank() || state.value.answerDemo)) return
+        if(!ordinaryAllowed() || !isCurrentMemoryResult(request,token) || !answerSourceCurrent()) return
+        val authority=authoritySnapshot(token)
+        try {
+            val tips=persistence.tips()
+            val show=if(state.value.answerDemo) false else if(request.contactId!=null) persistence.habit(request,answer.id,teaching.day()) {authorityCurrent(authority) && state.value.answer?.id==answer.id && ordinaryAllowed()}
+                else authorized(authority) {teaching.temporaryHabit(request.conversationId,answer.habit)}
+            authorized(authority) {set(state.value.copy(teaching=teaching.view(answer,request,tips,show),savedTips=tips))}
+        } catch(_:Exception) {if(authorityCurrent(authority)) set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))}
+    }
+    /** Restore only a presentation of an already authoritative answer. This never starts a run,
+     * changes a request identity, or reads/consumes persistent or temporary Habit metadata. */
+    private suspend fun restoreTeaching(expectedEpoch:Long,expectedLock:Long) {
+        val current=state.value
+        val answer=current.answer ?: return
+        val request=current.answerRequest ?: return
+        if(TeachingPolicy.tip(answer)==null) return
+        val stamp=current.answerModalStamp()
+        fun retained()=synchronized(intentLock) {
+            epoch.get()==expectedEpoch && lockGeneration==expectedLock && authorityLock.canDisplaySensitiveContent &&
+                state.value.answerModalStamp()==stamp && !state.value.streaming && ordinaryAllowed() && state.value.hasCurrentAnswerSource()
+        }
+        if(!retained()) return
+        try {
+            if(!answerSourceCurrent() || !retained()) return
+            val tips=persistence.tips()
+            if(!retained() || !answerSourceCurrent()) return
+            synchronized(intentLock) {
+                if(retained()) set(state.value.copy(teaching=teaching.view(answer,request,tips,showHabit=false),savedTips=tips))
+            }
+        } catch(cancelled:CancellationException) {throw cancelled}
+        catch(_:Exception) {synchronized(intentLock) {if(retained()) set(state.value.copy(teaching=TeachingView(),error=CounselError("STORAGE_UNAVAILABLE",true)))}}
+    }
     private val styleCoordinator=StyleCoordinator()
     val stylePage:StateFlow<StyleUiState> = styleCoordinator.state.asStateFlow()
     private var pendingStyle:StyleDescriptionLease?=null
@@ -263,6 +351,7 @@ class CounselController(
         mutableMemoryPage.value=MemoryUiState()
     }
     private fun clearInlineMemory() {
+        teaching.reset()
         styleCoordinator.revoke()
         closeMemory();pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null;memoryDisplay.cancelNotice()
         mutableMemory.value=MemoryUiState(snapshot=MemorySnapshot(consent=memory.value.consent))
@@ -739,19 +828,27 @@ class CounselController(
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
         revokeFloatingCaptureLocked()
         authorityLock = lock
+        teaching.reset()
         styleCoordinator.revoke()
         lockGeneration++
         epoch.incrementAndGet()
         // Immediate display/network revocation; actor-owned fields are cleaned in mailbox order.
         stream?.cancel(); waitingJob?.cancel(); testJob?.cancel()
-        mutableState.value = state.value.copy(lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
+        mutableState.value = state.value.copy(teaching=TeachingView(),savedTips=emptyList(),tipsReceipt=null,lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
             partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
-        mailbox.trySend { clearInlineMemory(); invalidateRun() }
+        val teachingEpoch=epoch.get()
+        val teachingLock=lockGeneration
+        mailbox.trySend {
+            clearInlineMemory(); invalidateRun()
+            if(lock.canDisplaySensitiveContent) restoreTeaching(teachingEpoch,teachingLock)
+        }
     }
     private fun set(next: CounselState) = synchronized(intentLock) {
         // Ordinary state snapshots never own the lock, including freshly constructed sessions.
         val floatingPreview=previewRequest?.takeIf { it.floating && previewAuthority?.let(::authorityCurrent)==true }
-        val visible = next.copy(lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
+        if(next.conversation?.id!=state.value.conversation?.id || !authorityLock.canDisplaySensitiveContent) teaching.reset()
+        val teachingVisible=next.teaching.takeIf {next.answer?.id==it.answerId && !next.streaming && next.hasCurrentAnswerSource() && SafetyPolicy.evaluate(next.emotion,next.safety.upgrade(next.answer?.safety ?: SafetyLevel.NONE),SafetyLevel.NONE,authorityLock).showOrdinaryStrategy} ?: TeachingView()
+        val visible = next.copy(teaching=teachingVisible,lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
             if (authorityLock.canDisplaySensitiveContent) it else it.copy(streaming=false, testingConnection=false,
                 partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         }
@@ -902,6 +999,7 @@ class CounselController(
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {
+        val teachingAuthority=synchronized(intentLock) {epoch.get() to lockGeneration}
         clearInlineMemory()
         invalidateRun()
         recovery = Recovery.Load(contact)
@@ -970,6 +1068,7 @@ class CounselController(
         }
         // A rejected publication must leave the previous temporary lease usable.
         oldCredential?.let { temporary.remove(it) }
+        restoreTeaching(teachingAuthority.first,teachingAuthority.second)
         return true
     }
     fun selectContact(id: String) {
@@ -1632,6 +1731,7 @@ class CounselController(
                     goal = state.value.manualGoal ?: answer.scene?.goal ?: state.value.goal,
                     formality = state.value.manualFormality ?: answer.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: state.value.formality, styleBias = request.styleBias, tone = request.tone ?: state.value.tone))
                 }
+                showTeaching(request,answer,token)
                 rememberCompleted(request,answer,token)
             }
         }
