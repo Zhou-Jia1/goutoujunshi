@@ -4,6 +4,26 @@ import com.shengjidaguai.goutoujunshi.domain.*
 
 /** Explicit saves use the current session transaction, independently of learning consent. */
 class TeachingRepository(private val session: DataSession) {
+    suspend fun favoritePractice(lease:PracticeSummaryLease,current:()->Boolean)=session.transaction {
+        check(current())
+        val source=lease.source
+        source.contactId?.let {owner ->
+            check(requireContact(owner).revision==source.sourceRevision)
+            val conversation=requireNotNull(conversation(owner,source.conversationId))
+            check(decode<Conversation>(conversation.payload).revision==source.conversationRevision)
+            val privacy=records(owner,OwnedRecordKind.REDACTION.name).singleOrNull()?.let {decode<RedactionProfile>(it.payload)} ?: RedactionProfile()
+            check(privacy.revision==source.privacyRevision && !effectiveCaptureSelection(owner).blocked)
+            check(source.evidence.all {block -> captureImportEligible(owner,block.id) &&
+                imported(owner,block.id)?.let {decode<ChatImport>(it.payload).sourceType.name==block.source}==true &&
+                lines(owner,block.id).map {decode<ChatLine>(it.payload)}==block.lines})
+        }
+        val tip=lease.tip
+        val previous=tipNamed(tip.name)?.let {decode<Tip>(it.payload)}
+        check(current())
+        val merged=TeachingPolicy.merge(previous,tip)
+        put(TipRow(merged.id,merged.name,encode(merged)))
+        check(current())
+    }
     private suspend fun JunshiDao.validate(request: AnalysisRequest, answerId: String, current: () -> Boolean): StructuredAnswer {
         check(current())
         val owner = requireNotNull(request.contactId)

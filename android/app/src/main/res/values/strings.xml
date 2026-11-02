@@ -190,7 +190,6 @@
     <string name="contact_pending">尚未记录是否发送</string>
     <string name="contact_talk">和军师聊聊 TA</string>
     <string name="contact_practice">对练</string>
-    <string name="contact_practice_pending">对练入口已预留；完整对练将在后续版本开放。现在可以先和军师聊聊。</string>
     <string name="contact_import">导入记录（导入时间）</string>
     <string name="contact_analysis">模型分析（本机记录的完成时间）</string>
     <string name="contact_action">主动行动（未记录行动时间）</string>
@@ -407,4 +406,27 @@
     <string name="tip_scene_other">其他场景</string>
     <string name="tip_how_used">在本次回复中：“%1$s”</string>
     <string name="tip_save_scene">收藏本次场景（合并同名技巧）</string>
+    <string name="practice_privacy">对练仅保留在当前进程，退出或锁定后清除。结束总结可主动收藏到技巧本。</string>
+    <string name="practice_difficulty">对练难度</string>
+    <string name="practice_cooperative">配合</string>
+    <string name="practice_normal">正常</string>
+    <string name="practice_difficult">难搞</string>
+    <string name="practice_input">你会怎么回应？</string>
+    <string name="practice_open">预览开场请求</string>
+    <string name="practice_next">预览这一轮</string>
+    <string name="practice_end">结束并预览总结请求</string>
+    <string name="practice_exit">退出对练</string>
+    <string name="practice_wait">军师正在模拟对方的反应</string>
+    <string name="practice_summary">这次对练的小结</string>
+    <string name="practice_save">只收藏这条技巧</string>
+    <string name="practice_saved">已收藏到技巧本</string>
+    <string name="practice_scope">本次发送所选对方样本、选中的最近对练和本轮完整输入；难度仅用于模拟。全部字段使用同一屏蔽规则。</string>
+    <string name="practice_selected_scope">选中%1$d轮／省略%2$d轮；对方样本选中%3$d条／省略%4$d条；仅基于选中的最近轮次总结。</string>
+    <string name="practice_range">本轮必需内容脱敏后超出发送范围。请缩短本轮输入，或退出后调整对方消息和屏蔽规则；当前对练仍保留在内存。</string>
+    <string name="practice_needs_messages">先导入并确认这位联系人的对方消息，再开始对练。</string>
+    <string name="practice_source_changed">对方消息来源已改变，请重新进入对练。</string>
+    <string name="practice_invalid">这一轮格式不完整，可以重试。</string>
+    <string name="practice_safety_unavailable">安全检查暂时不可用，无法开始对练。请稍后重试。</string>
+    <string name="practice_demo_play">确认并演示这一轮</string>
+    <string name="practice_full_body">完整发送正文（点击展开）</string>
 </resources>

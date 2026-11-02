@@ -23,6 +23,15 @@ class DemoAnalysisProvider(
         try {
             // Exercise the same integrity, identity, knowledge routing and redaction gate as BYOK.
             assembler.prepare(request)
+            request.practice?.let {
+                val text=when(it.stage) {
+                    PracticeStage.OPENING->"{\"counterpartLine\":\"你打算怎么安排这件事？\"}"
+                    PracticeStage.ROUND->"{\"counterpartLine\":\"那你希望我先做什么？\",\"feedback\":\"你说出了安排，可以再明确希望对方配合的下一步。\",\"betterVersion\":\"我先整理方案，明天下午请你帮我确认时间，可以吗？\"}"
+                    PracticeStage.SUMMARY->"{\"name\":\"说清下一步\",\"explanation\":\"提出安排时，给对方一个明确且可以回应的下一步。\",\"example\":\"明天下午请你帮我确认时间，可以吗？\"}"
+                }
+                emit(AnalysisChunk.Completed(StructuredAnswer(freeText=text)))
+                return@flow
+            }
             val group = (request.relationType ?: RelationType.ACQUAINTANCE).group().name.lowercase()
             val text = readExample("demo/$group.txt")
             val parser = SectionParser()
