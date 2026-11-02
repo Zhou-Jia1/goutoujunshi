@@ -23,6 +23,7 @@ import kotlinx.serialization.Serializable
     val redactionProfile:RedactionProfile=RedactionProfile(),
     val actualDataContext:OutboundDataContext=OutboundDataContext(),
     val floating:Boolean=false,
+    val practice:PracticeRequestData?=null,
 )
 interface AnalysisProvider { val kind:ProviderKind; fun analyze(request:AnalysisRequest):Flow<AnalysisChunk> }
 @Serializable sealed interface AnalysisChunk {
@@ -51,7 +52,7 @@ interface PromptAssembler { fun prepare(request:AnalysisRequest):PreparedPrompt 
     init { require(path.isNotBlank()); require(sha256.matches(Regex("[a-fA-F0-9]{64}"))); require(characters > 0) }
 }
 @Serializable data class PreparedPrompt(val system:String, val user:String, val references:List<KnowledgeReference>, val knowledgeVersion:String,
-    val redactionCount:Int=0, val safeAliases:Map<String,String> = emptyMap()) {
+    val redactionCount:Int=0, val safeAliases:Map<String,String> = emptyMap(),val practiceSelection:PracticeSelection?=null) {
     init { require(system.isNotBlank() && user.isNotBlank()); require(references.size in 1..3); require(knowledgeVersion.isNotBlank()) }
 }
 

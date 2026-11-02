@@ -21,6 +21,7 @@ internal object CounselRuntime {
         { application.getSharedPreferences("import-notice", 0).edit().putBoolean("accepted", true).apply() },
         com.shengjidaguai.goutoujunshi.data.ocr.PaddleImageReader(application)::read
     ).also { importer = it }
+    internal fun localSafetyClassifier(loadVocabulary:()->String):(String)->SafetyLevel = CachedLocalSafetyClassifier(loadVocabulary)::classify
     @Volatile private var controller: CounselController? = null
     fun get(application: Application): CounselController = controller ?: synchronized(this) {
         controller ?: run {
@@ -32,10 +33,11 @@ internal object CounselRuntime {
                 override fun prepare(request: AnalysisRequest) = delegate.prepare(request)
             }
             val assembler = FrozenPromptAssembler(builder)
+            val localSafety=localSafetyClassifier { application.assets.open("crisis-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} }
             CounselController(EncryptedCounselPersistence(store, temporary), temporary, assembler,
                 DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO),
                 VaultModelSettingsRepository(store.vault),
-                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) },styleBiasPreferences=LocalStyleBiasPreferences(application.getSharedPreferences("style-bias",0)))
+                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) },localSafety=localSafety,styleBiasPreferences=LocalStyleBiasPreferences(application.getSharedPreferences("style-bias",0)))
         }.also { controller = it }
     }
 }
@@ -48,6 +50,14 @@ class CounselViewModel internal constructor(application: Application, private va
     fun openTips()=controller.openTips()
     fun toggleTip(origin:String?,answerId:String)=controller.toggleTip(origin,answerId)
     fun dismissHabit(origin:String?,answerId:String,never:Boolean)=controller.dismissHabit(origin,answerId,never)
+    fun enterPractice(origin:String?)=controller.enterPractice(origin)
+    fun editPracticeInput(origin:String?,id:String,text:String)=controller.editPracticeInput(origin,id,text)
+    fun practiceDifficulty(origin:String?,id:String,difficulty:PracticeDifficulty)=controller.practiceDifficulty(origin,id,difficulty)
+    fun previewPractice(origin:String?,id:String,end:Boolean)=controller.previewPractice(origin,id,end)
+    fun sendPractice(origin:String?,id:String,receipt:String)=controller.sendPractice(origin,id,receipt)
+    fun exitPractice(origin:String?,id:String)=controller.exitPractice(origin,id)
+    fun savePracticeSummary(origin:String?,id:String,receipt:String)=controller.savePracticeSummary(origin,id,receipt)
+    fun practiceForContact(id:String)=controller.practiceForContact(id)
     val state = controller.state
     val memory = controller.memory
     val stylePage=controller.stylePage

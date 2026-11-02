@@ -13,6 +13,7 @@ data class DraftEditStamp(val editorId: String, val sequence: Long, val originCo
 
 /** Never put this state into SavedStateHandle: it can contain temporary private data. */
 data class CounselState(
+    val practice:PracticeView?=null,
     val teaching: TeachingView = TeachingView(),
     val savedTips: List<Tip> = emptyList(),
     val tipsReceipt:String? = null,
@@ -64,7 +65,13 @@ data class CounselState(
     val memoryContext: OutboundDataContext = OutboundDataContext(),
     val memoryRetention: MemoryRetentionView = MemoryRetentionView(),
     val sourceSelectionBlocked:Boolean=false,val captureSourcePreferred:Boolean=false,
+    val practicePreviewReceipt:String?=null,
 )
+
+/** The practice route and all input remain RAM only. */
+data class PracticeView(val id:String,val revision:Long,val difficulty:PracticeDifficulty=PracticeDifficulty.NORMAL,
+    val turns:List<PracticeRound> = emptyList(),val draft:String="",val summary:Tip?=null,val summaryReceipt:String?=null,
+    val saved:Boolean=false,val stage:PracticeStage=PracticeStage.OPENING)
 
 /** Also used by the UI: invalid historic answers have no source-dependent actions or private modals. */
 fun CounselState.hasCurrentAnswerSource(): Boolean {

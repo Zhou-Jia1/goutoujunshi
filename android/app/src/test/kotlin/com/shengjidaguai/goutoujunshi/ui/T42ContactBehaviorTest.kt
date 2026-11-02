@@ -21,20 +21,24 @@ import org.robolectric.annotation.Config
 class T42ContactBehaviorTest {
     @get:Rule val compose = createComposeRule()
     private val contact = Contact("fixture", "虚构联系人", notes="仅本机手工资料")
-    @Test fun ownerChangeDismissesPrivateEditorAndSourceAndPracticeDoesNotPretendToRun() {
+    @Test fun ownerChangeDismissesPrivateEditorAndPracticeDispatchesCurrentOwnerWithoutStartingTalk() {
         var state by mutableStateOf(ContactDetailState(contact.id, data=ContactDetails(contact)))
         var talks = 0
-        compose.setContent { JunshiTheme { Surface { ContactDetailContent(state, {}, {}, { _, _ -> }, {}, {}, { talks++ }) } } }
+        val practiceOwners = mutableListOf<String>()
+        compose.setContent { JunshiTheme { Surface { ContactDetailContent(state, {}, {}, { _, _ -> }, {}, {}, { talks++ }, practice = { practiceOwners += it }) } } }
         compose.onNodeWithText("对练").performClick()
-        compose.onNodeWithText("对练入口已预留；完整对练将在后续版本开放。现在可以先和军师聊聊。").assertIsDisplayed()
-        assertEquals(0, talks)
-        compose.onNodeWithText("关闭").performClick()
+        compose.runOnIdle { assertEquals(listOf(contact.id), practiceOwners); assertEquals(0, talks) }
+        compose.onNode(isDialog()).assertDoesNotExist()
         compose.onNodeWithTag("contact-detail-list").performScrollToNode(hasText("编辑档案"))
         compose.onNodeWithText("编辑档案").performClick()
         compose.onNodeWithText("仅本机手工资料").assertExists()
         compose.runOnIdle { val b=Contact("b", "另一位虚构联系人"); state=ContactDetailState(b.id, data=ContactDetails(b)) }
         compose.onNode(isDialog()).assertDoesNotExist()
         compose.onNodeWithText("仅本机手工资料").assertDoesNotExist()
+        compose.onNodeWithTag("contact-detail-list").performScrollToNode(hasText("对练"))
+        compose.onNodeWithText("对练").performClick()
+        compose.runOnIdle { assertEquals(listOf(contact.id, "b"), practiceOwners); assertEquals(0, talks) }
+        compose.onNode(isDialog()).assertDoesNotExist()
     }
     @Test fun memoryAndActionLabelsDoNotTurnIntoChatFactsOrLearningConsent() {
         val data=ContactDetails(contact, plans=listOf(ActionPlan("action", contact.id, "虚构修改", true, PlanStatus.SENT)),

@@ -29,6 +29,8 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
+    suspend fun practiceSourceSnapshot(contact:Contact,conversationId:String):StoredCounsel? = null
+    suspend fun favoritePractice(lease:PracticeSummaryLease,current:()->Boolean) {error("Practice save unavailable")}
     suspend fun tips(): List<Tip> = emptyList()
     suspend fun favorite(tip:Tip, request:AnalysisRequest?, answerId:String, saved:Boolean, current:()->Boolean) { error("Teaching unavailable") }
     suspend fun habit(request:AnalysisRequest,answerId:String,day:String,disabled:String?=null,current:()->Boolean):Boolean = false
@@ -81,6 +83,13 @@ class EncryptedCounselPersistence(
     private val store: EncryptedDataStore,
     private val temporary: TemporarySessionStore,
 ) : CounselPersistence {
+    override suspend fun practiceSourceSnapshot(contact:Contact,conversationId:String):StoredCounsel? {
+        if(contactsRepo().get(contact.id)?.sourceRevision!=contact.sourceRevision) return null
+        val conversation=conversationsRepo().list(contact.id).firstOrNull {it.id==conversationId} ?: return null
+        val selected=LiveCaptureRepository(checkNotNull(session)).evidence(contact.id)
+        return StoredCounsel(conversation,conversationsRepo().draft(contact.id,conversationId).orEmpty(),conversationsRepo().messages(contact.id,conversationId),selected.evidence,TimelineRepository(checkNotNull(session)).runs(contact.id),SummaryRepository(checkNotNull(session)).list(contact.id),PlanRepository(checkNotNull(session)).list(contact.id),sourceBlocked=selected.blocked,capturePreferred=selected.preferred)
+    }
+    override suspend fun favoritePractice(lease:PracticeSummaryLease,current:()->Boolean) {TeachingRepository(checkNotNull(session)).favoritePractice(lease,current)}
     private var session: DataSession? = null
     override suspend fun tips() = TipRepository(checkNotNull(session)).list()
     override suspend fun favorite(tip:Tip, request:AnalysisRequest?, answerId:String, saved:Boolean, current:()->Boolean) { TeachingRepository(checkNotNull(session)).favorite(tip,request,answerId,saved,current) }
@@ -175,8 +184,182 @@ class CounselController(
     private val wallClockMillis: () -> Long = { System.currentTimeMillis() },
     private val memoryNoticeDelay: suspend (Long) -> Unit = { delay(it) },
     private val styleBiasPreferences:StyleBiasPreferences=MemoryStyleBiasPreferences(),
+    private val localSafety:(String)->SafetyLevel = {error("Local safety vocabulary required")},
     private val teachingZone:()->java.time.ZoneId = {java.time.ZoneId.systemDefault()},
 ) {
+    private var practiceSource:PracticeSourceLease?=null
+    private var practiceMain:CounselState?=null
+    private var practiceSummary:PracticeSummaryLease?=null
+    private fun revokePracticeSource() {
+        invalidateRun();practiceSummary=null;practiceSource=null;practiceMain=null
+        set(state.value.copy(practice=null,answer=null,answerRequest=null,error=CounselError("PRACTICE_SOURCE_CHANGED")))
+    }
+    fun practiceForContact(id:String):Unit = synchronized(intentLock) {
+        revokeFloatingCaptureLocked()
+        val authority=authoritySnapshot(epoch.incrementAndGet())
+        stream?.cancel()
+        mailbox.trySend contactEntry@{
+            authorized(authority) {Unit}
+            val contact=persistence.contacts().firstOrNull {it.id==id} ?: return@contactEntry
+            authorized(authority) {Unit}
+            if(!loadContact(contact,expectedEpoch=authority.epoch)) return@contactEntry
+            authorized(authority) {closeContactDetails()}
+            enterPracticeNow(authority)
+        }
+        Unit
+    }
+    private fun practiceRetained(request:AnalysisRequest):Boolean {
+        val data=request.practice ?: return false
+        val current=state.value
+        val view=current.practice ?: return false
+        val lease=practiceSource ?: return false
+        return view.id==data.sessionId && view.revision==data.revision && view.stage==data.stage &&
+            lease.contactId==current.currentContact?.id && lease.sourceRevision==(current.currentContact?.sourceRevision ?: 0) &&
+            lease.conversationId==current.conversation?.id && lease.conversationRevision==current.conversation?.revision &&
+            lease.evidence==current.evidence && lease.privacyRevision==current.redactionProfile.revision && lease.configRevision==settings.saved.revision
+    }
+    private suspend fun practiceSourcesCurrent(lease:PracticeSourceLease,checkCurrent:()->Unit):Boolean {
+        checkCurrent()
+        if(lease!=practiceSource) return false
+        val owner=lease.contactId ?: return state.value.evidence==lease.evidence
+        val contacts=persistence.contacts()
+        checkCurrent()
+        val contact=contacts.firstOrNull {it.id==owner && it.sourceRevision==lease.sourceRevision} ?: return false
+        val stored=persistence.practiceSourceSnapshot(contact,lease.conversationId)
+        checkCurrent()
+        if(stored==null) return false
+        val privacy=persistence.redactionProfile(owner)
+        checkCurrent()
+        return lease==practiceSource && !stored.sourceBlocked && stored.evidence==lease.evidence &&
+            stored.conversation.id==lease.conversationId && stored.conversation.revision==lease.conversationRevision && privacy.revision==lease.privacyRevision
+    }
+    fun enterPractice(origin:String?)=enqueueFrom(origin,true) { operationEpoch -> enterPracticeNow(authoritySnapshot(operationEpoch)) }
+    private suspend fun enterPracticeNow(authority:RunAuthority) {
+        authorized(authority) {Unit}
+        if(!state.value.lockState.canDisplaySensitiveContent || state.value.sourceSelectionBlocked || state.value.safety==SafetyLevel.CRISIS) return
+        val current=state.value
+        try {localSafety("")} catch(_:Exception) {set(current.copy(error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return}
+        val conversation=current.conversation ?: return
+        val lease=PracticeSourceLease(current.currentContact?.id,current.currentContact?.sourceRevision ?: 0,conversation.id,conversation.revision,current.evidence,current.redactionProfile.revision,settings.saved.revision)
+        if(lease.opponents().isEmpty()) {set(current.copy(error=CounselError("PRACTICE_NEEDS_MESSAGES")));return}
+        invalidateRun();teaching.reset()
+        ledger=ledger.copy(runs=ledger.runs.map {if(it.status==RunStatus.RUNNING) it.copy(status=RunStatus.CANCELLED) else it})
+        practiceMain=current.copy(streaming=false,partial=emptyMap(),currentRequest=null,preview=null,outboundBody=null,teaching=TeachingView())
+        practiceSource=lease;practiceSummary=null
+        val retained=practiceSourcesCurrent(lease) {authorized(authority) {Unit}}
+        authorized(authority) {if(!retained) {practiceSource=null;practiceMain=null;set(state.value.copy(error=CounselError("PRACTICE_SOURCE_CHANGED")))}}
+        if(!retained) return
+        authorized(authority) {set(state.value.copy(practice=PracticeView(UUID.randomUUID().toString(),0),answer=null,answerRequest=null,teaching=TeachingView(),error=null))}
+    }
+    fun editPracticeInput(origin:String?,id:String,text:String) {
+        synchronized(intentLock) {
+            if(state.value.conversation?.id!=origin || state.value.practice?.id!=id) return
+            val safety=try {localSafety(text)} catch(_:Exception) {epoch.incrementAndGet();invalidateRun();set(state.value.copy(error=CounselError("PRACTICE_SAFETY_UNAVAILABLE")));return}
+            if(safety==SafetyLevel.CRISIS) {
+                epoch.incrementAndGet();invalidateRun();practiceSource=null;practiceMain=null;practiceSummary=null
+                set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS,teaching=TeachingView()));return
+            }
+        }
+        enqueueFrom(origin,true) { operationEpoch ->
+        val view=state.value.practice?.takeIf {it.id==id} ?: return@enqueueFrom
+        val next=if(text.codePointCount(0,text.length)>2000) text.substring(0,text.offsetByCodePoints(0,2000)) else text
+        invalidateRun();practiceSummary=null
+        authorized(authoritySnapshot(operationEpoch)) {set(state.value.copy(practice=view.copy(revision=view.revision+1,draft=next),error=null))}
+    }
+    }
+    fun practiceDifficulty(origin:String?,id:String,difficulty:PracticeDifficulty)=enqueueFrom(origin,true) { operationEpoch ->
+        val view=state.value.practice?.takeIf {it.id==id} ?: return@enqueueFrom
+        invalidateRun();practiceSummary=null
+        authorized(authoritySnapshot(operationEpoch)) {set(state.value.copy(practice=view.copy(revision=view.revision+1,difficulty=difficulty,summary=null,summaryReceipt=null,saved=false)))}
+    }
+    fun previewPractice(origin:String?,id:String,end:Boolean=false)=enqueueFrom(origin) { operationEpoch ->
+        val authority=authoritySnapshot(operationEpoch)
+        val view=state.value.practice?.takeIf {it.id==id} ?: return@enqueueFrom
+        val lease=practiceSource ?: return@enqueueFrom
+        if(state.value.streaming || view.summary!=null || state.value.safety==SafetyLevel.CRISIS) return@enqueueFrom
+        val retained=practiceSourcesCurrent(lease) {authorized(authority) {Unit}}
+        authorized(authority) {if(!retained) revokePracticeSource()}
+        if(!retained) return@enqueueFrom
+        if(!end && view.turns.isNotEmpty() && (view.draft.isBlank() || view.turns.size>=20)) return@enqueueFrom
+        val stage=if(end) PracticeStage.SUMMARY else if(view.turns.isEmpty()) PracticeStage.OPENING else PracticeStage.ROUND
+        val turns=if(stage==PracticeStage.ROUND) view.turns.dropLast(1)+view.turns.last().copy(userLine=view.draft) else view.turns
+        val request=AnalysisRequest(requestId=UUID.randomUUID().toString(),inputRevision=inputRevision,contactId=lease.contactId,
+            relationType=state.value.relationType,goal=state.value.goal,userText=if(stage==PracticeStage.ROUND) view.draft else "对练",
+            evidence=lease.opponents(),sourceRevision=lease.sourceRevision,speakersConfirmed=true,conversationId=lease.conversationId,
+            conversationRevision=lease.conversationRevision,purpose=OutboundPurpose.PRACTICE,redactionProfile=state.value.redactionProfile,
+            redactionTerms=(lease.evidence.flatMap {it.lines}.mapNotNull {it.speakerName}+listOfNotNull(state.value.currentContact?.alias)).distinct(),
+            practice=PracticeRequestData(id,view.revision,stage,view.difficulty,turns))
+        val prepared=try {withContext(Dispatchers.Default) {assembler.prepare(request)}} catch(_:PracticeInputRangeException) {
+            authorized(authority) {
+                previewRequest=null;previewAuthority=null;frozen=null;recovery=null
+                set(state.value.copy(error=CounselError("PRACTICE_RANGE"),practicePreviewReceipt=null,currentRequest=null,preview=null,outboundBody=null))
+            }
+            return@enqueueFrom
+        }
+        authorized(authority) {previewRequest=request;previewAuthority=authority;set(state.value.copy(practicePreviewReceipt=UUID.randomUUID().toString(),practice=view.copy(stage=stage),preview=prepared,outboundBody=outboundBody(prepared),error=null))}
+    }
+    fun sendPractice(origin:String?,id:String,receipt:String)=enqueueFrom(origin) { operationEpoch ->
+        val authority=authoritySnapshot(operationEpoch)
+        if(receipt.isBlank() || receipt!=state.value.practicePreviewReceipt) return@enqueueFrom
+        val request=previewRequest?.takeIf {it.practice?.sessionId==id && it.purpose==OutboundPurpose.PRACTICE} ?: return@enqueueFrom
+        if(state.value.streaming || previewAuthority?.let(::authorityCurrent)!=true || !practiceRetained(request)) return@enqueueFrom
+        val retained=practiceSourcesCurrent(practiceSource ?: return@enqueueFrom) {authorized(authority) {Unit}}
+        authorized(authority) {if(!retained) revokePracticeSource()}
+        if(!retained) return@enqueueFrom
+        authorized(authority) {previewRequest=null;set(state.value.copy(practicePreviewReceipt=null))}
+        start(request,authority)
+    }
+    fun exitPractice(origin:String?,id:String)=enqueueFrom(origin,true) { operationEpoch ->
+        val authority=authoritySnapshot(operationEpoch)
+        authorized(authority) {Unit}
+        if(state.value.practice?.id!=id) return@enqueueFrom
+        val main=practiceMain
+        val lease=practiceSource
+        invalidateRun();practiceSummary=null;practiceMain=null
+        val retained=lease!=null && practiceSourcesCurrent(lease) {authorized(authority) {Unit}}
+        val candidate=main?.let {state.value.copy(practice=null,answer=it.answer,answerRequest=it.answerRequest,answerSourceRevision=it.answerSourceRevision,answerConfigRevision=it.answerConfigRevision,answerDemo=it.answerDemo,teaching=TeachingView())}
+        val mainRetained=retained && candidate!=null && answerSourceCurrent(candidate,readOnly=true)
+        authorized(authority) {Unit}
+        val restore=mainRetained && practiceSourcesCurrent(checkNotNull(lease)) {authorized(authority) {Unit}}
+        authorized(authority) {
+            practiceSource=null
+            set(if(restore) checkNotNull(candidate) else state.value.copy(practice=null,answer=null,answerRequest=null))
+        }
+        restoreTeaching(operationEpoch,lockGeneration,readOnly=true)
+    }
+    private suspend fun completePractice(request:AnalysisRequest,token:Long,answer:StructuredAnswer) {
+        val view=state.value.practice ?: return
+        val data=request.practice ?: return
+        val text=answer.sections[SectionId.FREE_TEXT].orEmpty().ifBlank {answer.freeText}
+        val crisis=answer.safety==SafetyLevel.CRISIS || localSafety(text)==SafetyLevel.CRISIS
+        if(crisis) {
+            invalidateRun();practiceSource=null;practiceSummary=null;practiceMain=null
+            set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS));return
+        }
+        val parsed=try {PracticeProtocol.parse(text,data.stage)} catch(_:Exception) {fail("PRACTICE_INVALID",true);return}
+        val next=when(data.stage) {
+            PracticeStage.OPENING->view.copy(turns=listOf(PracticeRound(checkNotNull(parsed.counterpartLine))),draft="")
+            PracticeStage.ROUND->view.copy(turns=data.turns.dropLast(1)+data.turns.last().copy(feedback=parsed.feedback,betterVersion=parsed.betterVersion)+PracticeRound(checkNotNull(parsed.counterpartLine)),draft="")
+            PracticeStage.SUMMARY->{
+                val tip=checkNotNull(parsed.summary).copy(id=UUID.randomUUID().toString(),savedAt=wallClockMillis(),scenes=setOf(TipScene(state.value.relationType.group(),state.value.goal)))
+                practiceSummary=PracticeSummaryLease(view.id,view.revision,checkNotNull(practiceSource),tip)
+                view.copy(summary=tip,summaryReceipt=UUID.randomUUID().toString())
+            }
+        }
+        if(!isCurrent(request,token)) return
+        waitingJob?.cancel();stream?.cancel();frozen=null;recovery=null;previewRequest=null
+        set(state.value.copy(practice=next,streaming=false,partial=emptyMap(),currentRequest=null,preview=null,outboundBody=null,error=null))
+    }
+    fun savePracticeSummary(origin:String?,id:String,receipt:String)=enqueueFrom(origin) { operationEpoch ->
+        val authority=authoritySnapshot(operationEpoch)
+        val view=state.value.practice?.takeIf {it.id==id && it.summaryReceipt==receipt && !it.saved} ?: return@enqueueFrom
+        val lease=practiceSummary?.takeIf {it.sessionId==id && it.revision==view.revision} ?: return@enqueueFrom
+        val retained=practiceSourcesCurrent(lease.source) {authorized(authority) {Unit}}
+        authorized(authority) {if(!retained) revokePracticeSource()}
+        if(!retained) return@enqueueFrom
+        persistence.favoritePractice(lease) {authorityCurrent(authority) && practiceSummary==lease && state.value.practice?.summaryReceipt==receipt && state.value.safety!=SafetyLevel.CRISIS}
+        authorized(authority) {set(state.value.copy(practice=view.copy(saved=true)))}
+    }
     private val teaching=TeachingCoordinator(wallClockMillis, teachingZone)
     fun openTips()=enqueue {
         val authority=authoritySnapshot()
@@ -236,8 +419,9 @@ class CounselController(
     }
     /** Restore only a presentation of an already authoritative answer. This never starts a run,
      * changes a request identity, or reads/consumes persistent or temporary Habit metadata. */
-    private suspend fun restoreTeaching(expectedEpoch:Long,expectedLock:Long) {
+    private suspend fun restoreTeaching(expectedEpoch:Long,expectedLock:Long,readOnly:Boolean=false) {
         val current=state.value
+        if(current.practice!=null) return
         val answer=current.answer ?: return
         val request=current.answerRequest ?: return
         if(TeachingPolicy.tip(answer)==null) return
@@ -248,9 +432,9 @@ class CounselController(
         }
         if(!retained()) return
         try {
-            if(!answerSourceCurrent() || !retained()) return
+            if(!answerSourceCurrent(readOnly=readOnly) || !retained()) return
             val tips=persistence.tips()
-            if(!retained() || !answerSourceCurrent()) return
+            if(!retained() || !answerSourceCurrent(readOnly=readOnly)) return
             synchronized(intentLock) {
                 if(retained()) set(state.value.copy(teaching=teaching.view(answer,request,tips,showHabit=false),savedTips=tips))
             }
@@ -826,6 +1010,7 @@ class CounselController(
     }
     val lockRevision get() = synchronized(intentLock) { lockGeneration }
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
+        practiceSource=null;practiceMain=null;practiceSummary=null
         revokeFloatingCaptureLocked()
         authorityLock = lock
         teaching.reset()
@@ -834,7 +1019,7 @@ class CounselController(
         epoch.incrementAndGet()
         // Immediate display/network revocation; actor-owned fields are cleaned in mailbox order.
         stream?.cancel(); waitingJob?.cancel(); testJob?.cancel()
-        mutableState.value = state.value.copy(teaching=TeachingView(),savedTips=emptyList(),tipsReceipt=null,lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
+        mutableState.value = state.value.copy(practice=null,practicePreviewReceipt=null,teaching=TeachingView(),savedTips=emptyList(),tipsReceipt=null,lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
             partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         val teachingEpoch=epoch.get()
         val teachingLock=lockGeneration
@@ -844,17 +1029,21 @@ class CounselController(
         }
     }
     private fun set(next: CounselState) = synchronized(intentLock) {
+        if(next.conversation?.id!=state.value.conversation?.id || (state.value.practice!=null && next.practice==null)) {practiceSource=null;practiceMain=null;practiceSummary=null}
         // Ordinary state snapshots never own the lock, including freshly constructed sessions.
         val floatingPreview=previewRequest?.takeIf { it.floating && previewAuthority?.let(::authorityCurrent)==true }
         if(next.conversation?.id!=state.value.conversation?.id || !authorityLock.canDisplaySensitiveContent) teaching.reset()
         val teachingVisible=next.teaching.takeIf {next.answer?.id==it.answerId && !next.streaming && next.hasCurrentAnswerSource() && SafetyPolicy.evaluate(next.emotion,next.safety.upgrade(next.answer?.safety ?: SafetyLevel.NONE),SafetyLevel.NONE,authorityLock).showOrdinaryStrategy} ?: TeachingView()
-        val visible = next.copy(teaching=teachingVisible,lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
-            if (authorityLock.canDisplaySensitiveContent) it else it.copy(streaming=false, testingConnection=false,
+        val practiceValid=next.practice==null || practiceSource?.let {it.contactId==next.currentContact?.id && it.sourceRevision==(next.currentContact?.sourceRevision ?: 0) && it.conversationId==next.conversation?.id && it.conversationRevision==next.conversation?.revision && it.evidence==next.evidence && it.privacyRevision==next.redactionProfile.revision && it.configRevision==settings.saved.revision}==true
+        if(!practiceValid) {practiceSource=null;practiceMain=null;practiceSummary=null}
+        val visible = next.copy(practice=next.practice.takeIf {practiceValid},practicePreviewReceipt=next.practicePreviewReceipt.takeIf {practiceValid && next.practice!=null},teaching=teachingVisible,lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
+            if (authorityLock.canDisplaySensitiveContent) it else it.copy(practicePreviewReceipt=null,streaming=false, testingConnection=false,
                 partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         }
         mutableState.value = if (pendingSummaryCleanup.isEmpty()) visible else visible.copy(error = CounselError("STORAGE_UNAVAILABLE", true))
     }
     private fun invalidateRun() {
+        practiceSummary=null
         pendingStyle=null
         activeRunAuthority=null;previewAuthority=null
         pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null
@@ -866,7 +1055,7 @@ class CounselController(
         summaryKey = null
         recovery = null
         (assembler as? FrozenPromptAssembler)?.clear()
-        set(state.value.copy(streaming = false, testingConnection = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, summaryReady = false, error = null))
+        set(state.value.copy(practicePreviewReceipt=null,streaming = false, testingConnection = false, partial = emptyMap(), currentRequest = null, preview = null, outboundBody = null, summaryReady = false, error = null))
     }
 
     private fun applyModelSettings() {
@@ -1166,6 +1355,7 @@ class CounselController(
     fun editDraft(text: String) = editDraftFrom(text, state.value.conversation?.id, null)
     fun editDraft(text: String, stamp: DraftEditStamp) = editDraftFrom(text, stamp.originConversationId, stamp)
     private fun editDraftFrom(text: String, origin: String?, stamp: DraftEditStamp?) = enqueueFrom(origin, true) {
+        if(state.value.practice!=null) return@enqueueFrom
         edit { it.copy(draft = text, draftEditAck = stamp) }
     }
     /** Pasted text is a user statement, never confirmed dialogue evidence. */
@@ -1252,16 +1442,15 @@ class CounselController(
             actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
         }
     }
-    private fun ordinaryAllowed() = !state.value.sourceSelectionBlocked && (floatingSideOperation?.let { it.epoch==epoch.get() }!=true) && pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
-    private suspend fun answerSourceCurrent(): Boolean {
-        val current = state.value
+    private fun ordinaryAllowed() = state.value.practice==null && !state.value.sourceSelectionBlocked && (floatingSideOperation?.let { it.epoch==epoch.get() }!=true) && pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
+    private suspend fun answerSourceCurrent(current:CounselState=state.value,readOnly:Boolean=false): Boolean {
         if (!current.hasCurrentAnswerSource()) return false
         val source = current.messages.last { it.role == MessageRole.ASSISTANT && it.requestId == current.answerRequest?.requestId }
         val contact = current.currentContact
         val stored = if (contact == null) null else {
             val owner = persistence.contacts().firstOrNull { it.id == contact.id } ?: return false
             if (owner.sourceRevision != contact.sourceRevision) return false
-            persistence.loadOrCreate(contact)
+            if(readOnly) persistence.practiceSourceSnapshot(contact,checkNotNull(current.conversation).id) ?: return false else persistence.loadOrCreate(contact)
         }
         val run = (stored?.runs ?: ledger.runs).lastOrNull { it.requestId == source.requestId } ?: return false
         val original = run.requestSnapshot ?: return false
@@ -1460,11 +1649,18 @@ class CounselController(
             Recovery.SaveDraft -> flushDraft()
             is Recovery.Analysis -> {
                 authorized(authority) { Unit }
-                if (settings.saved.live) {
+                if(pending.request.purpose==OutboundPurpose.PRACTICE) {
+                    val retained=practiceRetained(pending.request) && practiceSourcesCurrent(practiceSource ?: return@enqueue) {authorized(authority) {Unit}}
+                    authorized(authority) {if(!retained) revokePracticeSource()}
+                    if(!retained) return@enqueue
+                }
+                authorized(authority) {Unit}
+                if (settings.saved.live || pending.request.purpose==OutboundPurpose.PRACTICE) {
                     val prepared = assembler.prepare(pending.request)
                     authorized(authority) {
                         previewRequest = pending.request
-                        set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared), error = null))
+                        previewAuthority=authority
+                        set(state.value.copy(practicePreviewReceipt=if(pending.request.purpose==OutboundPurpose.PRACTICE) UUID.randomUUID().toString() else null,preview = prepared, outboundBody = outboundBody(prepared), error = null))
                     }
                 } else start(pending.request,authority)
             }
@@ -1492,7 +1688,7 @@ class CounselController(
     }
     private fun isCurrent(request: AnalysisRequest, token: Long): Boolean = synchronized(intentLock) { authorityLock.canDisplaySensitiveContent && runLockGeneration == lockGeneration && epoch.get() == token && frozen == request &&
         request.inputRevision == inputRevision && request.conversationId == state.value.conversation?.id &&
-        request.conversationRevision == state.value.conversation?.revision && request.contactId == state.value.currentContact?.id
+        request.conversationRevision == state.value.conversation?.revision && request.contactId == state.value.currentContact?.id && (request.purpose!=OutboundPurpose.PRACTICE || practiceRetained(request))
     }
     private fun publishRun(request: AnalysisRequest, token: Long, next: CounselState): Boolean = synchronized(intentLock) {
         if(!isCurrent(request,token)) return false
@@ -1512,10 +1708,16 @@ class CounselController(
     }
     private suspend fun start(request: AnalysisRequest, authority: RunAuthority, onStarted:(AnalysisRequest)->Unit = {}) {
         authorized(authority) { Unit }
+        if(request.purpose==OutboundPurpose.PRACTICE) {
+            val retained=practiceRetained(request) && practiceSourcesCurrent(practiceSource ?: return) {authorized(authority) {Unit}}
+            authorized(authority) {if(!retained) revokePracticeSource()}
+            if(!retained) return
+        }
+        authorized(authority) { Unit }
         try { requireFloatingBudget(request) } catch(_:FloatingOpenFull) { floatingOpenFull(authority);return }
         val snapshot=persistence.memoryContextSnapshot(request.contactId)
         authorized(authority) { Unit }
-        if(request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { authorized(authority) { invalidateRun() }; return }
+        if(request.executionPolicy!=ExecutionPolicy.EPHEMERAL && request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { authorized(authority) { invalidateRun() }; return }
         if(request.styleSource!=null && request.contactId!=null && request.styleSource!=persistence.styleContext(requireNotNull(request.contactId),(request.relationType ?: RelationType.ACQUAINTANCE).group())) { authorized(authority) {invalidateRun()};return }
         if(request.purpose==OutboundPurpose.STYLE_DESCRIPTION && pendingStyle?.snapshot?.stamp!=persistence.styleSnapshot().stamp) {authorized(authority) {invalidateRun()};return}
         authorized(authority) { proposalStamp=snapshot.stamp }
@@ -1557,12 +1759,12 @@ class CounselController(
                 set(state.value.copy(preview = prepared))
             }
         } catch (_: Exception) { if(isCurrent(request,token)) fail("PROMPT_UNAVAILABLE", true); return }
-        val begun = synchronized(intentLock) {
+        val begun = if(request.executionPolicy==ExecutionPolicy.EPHEMERAL) ledger else synchronized(intentLock) {
             if(!isCurrent(request,token)) return
             ledger.begin(request, "user:${request.requestId}")
         }
         val user = begun.messages.firstOrNull { it.requestId == request.requestId && it.role == MessageRole.USER }
-        if (request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && user != null && ledger.messages.none { it.id == user.id }) persistMessage(user)
+        if (request.executionPolicy!=ExecutionPolicy.EPHEMERAL && request.purpose!=OutboundPurpose.STYLE_DESCRIPTION && user != null && ledger.messages.none { it.id == user.id }) persistMessage(user)
         synchronized(intentLock) {
             if(!isCurrent(request,token)) return
             ledger = begun
@@ -1599,6 +1801,7 @@ class CounselController(
         }
     }
     private suspend fun checkpoint(request: AnalysisRequest, status: RunStatus) {
+        if(request.executionPolicy==ExecutionPolicy.EPHEMERAL) return
         val run = ledger.runs.firstOrNull { it.requestId == request.requestId } ?: return
         val next = run.copy(status = status, requestSnapshot = request.copy(redactionProfile = RedactionProfile(revision = request.redactionProfile.revision)), configRevision = settings.saved.revision, highestSafety = run.highestSafety.upgrade(state.value.safety))
         if(request.purpose!=OutboundPurpose.STYLE_DESCRIPTION) state.value.currentContact?.let { persistence.saveRun(it, next) }
@@ -1606,6 +1809,7 @@ class CounselController(
     }
     private suspend fun fail(code: String, retryable: Boolean) {
         waitingJob?.cancel()
+        if(frozen?.executionPolicy==ExecutionPolicy.EPHEMERAL) {stream?.cancel();stream=null}
         // Checkpoint failure preserves the request but never offers a blind network resend.
         frozen?.let {
             recovery = Recovery.Checkpoint(it, code, retryable)
@@ -1616,6 +1820,14 @@ class CounselController(
     }
     private suspend fun receive(request: AnalysisRequest, token: Long, chunk: AnalysisChunk) {
         if (!isCurrent(request, token) || !state.value.streaming) return
+        if(request.purpose==OutboundPurpose.PRACTICE) {
+            val retained=practiceSourcesCurrent(practiceSource ?: return) {if(!isCurrent(request,token)) throw RevokedOperation()}
+            synchronized(intentLock) {
+                if(!isCurrent(request,token)) return
+                if(!retained) {revokePracticeSource();return}
+            }
+        }
+        if(!isCurrent(request,token)) return
         when (chunk) {
             is AnalysisChunk.Section -> {
                 val partial = state.value.partial + (chunk.id to (state.value.partial[chunk.id].orEmpty() + chunk.textDelta))
@@ -1624,6 +1836,10 @@ class CounselController(
                 val previousSafety = state.value.safety
                 val highest = previousSafety.upgrade(received)
                 if(!publishRun(request,token,state.value.copy(partial = partial, safety = highest))) return
+                if(request.purpose==OutboundPurpose.PRACTICE && highest==SafetyLevel.CRISIS) {
+                    invalidateRun();practiceSource=null;practiceMain=null;practiceSummary=null
+                    set(state.value.copy(practice=null,answer=null,answerRequest=null,safety=SafetyLevel.CRISIS));return
+                }
                 if (highest != previousSafety) {
                     recovery = Recovery.Checkpoint(request, "INTERRUPTED", true)
                     try {
@@ -1646,6 +1862,7 @@ class CounselController(
                 val displayAnswer = state.value.preview?.let { SafeAliasRestorer.restore(highestAnswer, it) } ?: highestAnswer
                 val answer = (AnswerPolicy.apply(request, displayAnswer, inputRevision, conversationRevision) ?: return).let { it.copy(id = if (request.mode == RequestMode.REWRITE_REPLY || it.id.isBlank()) "answer:${request.requestId}" else it.id) }
                 if(!publishRun(request,token,state.value.copy(safety = state.value.safety.upgrade(answer.safety)))) return
+                if(request.purpose==OutboundPurpose.PRACTICE) { completePractice(request,token,answer);return }
                 if(request.purpose==OutboundPurpose.STYLE_DESCRIPTION) {
                     if(state.value.answerDemo) {fail("STYLE_REQUIRES_MODEL",false);return}
                     val target=pendingStyle ?: return
@@ -2004,7 +2221,7 @@ class CounselController(
     }
     fun stop() = enqueue(true) {
         if (pendingSummaryCleanup.isNotEmpty()) { set(state.value.copy(streaming = false, error = CounselError("STORAGE_UNAVAILABLE", true))); return@enqueue }
-        if (!state.value.streaming) return@enqueue
+        if (!state.value.streaming) {if(state.value.practice!=null) invalidateRun();return@enqueue}
         waitingJob?.cancel()
         stream?.cancel(); stream = null
         frozen?.let { recovery = Recovery.Checkpoint(it, "CANCELLED", true); checkpoint(it, RunStatus.CANCELLED) }
@@ -2016,6 +2233,7 @@ class CounselController(
         closeContactDetails()
         selectionEpoch.incrementAndGet()
         enqueue(true) {
+        practiceSource=null;practiceMain=null;practiceSummary=null
         contactUndo = null
         testGeneration++; testJob?.cancel(); testJob = null
         settings = ModelSettingsSnapshot(); provider = demoProvider

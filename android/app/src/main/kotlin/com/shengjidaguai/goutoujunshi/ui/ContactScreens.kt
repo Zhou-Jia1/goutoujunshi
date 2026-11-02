@@ -80,7 +80,7 @@ fun contactTimeline(data: ContactDetails): List<ContactTimelineItem> = (
     else DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(millis))
 
 @Composable fun ContactDetailContent(state: ContactDetailState, back: () -> Unit, reload: (String) -> Unit,
-    edit: (Contact, Long) -> Unit, delete: (String) -> Unit, undo: () -> Unit, talk: (String) -> Unit, memory: ((String) -> Unit)? = null) {
+    edit: (Contact, Long) -> Unit, delete: (String) -> Unit, undo: () -> Unit, talk: (String) -> Unit, memory: ((String) -> Unit)? = null, practice: ((String)->Unit)?=null) {
     val data = state.data?.takeIf { it.contact.id == state.ownerId }
     val contact = data?.contact
     // A new owner/revision discards every private editor, source selection and confirmation.
@@ -170,7 +170,7 @@ fun contactTimeline(data: ContactDetails): List<ContactTimelineItem> = (
                 }
             }
             item { PrimaryButton(stringResource(R.string.contact_talk), { talk(contact.id) }, enabled = contact.archivedAt == null) }
-            item { SecondaryButton(stringResource(R.string.contact_practice), { modal = "practice" }) }
+            item { SecondaryButton(stringResource(R.string.contact_practice), { practice?.invoke(contact.id) }) }
             item { SecondaryButton(stringResource(R.string.contact_edit), { modal = "edit" }) }
             item { SecondaryButton(stringResource(if (contact.archivedAt == null) R.string.contact_archive else R.string.contact_restore), { modal = "archive" }) }
             item { SecondaryButton(stringResource(R.string.delete_contact), { modal = "delete" }) }
@@ -181,7 +181,6 @@ fun contactTimeline(data: ContactDetails): List<ContactTimelineItem> = (
         "archive" -> DangerConfirmDialog(stringResource(if (contact.archivedAt == null) R.string.contact_archive else R.string.contact_restore), stringResource(if (contact.archivedAt == null) R.string.contact_archive_consequence else R.string.contact_restore_consequence), stringResource(R.string.contact_confirm), {
             modal = null; edit(contact.copy(archivedAt = if (contact.archivedAt == null) System.currentTimeMillis() else null), contact.sourceRevision)
         }, { modal = null })
-        "practice" -> ContentDialog(stringResource(R.string.contact_practice), stringResource(R.string.close), { modal = null }) { BodyText(stringResource(R.string.contact_practice_pending)) }
         "edit" -> ContactEditDialog(contact, { modal = null }, { next -> modal = null; edit(next, contact.sourceRevision) })
     }
     source?.let { lines -> ContentDialog(stringResource(R.string.contact_source), stringResource(R.string.close), { source = null }) {

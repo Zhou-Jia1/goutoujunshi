@@ -37,6 +37,13 @@ import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
 /** Event boundary for rendering and exercising the home screen without opening storage. */
 data class CounselUiActions(
+    val enterPractice:(String?)->Unit={},
+    val editPracticeInput:(String?,String,String)->Unit={_,_,_->},
+    val practiceDifficulty:(String?,String,com.shengjidaguai.goutoujunshi.domain.PracticeDifficulty)->Unit={_,_,_->},
+    val previewPractice:(String?,String,Boolean)->Unit={_,_,_->},
+    val sendPractice:(String?,String,String)->Unit={_,_,_->},
+    val exitPractice:(String?,String)->Unit={_,_->},
+    val savePracticeSummary:(String?,String,String)->Unit={_,_,_->},
     val toggleTip: (String?,String)->Unit = {_,_->},
     val saveTipScene: (String?,String)->Unit = {_,_->},
     val dismissHabit: (String?,String,Boolean)->Unit = {_,_,_->},
@@ -93,6 +100,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val memory by viewModel.memory.collectAsStateWithLifecycle()
     val shownMemory=memory
     CounselContent(state, CounselUiActions(
+        enterPractice=viewModel::enterPractice,editPracticeInput=viewModel::editPracticeInput,practiceDifficulty=viewModel::practiceDifficulty,previewPractice=viewModel::previewPractice,sendPractice=viewModel::sendPractice,exitPractice=viewModel::exitPractice,savePracticeSummary=viewModel::savePracticeSummary,
         toggleTip=viewModel::toggleTip, saveTipScene=viewModel::saveTipScene, dismissHabit=viewModel::dismissHabit,
         rewrite = viewModel::rewrite, changeScene = viewModel::changeScene, feedback = viewModel::feedback,
         initialize = viewModel::initialize, editDraft = viewModel::editDraft, pasteText = { text, _ -> viewModel.importPaste(text) },
@@ -121,6 +129,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val streamSafety = SafetyLevel.entries.filter { Regex("\\b${it.name}\\b", RegexOption.IGNORE_CASE)
         .containsMatchIn(state.partial[SectionId.SAFETY].orEmpty()) }.maxByOrNull { it.ordinal } ?: SafetyLevel.NONE
     val presentation = SafetyPolicy.evaluate(state.emotion, (state.answer?.safety ?: SafetyLevel.NONE).upgrade(state.safety), streamSafety, state.lockState)
+    if(state.practice!=null && presentation.showOrdinaryStrategy) {PracticeContent(state,actions);return}
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     var createContact by remember { mutableStateOf(false) }
@@ -267,7 +276,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                         actions.rewrite(origin, answer.id, state.tone, bias); if (!state.demo) previewOpen = true
                     }, enabled = !state.streaming && state.error == null)
                     if (state.feedbackSaved) BodyText(stringResource(R.string.answer_feedback_saved))
-                    AnswerDetails(answer, state)
+                    AnswerDetails(answer, state,{actions.enterPractice(origin)})
                     if(state.teaching.answerId==answer.id) TeachingContent(state.teaching,{actions.toggleTip(origin,state.teaching.receipt)},{actions.dismissHabit(origin,state.teaching.receipt,it)},saveScene={actions.saveTipScene(origin,state.teaching.receipt)})
                 } else if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
                     BodyText(listOf(answer.empathy, answer.why.joinToString("\n"), answer.cost, answer.next).filter { it.isNotBlank() }.joinToString("\n\n"))
@@ -330,11 +339,21 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 /** Every preview displays its real destination and the same frozen payload used by the provider. */
 @Composable internal fun OutboundPreviewContent(state:CounselState,openRules:()->Unit,scope:String?=null) {
     BodyText(scope ?: stringResource(if(state.demo) R.string.preview_demo_notice else R.string.live_scope))
+    state.preview?.practiceSelection?.let {selection ->
+        BodyText(stringResource(R.string.practice_selected_scope,selection.selectedTurns,selection.omittedTurns,selection.opponentMessageIds.size,selection.omittedOpponentMessages))
+    }
     BodyText(stringResource(R.string.redaction_honesty))
     BodyText(stringResource(R.string.redaction_count,state.preview?.redactionCount ?: 0))
     SecondaryButton(stringResource(R.string.redaction_rules),openRules)
     if(!state.demo) BodyText(runCatching {state.modelSettings.saved.connection().safeDestination()}.getOrDefault(""))
-    state.preview?.let {preview->BodyText(state.outboundBody ?: (preview.system+"\n\n"+preview.user))}
+    state.preview?.let {preview->
+        val body=state.outboundBody ?: (preview.system+"\n\n"+preview.user)
+        if(preview.practiceSelection!=null) CollapsibleSection(stringResource(R.string.practice_full_body),null) {
+            Column(Modifier.testTag("practice-outbound-body")) {
+                outboundBodyChunks(body).forEachIndexed {index,text -> BodyText(text,Modifier.testTag("practice-outbound-body-part-$index"))}
+            }
+        } else BodyText(body)
+    }
         ?: BodyText(stringResource(if(state.error==null) R.string.preparing_preview else errorLabel(state.error!!.code)))
 }
 
@@ -375,7 +394,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         androidx.activity.compose.BackHandler { viewModel.closeContactDetails() }
         ContactDetailContent(details, viewModel::closeContactDetails, viewModel::openContactDetails,
             viewModel::editContact, viewModel::deleteContact, viewModel::undoContactEdit,
-            { id -> viewModel.selectContact(id); viewModel.closeContactDetails(); onOpen() }, { id -> memoryOwner=id })
+            { id -> viewModel.selectContact(id); viewModel.closeContactDetails(); onOpen() }, { id -> memoryOwner=id }, { id -> viewModel.practiceForContact(id);onOpen() })
     } else {
         ContactsContent(state.contacts, { creating = true }, viewModel::openContactDetails,
             { viewModel.newTemporary(); onOpen() })
@@ -476,6 +495,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 }
 
 fun errorLabel(code: String): Int = when (code) {
+    "PRACTICE_NEEDS_MESSAGES" -> R.string.practice_needs_messages
+    "PRACTICE_SOURCE_CHANGED" -> R.string.practice_source_changed
+    "PRACTICE_SAFETY_UNAVAILABLE" -> R.string.practice_safety_unavailable
+    "PRACTICE_RANGE" -> R.string.practice_range
+    "PRACTICE_INVALID" -> R.string.practice_invalid
     "SETTINGS_UNAVAILABLE" -> R.string.model_error_settings
     "CONFIG_INVALID" -> R.string.model_error_config
     "KEY_MISSING", "KEY_INVALID" -> R.string.model_error_key
@@ -519,7 +543,7 @@ fun goalLabel(goal: Goal): Int = when (goal) {
     Goal.MEDIATE -> R.string.goal_mediate; Goal.CLOSE -> R.string.goal_close
 }
 
-@Composable private fun AnswerDetails(answer: com.shengjidaguai.goutoujunshi.domain.StructuredAnswer, state: CounselState) {
+@Composable private fun AnswerDetails(answer: com.shengjidaguai.goutoujunshi.domain.StructuredAnswer, state: CounselState,practice:()->Unit) {
     var selectedRefs by remember(state.answerModalStamp()) { mutableStateOf<List<String>?>(null) }
     fun resolve(refs: List<String>) = com.shengjidaguai.goutoujunshi.domain.FactSourceResolver.resolve(refs,
         state.currentContact?.id, state.currentContact?.sourceRevision ?: 0,
@@ -562,7 +586,7 @@ fun goalLabel(goal: Goal): Int = when (goal) {
         answer.unknowns.forEach { EvidenceChip(EvidenceKind.UNKNOWN, it, null, null) }
     }
     listOf(R.string.answer_risk to answer.risk, R.string.answer_next to answer.next).forEach { (title, body) ->
-        CollapsibleSection(stringResource(title), null) { BodyText(body.ifBlank { stringResource(R.string.answer_no_detail) }) }
+        CollapsibleSection(stringResource(title), null) { BodyText(body.ifBlank { stringResource(R.string.answer_no_detail) });if(title==R.string.answer_next) SecondaryButton(stringResource(R.string.contact_practice),practice) }
     }
 }
 @Composable private fun SceneEditDialog(state: CounselState, save: (RelationType, Goal, String) -> Unit, close: () -> Unit) {
@@ -576,4 +600,15 @@ fun goalLabel(goal: Goal): Int = when (goal) {
         ChoiceField(stringResource(R.string.answer_formality), stringResource(when(formality) { "low" -> R.string.answer_formality_low; "high" -> R.string.answer_formality_high; else -> R.string.answer_formality_medium }),
             listOf("low" to R.string.answer_formality_low, "medium" to R.string.answer_formality_medium, "high" to R.string.answer_formality_high).map { (value, label) -> stringResource(label) to { formality = value } })
     }
+}
+
+/** Keep every byte of visible content in order while bounding each Text layout. */
+internal fun outboundBodyChunks(value:String):List<String> {
+    val chunks=mutableListOf<String>();var offset=0
+    while(offset<value.length) {
+        val count=minOf(2000,value.codePointCount(offset,value.length))
+        val end=value.offsetByCodePoints(offset,count)
+        chunks+=value.substring(offset,end);offset=end
+    }
+    return chunks.ifEmpty {listOf("")}
 }
