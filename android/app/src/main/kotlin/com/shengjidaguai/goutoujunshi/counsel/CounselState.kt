@@ -13,6 +13,9 @@ data class DraftEditStamp(val editorId: String, val sequence: Long, val originCo
 
 /** Never put this state into SavedStateHandle: it can contain temporary private data. */
 data class CounselState(
+    val floatingCapture: FloatingCaptureView? = null,
+    val floatingPreviewReady:Boolean=false,
+    val floatingPreviewRequest:AnalysisRequest?=null,
     val loading: Boolean = true,
     val contacts: List<Contact> = emptyList(),
     val currentContact: Contact? = null,
@@ -57,10 +60,12 @@ data class CounselState(
     val redactionError: Boolean = false,
     val memoryContext: OutboundDataContext = OutboundDataContext(),
     val memoryRetention: MemoryRetentionView = MemoryRetentionView(),
+    val sourceSelectionBlocked:Boolean=false,val captureSourcePreferred:Boolean=false,
 )
 
 /** Also used by the UI: invalid historic answers have no source-dependent actions or private modals. */
 fun CounselState.hasCurrentAnswerSource(): Boolean {
+    if(sourceSelectionBlocked) return false
     val original = answerRequest ?: return false
     if(!MemoryPresentation.sourcesRetained(original.actualDataContext,memoryRetention)) return false
     val answerId = answer?.id ?: return false

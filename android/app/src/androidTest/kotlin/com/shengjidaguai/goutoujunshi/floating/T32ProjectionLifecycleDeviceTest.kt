@@ -118,14 +118,32 @@ class T32ProjectionLifecycleDeviceTest {
     private fun matchingNode(includeOverlay: Boolean = false,
         predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
         var selected: AccessibilityNodeInfo? = null
-        SystemProjectionConsent.waitFor {
+        var previousGeometry: String? = null
+        var stableFrames = 0
+        try { SystemProjectionConsent.waitFor {
             // Rotation changes an overlay asynchronously. Fetch fresh geometry;
             // an old portrait edge can still lie inside the landscape display.
             // Docking follows the OS safe edge, including cutout/navigation insets.
-            if (includeOverlay) check(automation.clearCache())
+            if (includeOverlay) {
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                check(automation.clearCache())
+            }
             val candidates = (if (includeOverlay) SystemProjectionConsent.nodes() else activeNodes())
                 .filter(predicate)
-            selected = candidates.filter { touchBounds(it, includeOverlay) != null }.singleOrNull()
+            val candidate = candidates.filter { touchBounds(it, includeOverlay) != null }.singleOrNull()
+            if (includeOverlay && candidate != null) {
+                val bounds = Rect().also(candidate::getBoundsInScreen)
+                val windowBounds = Rect().also { candidate.window?.getBoundsInScreen(it) }
+                val geometry = "${screenBounds()}|${safeBounds()}|$bounds|$windowBounds"
+                stableFrames = if (geometry == previousGeometry) stableFrames + 1 else 0
+                previousGeometry = geometry
+                selected = candidate.takeIf { stableFrames >= 3 }
+            } else {
+                previousGeometry = null
+                stableFrames = 0
+                selected = candidate
+            }
             if (selected == null && !includeOverlay && candidates.size == 1) {
                 val candidate = candidates.single()
                 if (!candidate.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) {
@@ -135,6 +153,21 @@ class T32ProjectionLifecycleDeviceTest {
                 }
             }
             selected != null
+        } } catch (failure: IllegalStateException) {
+            if (!includeOverlay) throw failure
+            val windows = automation.windows.map { window ->
+                val bounds = Rect().also(window::getBoundsInScreen)
+                "type=${window.type}, display=${window.displayId}, bounds=$bounds"
+            }
+            val balls = SystemProjectionConsent.nodes().filter {
+                it.packageName?.toString() == app.packageName &&
+                    it.contentDescription?.toString() == text(R.string.floating_ball_menu)
+            }.map { candidate ->
+                val bounds = Rect().also(candidate::getBoundsInScreen)
+                "bounds=$bounds, visible=${candidate.isVisibleToUser}, touch=${touchBounds(candidate, true)}"
+            }
+            throw IllegalStateException("Overlay geometry: screen=${screenBounds()}, safe=${safeBounds()}, " +
+                "active=${FloatingRuntime.active.value}, windows=$windows, balls=$balls", failure)
         }
         return checkNotNull(selected)
     }

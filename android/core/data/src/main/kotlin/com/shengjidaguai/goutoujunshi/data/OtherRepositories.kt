@@ -81,11 +81,15 @@ class SummaryRepository(private val session: DataSession) {
         if (stored?.request?.requestId == summary.request.requestId) deleteRecord(contactId, OwnedRecordKind.SUMMARY.name, summary.key)
     }
     suspend fun list(contactId: String): List<TimelineSummary> = session.transaction {
-        records(contactId, OwnedRecordKind.SUMMARY.name).map { decode(it.payload) }
+        val eligible=effectiveCaptureSelection(contactId)
+        if(eligible.blocked) emptyList() else records(contactId, OwnedRecordKind.SUMMARY.name).map {decode<TimelineSummary>(it.payload)}
+            .filter {summary->summary.request.evidence.all {b->eligible.imports.any {it.id==b.id}}}
     }
     suspend fun save(summary: TimelineSummary) = session.transaction {
         val request = summary.request
         val contactId = requireNotNull(request.contactId)
+        val eligible=effectiveCaptureSelection(contactId)
+        check(!eligible.blocked && request.evidence.all {b->eligible.imports.any {it.id==b.id}}) {"Summary sources are not eligible"}
         check(requireContact(contactId).revision == request.sourceRevision)
         val row = requireNotNull(conversation(contactId, request.conversationId))
         check(decode<Conversation>(row.payload).revision == request.conversationRevision && row.draft == request.userText)

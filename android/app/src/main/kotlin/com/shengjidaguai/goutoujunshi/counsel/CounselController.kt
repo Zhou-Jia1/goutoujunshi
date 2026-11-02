@@ -11,7 +11,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
 
-data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>, val evidence: List<EvidenceBlock> = emptyList(), val runs: List<AnalysisRun> = emptyList(), val summaries: List<TimelineSummary> = emptyList(), val plans: List<ActionPlan> = emptyList())
+data class StoredCounsel(val conversation: Conversation, val draft: String, val messages: List<Message>, val evidence: List<EvidenceBlock> = emptyList(), val runs: List<AnalysisRun> = emptyList(), val summaries: List<TimelineSummary> = emptyList(), val plans: List<ActionPlan> = emptyList(),val sourceBlocked:Boolean=false,val capturePreferred:Boolean=false)
 
 /** Share this assembler with the provider so preview and playback consume the same snapshot. */
 class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssembler {
@@ -30,6 +30,7 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
     suspend fun memorySnapshot(owner: String?): MemorySnapshot = MemorySnapshot()
+    suspend fun memoryContextSnapshot(owner:String?):MemorySnapshot = MemorySnapshot()
     suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { error("Memory unavailable") }
     suspend fun memoryDecline(owner: String, stamp: WriteStamp, until: Long, onAuthorized: () -> Unit) { error("Memory unavailable") }
     suspend fun memoryApprove(owner: String, proposal: MemoryProposal, stamp: WriteStamp, operationId: String, onAuthorized: () -> Unit): MemoryOperation { error("Memory unavailable") }
@@ -38,6 +39,11 @@ interface CounselPersistence {
     suspend fun memoryDelete(owner: String, id: String, stamp: WriteStamp, wrong: Boolean) { error("Memory unavailable") }
     suspend fun memoryUndo(owner: String, id: String, stamp: WriteStamp) { error("Memory unavailable") }
     suspend fun clearMemories(authority: MemoryClearAuthority, onAuthorized: () -> Unit) { error("Memory unavailable") }
+    suspend fun replaceCaptured(change:CapturedImportReplacement,current:()->Boolean):Contact { error("Capture replacement unavailable") }
+    suspend fun saveCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,current:()->Boolean):LiveCaptureReceipt {error("Live capture unavailable")}
+    suspend fun saveReviewedCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,frames:List<List<ChatLine>>,current:()->Boolean):LiveCaptureReceipt = saveCaptured(contact,imported,lines,current)
+    suspend fun liveCaptureProvenance(owner:String,lineage:String):LiveCaptureProvenance? = null
+    suspend fun saveFloatingIdentity(binding: FloatingIdentityBinding) { error("Floating identity unavailable") }
     suspend fun initialize()
     suspend fun contacts(): List<Contact>
     suspend fun createContact(contact: Contact)
@@ -68,6 +74,7 @@ class EncryptedCounselPersistence(
     private fun conversationsRepo() = ConversationRepository(checkNotNull(session))
     private fun memoryRepo() = MemoryRepository(checkNotNull(session))
     override suspend fun memorySnapshot(owner: String?) = memoryRepo().snapshot(owner)
+    override suspend fun memoryContextSnapshot(owner:String?) = memoryRepo().contextSnapshot(owner)
     override suspend fun memoryConsent(enabled: Boolean, paused: Boolean, stamp: WriteStamp, clearAuthority: MemoryClearAuthority?, onAuthorized: () -> Unit) { ConsentRepository(checkNotNull(session)).update(enabled, paused, expected=stamp,expectedClear=if(!enabled) requireNotNull(clearAuthority) else null,onAuthorized=onAuthorized) }
     override suspend fun memoryDecline(owner: String, stamp: WriteStamp, until: Long, onAuthorized: () -> Unit) { ConsentRepository(checkNotNull(session)).recordDecline(owner,stamp,until,onAuthorized) }
     override suspend fun memoryApprove(owner: String, proposal: MemoryProposal, stamp: WriteStamp, operationId: String, onAuthorized: () -> Unit): MemoryOperation =
@@ -77,6 +84,11 @@ class EncryptedCounselPersistence(
     override suspend fun memoryDelete(owner: String, id: String, stamp: WriteStamp, wrong: Boolean) { if(wrong) memoryRepo().markWrong(owner,id,stamp) else memoryRepo().delete(owner,id,stamp) }
     override suspend fun memoryUndo(owner: String, id: String, stamp: WriteStamp) { memoryRepo().undoLatest(owner,stamp,id) }
     override suspend fun clearMemories(authority: MemoryClearAuthority, onAuthorized: () -> Unit) { memoryRepo().clear(authority,onAuthorized) }
+    override suspend fun replaceCaptured(change:CapturedImportReplacement,current:()->Boolean)=CapturedImportReplacementRepository(checkNotNull(session)).replace(change,current)
+    override suspend fun saveCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,current:()->Boolean) = LiveCaptureRepository(checkNotNull(session)).save(imported,lines,contact.sourceRevision,current)
+    override suspend fun saveReviewedCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,frames:List<List<ChatLine>>,current:()->Boolean) = LiveCaptureRepository(checkNotNull(session)).saveReviewed(imported,lines,contact.sourceRevision,frames,current)
+    override suspend fun liveCaptureProvenance(owner:String,lineage:String) = LiveCaptureRepository(checkNotNull(session)).provenance(owner,lineage)
+    override suspend fun saveFloatingIdentity(binding: FloatingIdentityBinding) { FloatingIdentityRepository(checkNotNull(session)).save(binding) }
     override suspend fun initialize() { session = store.open() }
     override suspend fun contacts() = contactsRepo().list()
     override suspend fun createContact(contact: Contact) { contactsRepo().save(contact) }
@@ -92,9 +104,9 @@ class EncryptedCounselPersistence(
         val repo = conversationsRepo()
         val conversation = repo.list(contact.id).maxByOrNull { it.updatedAt }
             ?: Conversation(UUID.randomUUID().toString(), contact.id, false, System.currentTimeMillis()).also { repo.save(it) }
-        val imports = ImportRepository(checkNotNull(session))
-        val evidence = imports.list(contact.id).map { EvidenceBlock(it.id, it.sourceType.name, imports.lines(contact.id, it.id)) }
-        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence, TimelineRepository(checkNotNull(session)).runs(contact.id), SummaryRepository(checkNotNull(session)).list(contact.id), PlanRepository(checkNotNull(session)).list(contact.id))
+        val selected=LiveCaptureRepository(checkNotNull(session)).evidence(contact.id)
+        val evidence = selected.evidence
+        return StoredCounsel(conversation, repo.draft(contact.id, conversation.id).orEmpty(), repo.messages(contact.id, conversation.id), evidence, TimelineRepository(checkNotNull(session)).runs(contact.id), SummaryRepository(checkNotNull(session)).list(contact.id), PlanRepository(checkNotNull(session)).list(contact.id),sourceBlocked=selected.blocked,capturePreferred=selected.preferred)
     }
     override suspend fun update(contact: Contact, previous: Conversation, next: Conversation, draft: String) {
         require(next.canPersist && next.contactId == contact.id && next.id == previous.id)
@@ -162,7 +174,9 @@ class CounselController(
     }
     private fun operationCurrent(owner: String?, id: String): Boolean =
         (memory.value.ownerId==owner && memory.value.activeOperation==id) || (memoryPage.value.ownerId==owner && memoryPage.value.activeOperation==id)
+    @Volatile private var memoryPageOpen=false
     fun closeMemory() = synchronized(intentLock) {
+        memoryPageOpen=false
         memoryEpoch.incrementAndGet()
         mutableMemoryPage.value=MemoryUiState()
     }
@@ -171,6 +185,7 @@ class CounselController(
         mutableMemory.value=MemoryUiState(snapshot=MemorySnapshot(consent=memory.value.consent))
     }
     fun openMemory(owner: String?) {
+        memoryPageOpen=true
         val token=memoryEpoch.incrementAndGet()
         mutableMemoryPage.value=MemoryUiState(owner,MemorySnapshot(consent=memory.value.consent),loading=true)
         enqueue {
@@ -182,7 +197,7 @@ class CounselController(
                     val detail=persistence.contactDetails(contact)
                     count+=detail.memories.size; imports+=detail.imports.size
                 }
-                synchronized(intentLock) { if(memoryEpoch.get()==token && state.value.lockState.canDisplaySensitiveContent)
+                synchronized(intentLock) { if(memoryPageOpen && memoryEpoch.get()==token && state.value.lockState.canDisplaySensitiveContent)
                     mutableMemoryPage.value=displayed(MemoryUiState(owner,snapshot,totalMemories=snapshot.clearAuthority?.memoryCount ?: count,totalImports=snapshot.clearAuthority?.importCount ?: imports),"page") }
             } catch (_: Exception) { if(memoryEpoch.get()==token) mutableMemoryPage.value=memoryPage.value.copy(failed=true,loading=false,pendingOperation=false) }
         }
@@ -202,12 +217,13 @@ class CounselController(
     private suspend fun refreshMemory(owner: String?) {
         val routeToken=memoryEpoch.get()
         val authorityToken=epoch.get()
-        val snapshot=persistence.memorySnapshot(owner)
-        if(memoryPage.value.ownerId==owner) {
+        val snapshot=persistence.memoryContextSnapshot(owner)
+        if(memoryPageOpen && memoryPage.value.ownerId==owner) {
+            val management=persistence.memorySnapshot(owner)
             var count=0;var imports=0
             persistence.contacts().forEach { contact -> val detail=persistence.contactDetails(contact);count+=detail.memories.size;imports+=detail.imports.size }
-            if(memoryEpoch.get()==routeToken && memoryPage.value.ownerId==owner)
-                mutableMemoryPage.value=displayed(memoryPage.value.copy(snapshot=snapshot,failed=false,loading=false,pendingOperation=false,totalMemories=snapshot.clearAuthority?.memoryCount ?: count,totalImports=snapshot.clearAuthority?.importCount ?: imports),"page")
+            if(memoryPageOpen && memoryEpoch.get()==routeToken && memoryPage.value.ownerId==owner)
+                mutableMemoryPage.value=displayed(memoryPage.value.copy(snapshot=management,failed=false,loading=false,pendingOperation=false,totalMemories=management.clearAuthority?.memoryCount ?: count,totalImports=management.clearAuthority?.importCount ?: imports),"page")
         }
         if(epoch.get()==authorityToken && state.value.currentContact?.id==owner) {
             mutableMemory.value=displayed(memory.value.copy(ownerId=owner,snapshot=snapshot,failed=false,loading=false,pendingOperation=false),"inline")
@@ -259,7 +275,7 @@ class CounselController(
                 // The approval may already have committed before this decline linearized.
                 // Reveal its existing receipt; never turn an old decline into withdrawal.
                 if(operation==null && synchronized(intentLock) { epoch.get()==submitted && currentDisplay(receipt) }) {
-                    val live=runCatching { persistence.memorySnapshot(owner) }.getOrNull()
+                    val live=runCatching { persistence.memoryContextSnapshot(owner) }.getOrNull()
                     synchronized(intentLock) {
                         if(live!=null && live.consent.enabled && epoch.get()==submitted && currentDisplay(receipt)) {
                             pendingMemory=null;pendingMemoryStamp=null
@@ -357,7 +373,7 @@ class CounselController(
     fun editMemory(owner: String, entry: MemoryEntry, receipt: MemoryUiReceipt, editorOperation: String) {
         var result: MemoryOperation?=null
         mutateMemory(owner,receipt,{ result?.let { op -> op.after.firstOrNull { it.id==entry.id }?.let { saved -> showMemoryNotice(saved.value,op.id,owner,saved.sourceType==MemorySource.ASSISTANT_INFERENCE) } } }) {
-            val snapshot=persistence.memorySnapshot(owner)
+            val snapshot=persistence.memoryContextSnapshot(owner)
             val current=snapshot.entries.first { it.id==entry.id }
             require(current.contactId==owner)
             require(current.sourceType!=MemorySource.ASSISTANT_INFERENCE || current.id in snapshot.verifiedInferenceIds) { "Unverified legacy inference is read-only" }
@@ -395,7 +411,7 @@ class CounselController(
     private suspend fun rememberCompleted(request: AnalysisRequest, answer: StructuredAnswer, token: Long) {
         val owner=request.contactId ?: return
         if(request.mode!=RequestMode.FULL_ANALYSIS || request.purpose!=OutboundPurpose.ANALYSIS || state.value.answerDemo || !isCurrentMemoryResult(request,token)) return
-        val snapshot=persistence.memorySnapshot(owner)
+        val snapshot=persistence.memoryContextSnapshot(owner)
         if(snapshot.stamp!=proposalStamp) return
         val candidate=MemoryPresentation.candidate(answer,snapshot,owner)?.copy(subjectId=owner,sourceRef=request.requestId) ?: return
         if(snapshot.consent.paused) return
@@ -409,11 +425,11 @@ class CounselController(
             try {
                 val op=persistence.memoryProposal(owner,candidate,stamp)
                 if(!isCurrentMemoryResult(request,token)) {
-                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memorySnapshot(owner).stamp)); return
+                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memoryContextSnapshot(owner).stamp)); return
                 }
                 refreshMemory(owner)
                 if(!isCurrentMemoryResult(request,token)) {
-                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memorySnapshot(owner).stamp));return
+                    persistence.memoryUndo(owner,op.id,checkNotNull(persistence.memoryContextSnapshot(owner).stamp));return
                 }
                 showMemoryNotice(candidate.value,op.id)
                 summaries=emptyList(); previewRequest=null; (assembler as? FrozenPromptAssembler)?.clear()
@@ -464,7 +480,7 @@ class CounselController(
             detailEpoch.incrementAndGet(); mutableDetails.value = ContactDetailState(id, loading = true)
         }
         if (state.value.currentContact?.id == id) {
-            epoch.incrementAndGet(); stream?.cancel()
+            revokeFloatingCaptureLocked();epoch.incrementAndGet(); stream?.cancel()
             set(state.value.copy(answer = null, answerRequest = null, preview = null, currentRequest = null, outboundBody = null))
         }
     }
@@ -514,9 +530,23 @@ class CounselController(
     internal fun importSelectionState() = synchronized(intentLock) { epoch.get() to state.value }
     private val intentLock = Any()
     @Volatile private var importPending = false
-    fun setImportPending(value: Boolean, change:()->Unit = {}) { synchronized(intentLock) {
+    fun setImportPending(value: Boolean, change:()->Unit = {}) = changeImportPending(value,null,change)
+    internal fun continueImportPending(id:String,change:()->Unit) = changeImportPending(true,id,change)
+    private fun changeImportPending(value:Boolean,moreId:String?,change:()->Unit) { synchronized(intentLock) {
         change()
-        importPending = value; epoch.incrementAndGet(); stream?.cancel()
+        val previousCapture=floatingCapture
+        val previousReceiver=captureReceiver
+        val continuing=floatingMore?.takeIf { it.id==moreId && moreCurrent(it) }
+        revokeFloatingMoreLocked()
+        if(value) revokeFloatingCaptureLocked()
+        importPending = value; val next=epoch.incrementAndGet(); stream?.cancel()
+        if(continuing!=null) floatingMore=continuing.copy(epoch=next)
+        if(!value && previousCapture!=null && previousCapture.epoch==next-1) {
+            floatingCapture=previousCapture.copy(epoch=next)
+            captureConfirmation=captureConfirmation?.takeIf {it.captureId==previousCapture.id && it.epoch==next-1}?.copy(epoch=next)
+            mutableState.value=state.value.copy(floatingCapture=floatingCaptureView(state.value))
+        }
+        if(!value && previousReceiver!=null && previousReceiver.epoch==next-1 && captureReceiver?.token==previousReceiver.token) captureReceiver=previousReceiver.copy(epoch=next)
         mailbox.trySend {
             // A share queued during startup must not erase the failure needed by its retry UI.
             if (state.value.conversation != null || state.value.error == null) invalidateRun()
@@ -565,14 +595,18 @@ class CounselController(
     }
     private fun enqueue(invalidate: Boolean = false, block: suspend () -> Unit) {
         synchronized(intentLock) {
-            if (invalidate) { epoch.incrementAndGet(); stream?.cancel() }
+            if (invalidate) { revokeFloatingCaptureLocked();epoch.incrementAndGet(); stream?.cancel() }
             mailbox.trySend(block)
         }
     }
-    private fun enqueueFrom(origin: String?, invalidate: Boolean = false, onDropped: () -> Unit = {}, block: suspend (Long) -> Unit) {
+    private fun enqueueFrom(origin: String?, invalidate: Boolean = false, onDropped: () -> Unit = {}, preserveReceiver:CaptureReceiver?=null,block: suspend (Long) -> Unit) {
         synchronized(intentLock) {
             if (origin == null || state.value.conversation?.id != origin) { onDropped(); return }
-            if (invalidate) { epoch.incrementAndGet(); stream?.cancel() }
+            if (invalidate) {
+                val receiver=captureReceiver?.takeIf {it==preserveReceiver && it.epoch==epoch.get() && it.lock==lockGeneration}
+                revokeFloatingCaptureLocked();val next=epoch.incrementAndGet();stream?.cancel()
+                if(receiver!=null) captureReceiver=receiver.copy(epoch=next)
+            }
             val submissionEpoch = epoch.get()
             mailbox.trySend {
                 if (synchronized(intentLock) { state.value.conversation?.id == origin }) block(submissionEpoch)
@@ -583,8 +617,31 @@ class CounselController(
     private var lockGeneration = 0L
     private var authorityLock = LockState()
     private var runLockGeneration = -1L
+    private var activeRunAuthority:RunAuthority?=null
+    private var previewAuthority:RunAuthority?=null
+    private var floatingStartedAt:Long?=null
+    internal fun reuseFloatingRequest():Boolean = synchronized(intentLock) {
+        val started=floatingStartedAt ?: return@synchronized false
+        state.value.streaming && frozen?.floating==true && state.value.currentRequest==frozen && activeRunAuthority?.let(::authorityCurrent)==true && authorityLock.canDisplaySensitiveContent &&
+            runLockGeneration==lockGeneration && monotonicMillis()-started in 0..10_000
+    }
     private data class RunAuthority(val epoch: Long, val lockGeneration: Long)
     private class RevokedOperation : RuntimeException()
+    private class FloatingOpenFull : RuntimeException()
+    /** Floating requests retain every confirmed line or explicitly return to the full flow. */
+    private fun requireFloatingBudget(request:AnalysisRequest) {
+        if(!request.floating) return
+        if(request.purpose==OutboundPurpose.LONG_RECORD_SUMMARY) throw FloatingOpenFull()
+        val plan=try { ContinuousAnalysis.plan(request.evidence) } catch(_:IllegalArgumentException) { throw FloatingOpenFull() }
+        if(plan.needsSummary) throw FloatingOpenFull()
+        if(request.networkSelection?.toSet()?.let { it!=plan.recent.map { line -> line.id }.toSet() }==true) throw FloatingOpenFull()
+    }
+    private fun floatingOpenFull(authority:RunAuthority) = authorized(authority) {
+        invalidateRun()
+        recovery=null
+        set(state.value.copy(preview=null,outboundBody=null,currentRequest=null,summaryReady=false,answer=null,answerRequest=null,
+            error=CounselError("FLOATING_OPEN_FULL")))
+    }
     private fun authoritySnapshot(expectedEpoch: Long? = null) = synchronized(intentLock) {
         RunAuthority(expectedEpoch ?: epoch.get(), lockGeneration)
     }
@@ -597,24 +654,27 @@ class CounselController(
     }
     val lockRevision get() = synchronized(intentLock) { lockGeneration }
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
+        revokeFloatingCaptureLocked()
         authorityLock = lock
         lockGeneration++
         epoch.incrementAndGet()
         // Immediate display/network revocation; actor-owned fields are cleaned in mailbox order.
         stream?.cancel(); waitingJob?.cancel(); testJob?.cancel()
-        mutableState.value = state.value.copy(lockState=lock, streaming=false, testingConnection=false,
+        mutableState.value = state.value.copy(lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
             partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         mailbox.trySend { clearInlineMemory(); invalidateRun() }
     }
     private fun set(next: CounselState) = synchronized(intentLock) {
         // Ordinary state snapshots never own the lock, including freshly constructed sessions.
-        val visible = next.copy(lockState=authorityLock).let {
+        val floatingPreview=previewRequest?.takeIf { it.floating && previewAuthority?.let(::authorityCurrent)==true }
+        val visible = next.copy(lockState=authorityLock,floatingCapture=floatingCaptureView(next),floatingPreviewReady=floatingPreview!=null,floatingPreviewRequest=floatingPreview).let {
             if (authorityLock.canDisplaySensitiveContent) it else it.copy(streaming=false, testingConnection=false,
                 partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         }
         mutableState.value = if (pendingSummaryCleanup.isEmpty()) visible else visible.copy(error = CounselError("STORAGE_UNAVAILABLE", true))
     }
     private fun invalidateRun() {
+        activeRunAuthority=null;previewAuthority=null
         pendingMemory=null;pendingMemoryStamp=null;approvalFinish=null
         mutableMemory.value=memory.value.copy(consentProposal=null,approvalFinishing=false,pendingOperation=false)
         testGeneration++; testJob?.cancel(); testJob = null
@@ -733,7 +793,8 @@ class CounselController(
         refreshMemory(null)
     }
     /** Capture may only replace the context that was current at the user's click. */
-    internal fun captureTemporary(expected:Long,current:()->Boolean,commit:((()->Unit)->Boolean),completion:(Long?)->Unit) = enqueue {
+    internal fun captureTemporary(expected:Long,current:()->Boolean,commit:((()->Unit)->Boolean),completion:(Long?)->Unit) = captureTemporary(expected,null,current,commit,completion)
+    internal fun captureTemporary(expected:Long,moreId:String?,current:()->Boolean,commit:((()->Unit)->Boolean),completion:(Long?)->Unit) = enqueue {
         if(importAuthority!=expected || !current()) { completion(null);return@enqueue }
         if(!initialized) initializeNow(forCapture=true)
         if(importAuthority!=expected || !current()) { completion(null);return@enqueue }
@@ -743,7 +804,12 @@ class CounselController(
         var previous:TemporarySessionCredential?=null
         val switched=synchronized(intentLock) {
             if(importAuthority!=expected || !current()) false
-            else commit { claimed=epoch.incrementAndGet();previous=credential;beginTemporaryState(next) }
+            else commit {
+                val continuing=floatingMore?.takeIf { it.id==moreId && moreCurrent(it) }
+                revokeFloatingMoreLocked()
+                claimed=epoch.incrementAndGet();previous=credential;beginTemporaryState(next)
+                if(continuing!=null) floatingMore=continuing.copy(epoch=checkNotNull(claimed))
+            }
         }
         if(switched) { previous?.let { temporary.remove(it) };refreshMemory(null) }
         else temporary.remove(next)
@@ -755,7 +821,7 @@ class CounselController(
         invalidateRun()
         recovery = Recovery.Load(contact)
         val saved = persistence.loadOrCreate(contact)
-        val memorySnapshot=persistence.memorySnapshot(contact.id)
+        val memorySnapshot=if(saved.sourceBlocked) MemorySnapshot() else persistence.memoryContextSnapshot(contact.id)
         val memoryContext=MemoryPresentation.context(contact.id,memorySnapshot)
         if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
         if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
@@ -768,12 +834,12 @@ class CounselController(
         val answerRequest = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.requestSnapshot
         val answer = answerMessage?.answerJson?.let { runCatching { json.decodeFromString(StructuredAnswer.serializer(), it) }.getOrNull() }
         val profile = persistence.redactionProfile(contact.id)
-        val completedCurrentAnswer = (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) && AnswerSourcePolicy.matches(answerRequest,
+        val completedCurrentAnswer = !saved.sourceBlocked && (answerRequest==null || MemoryPresentation.sourcesRetained(answerRequest.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) && AnswerSourcePolicy.matches(answerRequest,
             saved.runs.firstOrNull { it.requestId == answerMessage?.requestId }?.configRevision,
             saved.conversation, contact.id, contact.sourceRevision, saved.draft, saved.evidence, profile.revision, settings.saved.revision)
         val resumable = saved.runs.sortedBy { if (it.requestId == latestUser?.requestId) 1 else 0 }.lastOrNull { run ->
             val r = run.requestSnapshot
-            r != null && r.actualDataContext==memoryContext && (run.requestId == latestUser?.requestId || (r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && !completedCurrentAnswer)) && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
+            !saved.sourceBlocked && r != null && r.actualDataContext==memoryContext && (run.requestId == latestUser?.requestId || (r.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && !completedCurrentAnswer)) && run.status in setOf(RunStatus.RUNNING, RunStatus.INTERRUPTED, RunStatus.FAILED, RunStatus.CANCELLED) &&
                 r.conversationId == saved.conversation.id && r.conversationRevision == saved.conversation.revision &&
                 r.contactId == contact.id && r.sourceRevision == contact.sourceRevision && r.userText == saved.draft &&
                 r.evidence == saved.evidence && r.redactionProfile.revision == profile.revision && run.configRevision == settings.saved.revision &&
@@ -804,7 +870,8 @@ class CounselController(
                 manualRelation = answerRequest?.manualRelation, manualGoal = answerRequest?.manualGoal, manualFormality = answerRequest?.manualFormality,
                 formality = answerRequest?.manualFormality ?: answer?.scene?.formality?.takeIf { it in setOf("low", "medium", "high") } ?: "medium",
                 messages = saved.messages, evidence = saved.evidence, answer = answer, answerSourceRevision = answerRequest?.sourceRevision, answerRequest = answerRequest, answerConfigRevision = saved.runs.lastOrNull { it.requestId == answerMessage?.requestId }?.configRevision, draftSaved = true, answerDemo = answerMessage?.providerKind != ProviderKind.BYOK,
-                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile, safety = summarySafety))
+                modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings, redactionProfile = profile, safety = summarySafety,sourceSelectionBlocked=saved.sourceBlocked,captureSourcePreferred=saved.capturePreferred,
+                error=if(saved.sourceBlocked) CounselError("CAPTURE_SOURCE_RECONFIRM") else null))
             recovery = resumable?.requestSnapshot?.let { r ->
                 inputRevision = r.inputRevision
                 set(state.value.copy(relationType = r.relationType ?: contact.relationType, goal = r.goal ?: Goal.REPLY,
@@ -822,7 +889,7 @@ class CounselController(
     fun selectContact(id: String) {
         synchronized(intentLock) {
             if (state.value.contacts.none { it.id == id && it.archivedAt == null }) return
-            epoch.incrementAndGet(); stream?.cancel()
+            revokeFloatingCaptureLocked();epoch.incrementAndGet(); stream?.cancel()
             val token = selectionEpoch.incrementAndGet()
             mailbox.trySend {
                 state.value.contacts.firstOrNull { it.id == id && it.archivedAt == null }?.let { flushDraft(); loadContact(it, selectionToken = token) }
@@ -947,7 +1014,9 @@ class CounselController(
         }
         return ContinuousAnalysis.historyExcerpt(pieces.takeLast(2).joinToString("\n"), 900)
     }
-    private fun nextRequest(source: AnalysisRequest, authority: RunAuthority): AnalysisRequest = authorized(authority) {
+    private fun nextRequest(candidateSource: AnalysisRequest, authority: RunAuthority): AnalysisRequest = authorized(authority) {
+        val source=if(candidateSource.floating) candidateSource.copy(redactionTerms=(candidateSource.redactionTerms+candidateSource.evidence.flatMap { it.lines }.mapNotNull { it.speakerName }).filter { it.isNotBlank() }.distinct()) else candidateSource
+        requireFloatingBudget(source)
         if (source.networkSelection != null || source.mode != RequestMode.FULL_ANALYSIS || source.purpose != OutboundPurpose.ANALYSIS) return@authorized source
         val plan = ContinuousAnalysis.plan(source.evidence)
         if (!plan.needsSummary || !settings.saved.live) return@authorized source.copy(networkSelection = plan.recent.map { it.id })
@@ -968,7 +1037,7 @@ class CounselController(
     private suspend fun request(authority: RunAuthority): AnalysisRequest {
         val current = authorized(authority) { state.value }
         val conversation = checkNotNull(current.conversation)
-        val memorySnapshot=persistence.memorySnapshot(current.currentContact?.id)
+        val memorySnapshot=persistence.memoryContextSnapshot(current.currentContact?.id)
         val context=MemoryPresentation.context(current.currentContact?.id,memorySnapshot)
         return authorized(authority) {
         mutableMemory.value=displayed(memory.value.copy(ownerId=current.currentContact?.id,snapshot=memorySnapshot),"inline")
@@ -985,7 +1054,7 @@ class CounselController(
             actualDataContext=context, recentSummary = history(current.copy(memoryContext=context,memoryRetention=MemoryPresentation.retention(current.currentContact?.id,memorySnapshot))), evidence = current.evidence, speakersConfirmed = current.evidence.isNotEmpty() && current.evidence.flatMap { it.lines }.all { it.speakerConfirmed })
         }
     }
-    private fun ordinaryAllowed() = pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
+    private fun ordinaryAllowed() = !state.value.sourceSelectionBlocked && (floatingSideOperation?.let { it.epoch==epoch.get() }!=true) && pendingSummaryCleanup.isEmpty() && SafetyPolicy.evaluate(state.value.emotion, state.value.safety.upgrade(state.value.answer?.safety ?: SafetyLevel.NONE), SafetyLevel.NONE, state.value.lockState).showOrdinaryStrategy
     private suspend fun answerSourceCurrent(): Boolean {
         val current = state.value
         if (!current.hasCurrentAnswerSource()) return false
@@ -1004,7 +1073,7 @@ class CounselController(
         if (!AnswerSourcePolicy.matches(original, run.configRevision, current.conversation, contact?.id,
             contact?.sourceRevision ?: 0, current.draft, current.evidence, current.redactionProfile.revision, settings.saved.revision)) return false
         if (stored == null) return true
-        val memorySnapshot=persistence.memorySnapshot(contact!!.id)
+        val memorySnapshot=persistence.memoryContextSnapshot(contact!!.id)
         if(!MemoryPresentation.sourcesRetained(original.actualDataContext,MemoryPresentation.retention(contact.id,memorySnapshot))) return false
         return stored.messages.any { it.id == source.id && it.answerJson == source.answerJson } &&
             stored.conversation == current.conversation && stored.draft == current.draft && stored.evidence == current.evidence &&
@@ -1023,24 +1092,30 @@ class CounselController(
             if (settings.saved.live) preparePreview(origin) else analyze(origin)
         }
     }
-    fun rewrite(origin: String?, answerId: String, tone: Tone, bias: Float) = enqueueFrom(origin) { submissionEpoch ->
+    fun rewrite(origin: String?, answerId: String, tone: Tone, bias: Float, requirePreview: Boolean = false, onPrepared: (AnalysisRequest)->Unit = {}) = enqueueFrom(origin) { submissionEpoch ->
         val submitted=authoritySnapshot(submissionEpoch)
         val original = state.value.answer ?: return@enqueueFrom
         if (original.id != answerId || !ordinaryAllowed() || state.value.streaming || state.value.error != null || !answerSourceCurrent()) return@enqueueFrom
+        val captureBefore=floatingCapture?.takeIf { it.epoch==submitted.epoch && requirePreview }
         val authority=authorized(submitted) { authoritySnapshot(epoch.incrementAndGet()) }
         inputRevision++
+        if(captureBefore!=null) floatingCapture=captureBefore.copy(epoch=authority.epoch,inputRevision=inputRevision)
         invalidateRun()
         val snapshot = request(authority).copy(mode = RequestMode.REWRITE_REPLY, purpose = OutboundPurpose.REPLY_REWRITE,
-            parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = bias.coerceIn(0f, 1f))
-        if (settings.saved.live) {
-            if(snapshot.actualDataContext!=MemoryPresentation.context(snapshot.contactId,persistence.memorySnapshot(snapshot.contactId))) {
+            parentAnswerId = original.id, originalAnswer = original, tone = tone, styleBias = bias.coerceIn(0f, 1f), floating=requirePreview,
+            redactionTerms=if(requirePreview) state.value.evidence.flatMap { it.lines }.mapNotNull { it.speakerName }.distinct() else emptyList())
+        try { requireFloatingBudget(snapshot) } catch(_:FloatingOpenFull) { floatingOpenFull(authority);return@enqueueFrom }
+        if (settings.saved.live || requirePreview) {
+            if(snapshot.actualDataContext!=MemoryPresentation.context(snapshot.contactId,persistence.memoryContextSnapshot(snapshot.contactId))) {
                 authorized(authority) { invalidateRun() }; return@enqueueFrom
             }
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
             authorized(authority) {
                 if(state.value.conversation?.id != origin) throw RevokedOperation()
+                previewAuthority=authoritySnapshot()
                 previewRequest = snapshot
                 set(state.value.copy(preview = prepared, outboundBody = outboundBody(prepared)))
+                onPrepared(snapshot)
             }
         } else start(snapshot,authority)
     }
@@ -1066,7 +1141,7 @@ class CounselController(
         }
     }
     fun preparePreview() = preparePreview(state.value.conversation?.id)
-    fun preparePreview(originConversationId: String?) = enqueueFrom(originConversationId) preview@{ operationEpoch ->
+    fun preparePreview(originConversationId: String?, floating: Boolean = false, onPrepared: (AnalysisRequest)->Unit = {}) = enqueueFrom(originConversationId) preview@{ operationEpoch ->
         val authority=authoritySnapshot(operationEpoch)
         authorized(authority) { Unit }
         if (!ordinaryAllowed()) return@preview
@@ -1080,20 +1155,23 @@ class CounselController(
         recovery = Recovery.Preview
         try {
             // Preview belongs to the next send. Only retry may reuse a failed/cancelled run.
-            var snapshot = nextRequest(previewRequest ?: interrupted ?: request(authority),authority)
+            var snapshot = nextRequest((previewRequest ?: interrupted ?: request(authority)).copy(floating=floating),authority)
             if (snapshot.purpose == OutboundPurpose.LONG_RECORD_SUMMARY && finishSavedSummary(snapshot,authority)) {
                 authorized(authority) { Unit }
                 snapshot = nextRequest(request(authority),authority)
             }
             val prepared = withContext(Dispatchers.Default) { assembler.prepare(snapshot) }
             authorized(authority) {
+                previewAuthority=authoritySnapshot()
                 previewRequest = snapshot
                 set(state.value.copy(currentRequest = if (snapshot.purpose == OutboundPurpose.LONG_RECORD_SUMMARY) snapshot else state.value.currentRequest, preview = prepared, outboundBody = outboundBody(prepared), error = null))
                 recovery = null
+                onPrepared(snapshot)
             }
         }
         catch (_: RevokedOperation) { return@preview }
-        catch (_: Exception) { set(state.value.copy(error = CounselError(if (recovery is Recovery.FinishSummary) "STORAGE_UNAVAILABLE" else "PROMPT_UNAVAILABLE", true))) }
+        catch (_: FloatingOpenFull) { floatingOpenFull(authority) }
+        catch (_: Exception) { authorized(authority) { set(state.value.copy(error = CounselError(if (recovery is Recovery.FinishSummary) "STORAGE_UNAVAILABLE" else "PROMPT_UNAVAILABLE", true))) } }
     }
     private suspend fun finishSavedSummary(request: AnalysisRequest, authority: RunAuthority): Boolean {
         authorized(authority) { Unit }
@@ -1147,13 +1225,16 @@ class CounselController(
             summaries = summaries.filterNot { it.key == cache.key && it.request.requestId == cache.request.requestId }
         }
     }
+    internal fun analyzeFloating(origin:String?,expected:AnalysisRequest?,onStarted:(AnalysisRequest)->Unit={}) = analyzeScoped(origin,true,expected,onStarted)
     fun analyze() = analyze(state.value.conversation?.id)
-    fun analyze(originConversationId: String?) = enqueueFrom(originConversationId) analyze@{ submissionEpoch ->
+    fun analyze(originConversationId: String?, onStarted: (AnalysisRequest)->Unit = {}) = analyzeScoped(originConversationId,false,null,onStarted)
+    private fun analyzeScoped(originConversationId:String?,floating:Boolean,expected:AnalysisRequest?,onStarted:(AnalysisRequest)->Unit) = enqueueFrom(originConversationId) analyze@{ submissionEpoch ->
         val authority=authoritySnapshot(submissionEpoch)
         authorized(authority) { Unit }
         if (!ordinaryAllowed()) return@analyze
         if (state.value.redactionError) return@analyze
         if (state.value.testingConnection) return@analyze
+        if(floating && (expected==null || expected!=previewRequest || !expected.floating || previewAuthority?.let(::authorityCurrent)!=true)) return@analyze
         if (importPending || state.value.loading || state.value.conversation == null) return@analyze
         if (state.value.streaming) return@analyze
         if (state.value.draft.isBlank() && state.value.evidence.isEmpty()) { set(state.value.copy(error = CounselError("INPUT_REQUIRED"))); return@analyze }
@@ -1164,7 +1245,7 @@ class CounselController(
         }
         val snapshot = previewRequest ?: (recovery as? Recovery.Analysis)?.request?.takeIf { state.value.error?.code == "INTERRUPTED" } ?: nextRequest(request(authority),authority)
         authorized(authority) { previewRequest = null } // One preview authorizes one operation.
-        start(snapshot,authority)
+        start(snapshot,authority,onStarted)
     }
     fun retry() {
         val authority=authoritySnapshot()
@@ -1228,9 +1309,10 @@ class CounselController(
             check(temporary.put(token, session.copy(messages = session.messages.filterNot { it.id == message.id } + message)))
         }
     }
-    private suspend fun start(request: AnalysisRequest, authority: RunAuthority) {
+    private suspend fun start(request: AnalysisRequest, authority: RunAuthority, onStarted:(AnalysisRequest)->Unit = {}) {
         authorized(authority) { Unit }
-        val snapshot=persistence.memorySnapshot(request.contactId)
+        try { requireFloatingBudget(request) } catch(_:FloatingOpenFull) { floatingOpenFull(authority);return }
+        val snapshot=persistence.memoryContextSnapshot(request.contactId)
         authorized(authority) { Unit }
         if(request.actualDataContext!=MemoryPresentation.context(request.contactId,snapshot)) { authorized(authority) { invalidateRun() }; return }
         authorized(authority) { proposalStamp=snapshot.stamp }
@@ -1255,10 +1337,14 @@ class CounselController(
             // Advancing a run is permitted only by the original, still-current submission.
             val next=epoch.incrementAndGet()
             runLockGeneration=authority.lockGeneration
+            floatingCapture?.takeIf { it.epoch==authority.epoch && request.floating }?.let { floatingCapture=it.copy(epoch=next,inputRevision=inputRevision) }
+            activeRunAuthority=RunAuthority(next,authority.lockGeneration)
             frozen = request
+            floatingStartedAt=if(request.floating) monotonicMillis() else null
             recovery = Recovery.Analysis(request)
             set(state.value.copy(streaming = true, partial = emptyMap(), answer = null, safety = priorSafety,
                 answerDemo = operationProvider.kind == ProviderKind.DEMO, error = null, currentRequest = request))
+            onStarted(request)
             next
         }
         try {
@@ -1435,61 +1521,269 @@ class CounselController(
     }
     /** The same mailbox owns target selection, source CAS, dedup and evidence refresh. */
     fun commitImport(preview: ImportPreview, completion: (Boolean) -> Unit) {
+        commitImportResult(preview) {completion(it.success)}
+    }
+    internal fun commitImportResult(preview:ImportPreview,completion:(ImportCommitResult)->Unit) {
+        fun finish(success:Boolean,error:String?=null) = completion(ImportCommitResult(success,error))
+        val moreOrigin=synchronized(intentLock) { floatingMore?.takeIf { it.before.ticket==preview.captureSession && moreCurrent(it) } }
+        val continuing=moreOrigin?.takeIf { it.id==preview.captureContinuationId }
         val origin = state.value.conversation?.id
-        enqueueFrom(origin, true, onDropped = { completion(false) }) { intentEpoch ->
+        val receiver=synchronized(intentLock) {captureReceiver?.takeIf {it.previewId==preview.id && it.ticket==preview.captureSession && it.epoch==epoch.get() && it.lock==lockGeneration}}
+        enqueueFrom(origin, true, onDropped = { finish(false) },preserveReceiver=receiver) { intentEpoch ->
             try {
-                if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                 check(preview.canConfirm)
+                if(moreOrigin?.before?.contactId!=null && preview.target?.contact?.id==moreOrigin.before.contactId) check(continuing!=null) { "Explicit capture continuation required" }
+                if(preview.captureContinuationId!=null) check(continuing!=null && preview.target?.newAlias==null && preview.target?.contact?.id==continuing.before.contactId && preview.floatingSource==continuing.before.binding?.source)
                 flushDraft()
-                if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                 invalidateRun()
                 val target = checkNotNull(preview.target)
                 var contact = target.contact
                 if (target.newAlias != null) {
                     val id = "import-contact:${preview.id}"
                     contact = persistence.contacts().firstOrNull { it.id == id && it.archivedAt == null }
-                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                     if (contact == null) {
                         val created = Contact(id, target.newAlias.trim(), RelationType.ACQUAINTANCE, createdAt = System.currentTimeMillis())
                         persistence.createContact(created)
-                        if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                        if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                         contact = persistence.contacts().first { it.id == id }
-                        if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                        if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                     }
                 }
                 val id = "import:${preview.id}"
                 val hash = ChatImportParser.hash(preview.rows)
-                val imported = ChatImport(id, contact?.id, preview.source, hash, System.currentTimeMillis())
+                val imported = ChatImport(id, contact?.id, preview.source, hash, preview.createdAt)
+                var capturedImport=imported
+                var capturedBinding:FloatingIdentityBinding?=null
+                var capturedProvenance:LiveCaptureProvenance?=null
+                var duplicateCapture=false
                 val lines = preview.rows.mapIndexed { i, row -> ChatLine("$id:$i", id, i,
                     checkNotNull(row.speaker), row.text, row.sentAt, ocrConfidence = row.ocrConfidence, speakerConfirmed = true,
                     contactId = contact?.id, speakerName = row.name.ifBlank { null }) }
+                val retained=preview.rows.mapIndexed {index,row->row.id to lines[index]}.toMap()
+                val frames=preview.captureFrames.map {frame->frame.mapIndexed {index,row->
+                    val kept=retained[row.id] ?: throw CaptureHistoryReviewRequired()
+                    kept.copy(seq=index,text=row.text,sentAt=row.sentAt,speaker=checkNotNull(row.speaker),speakerName=row.name.ifBlank {null})
+                }}.ifEmpty {listOf(lines)}
                 if (contact != null) {
-                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
-                    val savedId = persistence.saveImport(contact, imported, lines)
+                    if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
+                    val savedId = if(continuing!=null && preview.captureContinuationId==continuing.id) {
+                        val before=continuing.before
+                        check(contact.id==before.contactId)
+                        val proof=requireNotNull(before.provenance)
+                        val binding=before.binding?.copy(contactRevision=before.contactRevision+1,revision=before.binding.revision+1,rightIsMe=preview.mySide==com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.RIGHT)
+                        val nextId=LiveCaptureFingerprint.id(imported.id)
+                        val nextImport=imported.copy(id=nextId,contentHash=LiveCaptureFingerprint.stored(proof.lineageId,LiveCaptureFingerprint.normalized(lines)))
+                        val nextLines=lines.mapIndexed {i,line->line.copy(id="$nextId:$i",importId=nextId)}
+                        val nextByOriginalId=lines.zip(nextLines).associate {it.first.id to it.second}
+                        val mappedFrames=frames.map {frame->frame.map {line->
+                            val kept=checkNotNull(nextByOriginalId[line.id]);line.copy(id=kept.id,importId=nextId)
+                        }}
+                        val change=CapturedImportReplacement(before.imported.id,before.imported.contentHash,before.contactRevision,nextImport,nextLines,binding,before.binding?.revision ?: 0,proof,mappedFrames)
+                        contact=persistence.replaceCaptured(change) { epoch.get()==intentEpoch && lockGeneration==continuing.lock && authorityLock.canDisplaySensitiveContent }
+                        capturedBinding=binding;capturedImport=nextImport
+                        capturedProvenance=requireNotNull(persistence.liveCaptureProvenance(contact.id,proof.lineageId))
+                        nextId
+                    } else if(preview.captureSession!=null) {
+                        val saved=persistence.saveReviewedCaptured(contact,imported,lines,frames) {epoch.get()==intentEpoch && authorityLock.canDisplaySensitiveContent}
+                        capturedImport=saved.imported;capturedProvenance=saved.provenance;duplicateCapture=saved.duplicate
+                        saved.imported.id
+                    } else persistence.saveImport(contact, imported, lines)
                     val contacts = persistence.contacts()
                     set(state.value.copy(contacts = contacts,
                         currentContact = state.value.currentContact?.let { current -> contacts.firstOrNull { it.id == current.id } }))
-                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
-                    if (!loadContact(contacts.first { it.id == contact.id }, intentEpoch)) { completion(false); return@enqueueFrom }
-                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
-                    set(state.value.copy(importDuplicate = savedId != imported.id))
+                    if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
+                    if (!loadContact(contacts.first { it.id == contact.id }, intentEpoch)) { finish(false); return@enqueueFrom }
+                    if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
+                    set(state.value.copy(importDuplicate = if(preview.captureSession!=null) duplicateCapture else savedId != imported.id))
+                    preview.floatingSource?.takeIf { preview.captureContinuationId==null }?.let { source ->
+                        val confirmed=contacts.first { it.id==contact.id }
+                        val binding=FloatingIdentityBinding(preview.id,confirmed.id,source,
+                            preview.rows.map { it.name }.filter { it.isNotBlank() }.distinct().joinToString(" / "),
+                            preview.mySide==com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.RIGHT,confirmed.sourceRevision)
+                        persistence.saveFloatingIdentity(binding);capturedBinding=binding
+                    }
                 } else {
-                    if (epoch.get() != intentEpoch) { completion(false); return@enqueueFrom }
+                    if (epoch.get() != intentEpoch) { finish(false); return@enqueueFrom }
                     if (state.value.currentContact != null) beginTemporary()
                     val lease = checkNotNull(credential)
                     val session = checkNotNull(temporary.get(lease))
                     val duplicate = session.imports.any { it.contentHash == hash }
+                    session.imports.firstOrNull { it.contentHash==hash }?.let { capturedImport=it }
                     set(state.value.copy(importDuplicate = duplicate))
                     if (!duplicate) {
-                        check(temporary.put(lease, session.copy(imports = session.imports + imported, lines = session.lines + lines)))
+                        val draft=continuing?.takeIf { it.id==preview.captureContinuationId }?.before?.draft ?: state.value.draft
+                        check(temporary.put(lease, session.copy(imports = session.imports + imported, lines = session.lines + lines,draft=draft)))
                         inputRevision++
-                        set(state.value.copy(evidence = state.value.evidence + EvidenceBlock(id, preview.source.name, lines), answer = null))
+                        set(state.value.copy(evidence = state.value.evidence + EvidenceBlock(id, preview.source.name, lines),draft=draft, answer = null))
                     }
                 }
                 recovery = null
-                completion(true)
-            } catch (_: Exception) { completion(false) }
+                if(preview.captureSession!=null && preview.mySide!=null) synchronized(intentLock) {
+                    if(epoch.get()==intentEpoch) installFloatingCapture(preview,capturedImport,capturedBinding,capturedProvenance)
+                }
+                finish(true)
+            } catch (failure: Exception) {
+                synchronized(intentLock) { if(epoch.get()==intentEpoch && continuing!=null && continuing.lock==lockGeneration && authorityLock.canDisplaySensitiveContent) floatingMore=continuing.copy(epoch=intentEpoch) }
+                finish(false,if(failure is CaptureHistoryReviewRequired && epoch.get()==intentEpoch && authorityLock.canDisplaySensitiveContent) "CAPTURE_HISTORY_REVIEW" else null)
+            }
         }
+    }
+    private var captureConfirmation:CaptureConfirmation?=null
+    private var captureReceiver:CaptureReceiver?=null
+    internal fun registerCaptureReceiver(previewId:String,ticket:Long):String? = synchronized(intentLock) {
+        if(!importPending || !authorityLock.canDisplaySensitiveContent) return@synchronized null
+        CaptureReceiver(UUID.randomUUID().toString(),previewId,ticket,epoch.get(),lockGeneration).also {captureReceiver=it}.token
+    }
+    internal fun unregisterCaptureReceiver(token:String) = synchronized(intentLock) {
+        if(captureReceiver?.token==token) {captureReceiver=null;if(captureConfirmation?.receiver==token) captureConfirmation=null}
+    }
+    internal fun consumeCaptureConfirmation(previewId:String,ticket:Long,receiver:String?=null):Boolean = synchronized(intentLock) {
+        val ack=captureConfirmation ?: return@synchronized false
+        val capture=floatingCapture ?: return@synchronized false
+        if(receiver==null || captureReceiver?.token!=receiver || captureReceiver?.epoch!=epoch.get() || captureReceiver?.lock!=lockGeneration || ack.receiver!=receiver || importPending || ack.previewId!=previewId || ack.ticket!=ticket || ack.captureId!=capture.id ||
+            ack.actualSavedId!=capture.imported.id || ack.origin!=capture.origin || ack.epoch!=capture.epoch ||
+            ack.lock!=capture.lock || ack.contactId!=capture.contactId || ack.contactRevision!=capture.contactRevision ||
+            ack.conversationRevision!=capture.conversationRevision || ack.inputRevision!=capture.inputRevision ||
+            ack.config!=capture.config || !captureMatches(capture) || state.value.evidence.none {it.id==ack.actualSavedId}) return@synchronized false
+        captureConfirmation=null;true
+    }
+    private var floatingCapture:ConfirmedFloatingCapture?=null
+    private var floatingMore:FloatingCaptureMore?=null
+    private fun revokeFloatingMoreLocked() { floatingMore=null }
+    private fun moreCurrent(m:FloatingCaptureMore) = m.epoch==epoch.get() && m.lock==lockGeneration && authorityLock.canDisplaySensitiveContent && settings.saved.revision==m.before.config
+    internal fun dropFloatingMore(id:String) = synchronized(intentLock) { if(floatingMore?.id==id) revokeFloatingMoreLocked() }
+    internal fun captureMore(id:String):FloatingCaptureMore? = synchronized(intentLock) { floatingMore?.takeIf { it.id==id && moreCurrent(it) } }
+    internal fun prepareFloatingMore(origin:String?,receiptId:String,ticket:Long):FloatingCaptureMore? = synchronized(intentLock) {
+        val before=floatingCapture?.takeIf { it.id==receiptId && it.origin==origin && it.ticket==ticket && captureMatches(it) } ?: return@synchronized null
+        val next=epoch.incrementAndGet()
+        invalidateRun();floatingCapture=null
+        FloatingCaptureMore(UUID.randomUUID().toString(),before,next,lockGeneration).also { floatingMore=it
+            set(state.value.copy(answer=null,answerRequest=null,preview=null,outboundBody=null,currentRequest=null,streaming=false,partial=emptyMap())) }
+    }
+    private var floatingSideOperation:FloatingSideOperation?=null
+    private fun revokeFloatingCaptureLocked() {
+        captureConfirmation=null;captureReceiver=null
+        revokeFloatingMoreLocked()
+        floatingCapture=null;floatingSideOperation=null
+        mutableState.value=state.value.copy(floatingCapture=null,floatingPreviewReady=false,floatingPreviewRequest=null)
+    }
+    private fun captureMatches(c:ConfirmedFloatingCapture,current:CounselState=state.value):Boolean =
+        c.epoch==epoch.get() && c.lock==lockGeneration && authorityLock.canDisplaySensitiveContent &&
+        current.conversation?.id==c.origin && current.conversation.revision==c.conversationRevision &&
+        current.currentContact?.id==c.contactId && (current.currentContact?.sourceRevision ?: 0)==c.contactRevision &&
+        current.modelSettings.saved.revision==c.config && current.draft==c.draft && current.evidence==c.evidence && inputRevision==c.inputRevision
+    private fun floatingCaptureView(current:CounselState):FloatingCaptureView? {
+        val operation=floatingSideOperation
+        if(operation!=null && operation.epoch==epoch.get() && operation.lock==lockGeneration && current.conversation?.id==operation.before.origin)
+            return FloatingCaptureView(operation.before.id,operation.mySide,operation.busy,operation.failed)
+        return floatingCapture?.takeIf { captureMatches(it,current) }?.let { FloatingCaptureView(it.id,it.mySide,canSwapPhysicalSide=FloatingCaptureRows.canSwap(it.rows)) }
+    }
+    private fun installFloatingCapture(preview:ImportPreview,imported:ChatImport,binding:FloatingIdentityBinding?,provenance:LiveCaptureProvenance?) {
+        val current=state.value;val conversation=checkNotNull(current.conversation)
+        floatingCapture=ConfirmedFloatingCapture(UUID.randomUUID().toString(),checkNotNull(preview.captureSession),conversation.id,current.currentContact?.id,
+            current.currentContact?.sourceRevision ?: 0,conversation.revision,epoch.get(),lockGeneration,current.modelSettings.saved.revision,inputRevision,
+            current.draft,current.evidence,imported,preview.rows,checkNotNull(preview.mySide),binding,provenance)
+        val captured=checkNotNull(floatingCapture)
+        val receiver=captureReceiver?.takeIf {it.previewId==preview.id && it.ticket==captured.ticket && it.epoch==captured.epoch && it.lock==captured.lock}
+        captureConfirmation=receiver?.let {CaptureConfirmation(preview.id,captured.ticket,captured.origin,captured.id,imported.id,captured.epoch,captured.lock,
+            captured.contactId,captured.contactRevision,captured.conversationRevision,captured.inputRevision,captured.config,it.token)}
+        set(current)
+    }
+    internal fun editFloatingDraft(origin:String?,receiptId:String,text:String) {
+        val before=synchronized(intentLock) { floatingCapture?.takeIf { it.id==receiptId && it.origin==origin && captureMatches(it) } } ?: return
+        enqueueFrom(origin,true) { submitted ->
+            edit { it.copy(draft=text) }
+            synchronized(intentLock) { if(epoch.get()==submitted && state.value.conversation?.id==origin && state.value.evidence==before.evidence) {
+                floatingCapture=before.copy(id=UUID.randomUUID().toString(),epoch=submitted,inputRevision=inputRevision,draft=state.value.draft,conversationRevision=checkNotNull(state.value.conversation).revision)
+                set(state.value)
+            } }
+        }
+    }
+    internal fun closeFloatingCapture(ticket:Long) = synchronized(intentLock) {
+        if(captureConfirmation?.ticket==ticket) captureConfirmation=null
+        if(captureReceiver?.ticket==ticket) captureReceiver=null
+        if(floatingMore?.before?.ticket==ticket) revokeFloatingMoreLocked()
+        val pending=floatingSideOperation
+        if(pending?.before?.ticket==ticket && pending.epoch==epoch.get()) { epoch.incrementAndGet();invalidateRun() }
+        if(floatingCapture?.ticket==ticket || pending?.before?.ticket==ticket) { revokeFloatingCaptureLocked();set(state.value) }
+    }
+    internal fun switchFloatingSide(origin:String?,receiptId:String,onPrepared:(AnalysisRequest)->Unit={}) {
+        synchronized(intentLock) {
+            val retry=floatingSideOperation?.takeIf { it.before.id==receiptId && it.epoch==epoch.get() && it.lock==lockGeneration && it.before.origin==origin }
+            if(retry?.busy==true) return
+            val operation=if(retry!=null) retry.also { it.busy=true;it.failed=false } else {
+                val before=floatingCapture?.takeIf { it.id==receiptId && it.origin==origin && captureMatches(it) } ?: return
+                if(!FloatingCaptureRows.canSwap(before.rows)) return
+                val side=if(before.mySide==com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.RIGHT) com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.LEFT else com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.RIGHT
+                val rows=FloatingCaptureRows.swap(before.rows,side)
+                val operationId="capture-correction:${UUID.randomUUID()}"
+                val id=if(before.contactId!=null) LiveCaptureFingerprint.id(operationId) else operationId
+                val normalized=ChatImportParser.hash(rows)
+                val hash=if(before.contactId!=null) LiveCaptureFingerprint.stored(requireNotNull(before.provenance).lineageId,normalized) else normalized
+                val imported=before.imported.copy(id=id,contentHash=hash,importedAt=wallClockMillis())
+                val lines=rows.mapIndexed { index,row -> ChatLine("$id:$index",id,index,checkNotNull(row.speaker),row.text,row.sentAt,row.ocrConfidence,true,before.contactId,row.name.ifBlank { null }) }
+                val binding=before.binding?.copy(rightIsMe=side==com.shengjidaguai.goutoujunshi.domain.ocr.OcrSide.RIGHT,contactRevision=before.contactRevision+1,revision=before.binding.revision+1)
+                val change=CapturedImportReplacement(before.imported.id,before.imported.contentHash,before.contactRevision,imported,lines,binding,before.binding?.revision ?: 0,before.provenance)
+                val next=epoch.incrementAndGet();inputRevision++;invalidateRun()
+                FloatingSideOperation(before,change,side,rows,next,lockGeneration).also { floatingSideOperation=it }
+            }
+            set(state.value.copy(answer=null,answerRequest=null,answerConfigRevision=null,partial=emptyMap(),preview=null,outboundBody=null,currentRequest=null,streaming=false,error=null))
+            mailbox.trySend {
+                val authority=RunAuthority(operation.epoch,operation.lock)
+                fun current()=synchronized(intentLock) { floatingSideOperation===operation && authorityCurrent(authority) && state.value.conversation?.id==origin }
+                try {
+                    if(!current()) return@trySend
+                    if(operation.before.contactId!=null) {
+                        val contact=persistence.replaceCaptured(operation.change,::current)
+                        if(!current()) return@trySend
+                        val contacts=persistence.contacts()
+                        authorized(authority) { set(state.value.copy(contacts=contacts)) }
+                        if(!loadContact(contact,authority.epoch)) return@trySend
+                    } else {
+                        val lease=checkNotNull(credential)
+                        val session=checkNotNull(temporary.get(lease))
+                        check(current() && session.imports.any { it.id==operation.change.oldImportId && it.contentHash==operation.change.oldHash })
+                        val removedLines=session.lines.filter { it.importId==operation.change.oldImportId }.map { it.id }.toSet()
+                        val affectedRequests=ledger.runs.filter { it.requestSnapshot?.evidence?.any { b -> b.lines.any { it.id in removedLines } }==true }.map { it.requestId }.toSet()
+                        val affectedMessages=session.messages.filter { it.requestId in affectedRequests }.map { it.id }.toSet()
+                        val next=session.copy(imports=session.imports.filterNot { it.id==operation.change.oldImportId }+operation.change.replacement,
+                            lines=session.lines.filterNot { it.importId==operation.change.oldImportId }+operation.change.lines,
+                            samples=session.samples.filterNot { it.sourceImportId==operation.change.oldImportId || it.sourceMessageId in removedLines || it.sourceAnswerId in affectedMessages },
+                            messages=session.messages.filterNot { it.requestId in affectedRequests },summary="",plans=session.plans.filterNot { it.sourceRequestId in affectedRequests })
+                        check(current() && temporary.put(lease,next))
+                        authorized(authority) {
+                            ledger=AnalysisLedger(messages=next.messages,runs=ledger.runs.filterNot { it.requestId in affectedRequests });summaries=emptyList();plans=next.plans
+                            set(state.value.copy(evidence=state.value.evidence.filterNot { it.id==operation.change.oldImportId }+EvidenceBlock(operation.change.replacement.id,ImportSource.SCREENSHOT.name,operation.change.lines),messages=next.messages))
+                        }
+                    }
+                    val updatedProvenance=operation.before.provenance?.let {requireNotNull(persistence.liveCaptureProvenance(requireNotNull(operation.before.contactId),it.lineageId))}
+                    authorized(authority) {
+                        floatingSideOperation=null
+                        val now=state.value;val conversation=checkNotNull(now.conversation)
+                        floatingCapture=operation.before.copy(id=UUID.randomUUID().toString(),epoch=epoch.get(),inputRevision=inputRevision,
+                            contactRevision=now.currentContact?.sourceRevision ?: 0,conversationRevision=conversation.revision,
+                            evidence=now.evidence,draft=now.draft,imported=operation.change.replacement,rows=operation.rows,mySide=operation.mySide,binding=operation.change.binding,provenance=updatedProvenance)
+                        set(now.copy(answer=null,answerRequest=null,answerConfigRevision=null,error=null,feedbackSaved=false))
+                    }
+                    preparePreview(origin,true,onPrepared)
+                } catch(_:Exception) {
+                    synchronized(intentLock) { if(current()) { operation.busy=false;operation.failed=true;set(state.value.copy(answer=null,answerRequest=null,error=CounselError("CAPTURE_CORRECTION_FAILED",true))) } }
+                }
+            }
+        }
+    }
+    internal fun stopFloating(origin: String?, expected: AnalysisRequest?) = synchronized(intentLock) {
+        if(state.value.conversation?.id!=origin || expected==null) return@synchronized
+        val submitted=if(previewRequest==expected) previewAuthority else if(frozen==expected) activeRunAuthority else null
+        if(submitted==null || !authorityCurrent(submitted)) return@synchronized
+        // Revoke before the actor resumes a database suspension. A queued newer input has
+        // already advanced epoch, even while the displayed snapshot still belongs to A.
+        epoch.incrementAndGet()
+        invalidateRun()
+        set(state.value.copy(streaming=false,partial=emptyMap(),currentRequest=null,preview=null,outboundBody=null))
     }
     fun stop() = enqueue(true) {
         if (pendingSummaryCleanup.isNotEmpty()) { set(state.value.copy(streaming = false, error = CounselError("STORAGE_UNAVAILABLE", true))); return@enqueue }

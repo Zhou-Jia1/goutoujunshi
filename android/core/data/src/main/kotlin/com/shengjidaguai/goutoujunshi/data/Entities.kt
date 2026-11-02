@@ -38,7 +38,7 @@ data class MemoryOperationRow(@PrimaryKey val id: String, val contactId: String,
 /** kind is validated by OwnedRecordKind; every row has required contact ownership. */
 @Entity(tableName = "owned_records", foreignKeys = [ForeignKey(ContactRow::class, ["id"], ["contactId"], onDelete = ForeignKey.CASCADE)], indices = [Index("contactId", "kind")])
 data class OwnedRecordRow(@PrimaryKey val id: String, val contactId: String, val kind: OwnedRecordKind, val payload: String)
-enum class OwnedRecordKind { PLAN, EVENT, ANALYSIS_RUN, NICKNAME, REDACTION, SUMMARY, MEMORY_STATE, MEMORY_SOURCE, MEMORY_ANCHOR, MEMORY_REJECTION }
+enum class OwnedRecordKind { PLAN, EVENT, ANALYSIS_RUN, NICKNAME, REDACTION, SUMMARY, MEMORY_STATE, MEMORY_SOURCE, MEMORY_ANCHOR, MEMORY_REJECTION, FLOATING_IDENTITY, CAPTURE_PROJECTION }
 
 @Entity(tableName = "tips", indices = [Index(value = ["name"], unique = true)])
 data class TipRow(@PrimaryKey val id: String, val name: String, val payload: String)

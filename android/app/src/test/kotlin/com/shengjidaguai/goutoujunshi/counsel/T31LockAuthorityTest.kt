@@ -29,6 +29,7 @@ class T31LockAuthorityTest {
         val memoryGate=Gate()
         override suspend fun initialize() { initializeGate?.hold(); base.initialize() }
         override suspend fun loadOrCreate(contact:Contact):StoredCounsel { loadGate?.hold(); return base.loadOrCreate(contact) }
+        override suspend fun memoryContextSnapshot(owner:String?) = memorySnapshot(owner)
         override suspend fun memorySnapshot(owner:String?):MemorySnapshot {
             if(reads.incrementAndGet()==gateAt.get()) memoryGate.hold()
             return base.memorySnapshot(owner)

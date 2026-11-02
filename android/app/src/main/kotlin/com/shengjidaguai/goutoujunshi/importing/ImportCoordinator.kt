@@ -12,16 +12,21 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 data class ImportTarget(val contact: Contact? = null, val newAlias: String? = null)
+internal data class ImportCommitResult(val success:Boolean,val error:String?=null)
 data class ImportPreview(
     val id: String = UUID.randomUUID().toString(), val source: ImportSource = ImportSource.PASTE,
     val rows: List<ImportRow> = emptyList(), val unknownJson: Boolean = false,
     val images: List<Uri> = emptyList(), val target: ImportTarget? = null,
     val imageIds: List<String> = images.map { UUID.randomUUID().toString() },
     val imageLabels: Map<String,Int> = imageIds.withIndex().associate { it.value to it.index+1 },
-    val captureSession: Long? = null, val mySide: OcrSide? = null, val recognized: Boolean = false,
+    val floatingSource: FloatingSourceContext? = null, val captureSession: Long? = null, val mySide: OcrSide? = null, val recognized: Boolean = false,
     val rightsAccepted: Boolean = false, val busy: Boolean = false, val error: String? = null,
+    val captureMoreAvailable:Boolean=false,val captureMoreEligible:Boolean=false,val captureContinuationId:String?=null,
+    val captureMoreNeedsContinuation:Boolean=false,
+    val createdAt:Long=System.currentTimeMillis(),
+    val captureFrames:List<List<ImportRow>> = emptyList(),
 ) {
-    val canConfirm get() = (target?.newAlias == null || target.newAlias.isNotBlank()) && !busy && error == null && (source != ImportSource.SCREENSHOT || ((images.isNotEmpty() || captureSession != null) && recognized && mySide != null)) && rightsAccepted && target != null &&
+    val canConfirm get() = !captureMoreNeedsContinuation && (target?.newAlias == null || target.newAlias.isNotBlank()) && !busy && error == null && (source != ImportSource.SCREENSHOT || ((images.isNotEmpty() || captureSession != null) && recognized && mySide != null)) && rightsAccepted && target != null &&
         rows.size<=MAX_IMPORT_ROWS && rows.sumOf { it.text.toByteArray(Charsets.UTF_8).size }<=MAX_IMPORT_BYTES && rows.any { !it.excluded } && rows.filterNot { it.excluded }.all { (it.ocrConfidence == null || it.ocrConfidence >= .8f || it.reviewed) && it.speaker != null && it.text.isNotBlank() && (it.speaker != Speaker.OTHER || it.name.isNotBlank()) }
 }
 
@@ -51,19 +56,21 @@ class ImportCoordinator(
             ticket.preview==mutable.value?.id && ticket.revision==selectionRevision && state.lockState.canDisplaySensitiveContent
     }
     private var imageRows: Map<String,List<ImportRow>> = emptyMap()
+    private var more:com.shengjidaguai.goutoujunshi.counsel.FloatingCaptureMore?=null
+    private var pendingMore:String?=null
+    private var moreImages=emptyList<String>()
     init { scope.launch { controller.state.collect { state ->
         if (!state.lockState.canDisplaySensitiveContent || (mutable.value?.source == ImportSource.SCREENSHOT &&
             (authority != null && controller.importAuthority != authority))) this@ImportCoordinator.cancel()
     } } }
     private var pendingRead: Pair<ImportPreview, () -> String>? = null
-    private fun begin(source: ImportSource): ImportPreview {
-        controller.setImportPending(true) {
-            selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null
-        }
+    private fun begin(source: ImportSource,moreId:String?=null): ImportPreview {
+        val change={ selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null;more=null;moreImages=emptyList();pendingMore=null }
+        if(moreId!=null) controller.continueImportPending(moreId,change) else controller.setImportPending(true,change)
         return ImportPreview(source = source, rightsAccepted = rightsSeen()).also { mutable.value = it }
     }
     fun cancel() { controller.setImportPending(false) {
-        selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null
+        selectionRevision++;job?.cancel();authority=null;imageRows=emptyMap();pendingRead=null;mutable.value=null;more=null;moreImages=emptyList();pendingMore=null
     } }
 
     fun text(text: String, source: ImportSource = ImportSource.PASTE) {
@@ -160,16 +167,44 @@ class ImportCoordinator(
         if(existing?.captureSession==session && current()) return existing.id
         val selection=++selectionRevision
         val expected=controller.importAuthority
+        val moreId=pendingMore?.takeIf { controller.captureMore(it)?.before?.ticket==session }
         val switched=suspendCancellableCoroutine<Long?> { continuation ->
-            controller.captureTemporary(expected,{ continuation.isActive && current() && selectionRevision==selection && mutable.value===existing },commit ?: { action -> if(current()) { action();true } else false }) {
+            controller.captureTemporary(expected,moreId,{ continuation.isActive && current() && selectionRevision==selection && mutable.value===existing },commit ?: { action -> if(current()) { action();true } else false }) {
                 if(continuation.isActive) continuation.resume(it)
             }
         }
         if(switched==null || controller.importAuthority!=switched) return null
         if(!current() || selectionRevision!=selection || mutable.value!==existing) return null
-        val p=begin(ImportSource.SCREENSHOT).copy(captureSession=session)
-        authority=controller.importAuthority;mutable.value=p
+        val p=begin(ImportSource.SCREENSHOT,moreId).copy(captureSession=session)
+        more=moreId?.let(controller::captureMore)
+        more?.before?.rows?.groupBy { it.imageId ?: "continued:${more!!.id}" }?.let { groups -> moreImages=groups.keys.toList();imageRows=groups }
+        authority=controller.importAuthority;mutable.value=p.copy(captureMoreAvailable=more!=null)
         return p.id
+    }
+    internal fun prepareCaptureMore(origin:String?,receiptId:String,ticket:Long):Boolean {
+        if(mutable.value!=null) return false
+        val lease=controller.prepareFloatingMore(origin,receiptId,ticket) ?: return false
+        pendingMore=lease.id;return true
+    }
+    internal fun discardPreparedCaptureMore(session:Long) {
+        val id=pendingMore ?: return
+        if(controller.captureMore(id)?.before?.ticket==session) controller.dropFloatingMore(id)
+        pendingMore=null
+    }
+    private fun continuationEligible(p:ImportPreview):Boolean {
+        val lease=more ?: return false
+        return controller.captureMore(lease.id)!=null && p.target!=null && p.target.newAlias==null && p.target.contact?.id==lease.before.contactId && p.floatingSource==lease.before.binding?.source
+    }
+    private fun withoutContinuation(p:ImportPreview):ImportPreview {
+        val next=p.copy(imageIds=p.imageIds.filterNot { it in moreImages },captureContinuationId=null,mySide=null,captureMoreEligible=false)
+        val sameFormalOwner=more?.before?.contactId?.let { next.target?.contact?.id==it && next.target.newAlias==null }==true
+        return next.copy(rows=orderedRows(next),captureMoreEligible=continuationEligible(next),captureMoreNeedsContinuation=sameFormalOwner)
+    }
+    fun continueCaptureMore() {
+        val p=mutable.value?.takeIf { !it.busy && continuationEligible(it) } ?: return
+        val lease=checkNotNull(more)
+        val next=p.copy(imageIds=p.imageIds.filterNot { it in moreImages }+moreImages,captureContinuationId=lease.id,mySide=null,captureMoreNeedsContinuation=false)
+        mutable.value=next.copy(rows=orderedRows(next))
     }
     fun cancelCapture(session:Long) { if(mutable.value?.captureSession==session) cancel() }
     fun captured(previewId:String,lines:List<OcrLine>):Boolean {
@@ -222,6 +257,26 @@ class ImportCoordinator(
         }
         return result
     }
+    /** Same adjacency identity as orderedRows; excluded overlaps point to their reviewed retained row. */
+    private fun reviewedFrames(p:ImportPreview):List<List<ImportRow>> {
+        val displayed=p.rows.associateBy {it.id};var previous=emptyList<ImportRow>()
+        val frames=mutableListOf<List<ImportRow>>()
+        p.imageIds.forEach {id->
+            val visible=imageRows[id].orEmpty().filterNot {it.excluded}
+            val overlap=OcrLayout.adjacentOverlap(previous,visible) {a,b->OcrLayout.sameMessage(a.text,a.side,a.name,b.text,b.side,b.name)}
+            val resolved=visible.mapIndexed {index,row->
+                val shown=displayed[row.id] ?: row
+                if(!shown.excluded) shown
+                else if(index<overlap && shown.exclusionOverride==null) {
+                    val kept=previous[previous.size-overlap+index]
+                    row.copy(id=kept.id,speaker=kept.speaker,excluded=false)
+                } else shown
+            }.filterNot {it.excluded}
+            if(id !in moreImages && resolved.isNotEmpty()) frames+=resolved
+            previous=resolved
+        }
+        return frames
+    }
     fun moveImage(previewId:String,imageId:String,delta:Int) {
         val p=mutable.value?.takeIf { it.id==previewId && !it.busy } ?: return
         val from=p.imageIds.indexOf(imageId); val to=from+delta
@@ -252,20 +307,24 @@ class ImportCoordinator(
     fun edit(index: Int, row: ImportRow) { mutable.value?.takeIf { !it.busy }?.let { p ->
         mutable.value = p.copy(rows = p.rows.mapIndexed { i, old -> if (i == index) row else old })
     } }
-    fun target(target: ImportTarget) { mutable.value?.takeIf { !it.busy }?.let { mutable.value = it.copy(target = target, error = it.error.takeUnless { error -> error == "IMPORT_SAVE" }) } }
+    fun floatingSource(source: FloatingSourceContext?) { mutable.value?.takeIf { !it.busy && it.captureSession!=null }?.let { mutable.value=if(more==null) it.copy(floatingSource=source) else withoutContinuation(it.copy(floatingSource=source)) } }
+    fun target(target: ImportTarget) { mutable.value?.takeIf { !it.busy }?.let {
+        val next=it.copy(target=target,error=it.error.takeUnless { error -> error=="IMPORT_SAVE" || error=="CAPTURE_HISTORY_REVIEW" })
+        mutable.value=if(more==null) next else withoutContinuation(next)
+    } }
     fun acceptRights() { mutable.value?.let { mutable.value = it.copy(rightsAccepted = true) } }
     fun confirm() {
         val preview = mutable.value?.takeIf { it.canConfirm } ?: return
         if(preview.source==ImportSource.SCREENSHOT && (controller.importAuthority!=authority || !controller.state.value.lockState.canDisplaySensitiveContent)) { cancel();return }
         mutable.value = preview.copy(busy = true)
         if(preview.source==ImportSource.SCREENSHOT) authority=controller.importAuthority+1
-        controller.commitImport(preview.copy(rows=preview.rows.filterNot { it.excluded })) { success ->
+        controller.commitImportResult(preview.copy(rows=preview.rows.filterNot { it.excluded },captureFrames=reviewedFrames(preview))) { result ->
             // The controller owns an IO actor. All preview checks and associated effects must
             // return to the coordinator's Main.immediate dispatcher as one uninterrupted action.
             scope.launch {
                 if (mutable.value?.id == preview.id) {
-                    if (success) { rememberRights(); pendingRead = null; imageRows=emptyMap(); authority=null; mutable.value = null; controller.setImportPending(false) }
-                    else mutable.value = preview.copy(error = "IMPORT_SAVE")
+                    if (result.success) { rememberRights(); pendingRead = null; imageRows=emptyMap(); more=null;moreImages=emptyList();pendingMore=null;authority=null; mutable.value = null; controller.setImportPending(false) }
+                    else mutable.value = preview.copy(error = result.error ?: "IMPORT_SAVE")
                 }
             }
         }

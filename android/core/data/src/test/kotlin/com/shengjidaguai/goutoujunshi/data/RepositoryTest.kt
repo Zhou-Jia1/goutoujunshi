@@ -21,6 +21,20 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RepositoryTest {
+    @Test fun floatingIdentityIsTypedOwnedVersionedAndCascades() = runBlocking {
+        val repo=FloatingIdentityRepository(session)
+        val binding=FloatingIdentityBinding("binding-a","a",FloatingSourceContext("合成应用","合成账号"),"同名",true,0)
+        repo.save(binding);repo.save(binding)
+        assertEquals(binding,repo.list("a").single())
+        assertTrue(repo.list("b").isEmpty())
+        assertTrue(runCatching { repo.save(binding.copy(revision=2),expected=0) }.isFailure)
+        ContactRepository(session).save(Contact("a","改名"))
+        assertTrue(repo.list("a").isEmpty())
+        ContactRepository(session).delete("a")
+        assertTrue(runCatching { repo.save(binding) }.isFailure)
+        assertTrue(session.transaction { records("a",OwnedRecordKind.FLOATING_IDENTITY.name) }.isEmpty())
+    }
+
     @Test fun timelineCacheIsOwnedSourceCasAndRemovedWithRulesOrOwner() = runBlocking {
         val conversations = ConversationRepository(session)
         val c = Conversation("summary-conv", "a", false)

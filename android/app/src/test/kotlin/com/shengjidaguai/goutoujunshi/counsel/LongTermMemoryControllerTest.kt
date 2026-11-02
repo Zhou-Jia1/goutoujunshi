@@ -36,6 +36,7 @@ class LongTermMemoryControllerTest {
         private val approvals=mutableMapOf<String,Pair<MemoryProposal,MemoryOperation>>()
         var lastOperation: MemoryOperation?=null
         val entries=mutableListOf<MemoryEntry>()
+        override suspend fun memoryContextSnapshot(owner:String?) = memorySnapshot(owner)
         override suspend fun memorySnapshot(owner: String?): MemorySnapshot {
             if(consent.enabled && committedSnapshotFailures>0) { committedSnapshotFailures--;error("synthetic post-commit memory snapshot failure") }
             return MemorySnapshot(consent,WriteStamp(consent.consentVersion,0,1,0,revision),entries.filter { it.contactId==owner },verifiedInferenceIds=entries.map { it.id }.toSet(),operationId=lastOperation?.id,clearAuthority=MemoryClearAuthority(1,consent.consentVersion,"$revision:${entries.map { it.id }}",entries.size,base.people.size,0))
@@ -336,6 +337,7 @@ class LongTermMemoryControllerTest {
                 val gate=CompletableDeferred<Unit>()
                 if(during) f.persistence.duringApprove=gate else f.persistence.beforeApprove=gate
                 f.controller.acceptMemory(receipt)
+                withTimeout(5000) {while(!f.persistence.approvalStarted) yield()}
                 assertTrue(f.persistence.approvalStarted)
                 when(action) {
                     "switch"->f.controller.newTemporary()

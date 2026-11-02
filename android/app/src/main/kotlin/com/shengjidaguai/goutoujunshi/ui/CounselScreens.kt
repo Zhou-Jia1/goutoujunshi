@@ -476,6 +476,7 @@ fun errorLabel(code: String): Int = when (code) {
     "REDACTION_INVALID" -> R.string.redaction_invalid
     "CONTACT_ALIAS_REQUIRED" -> R.string.error_alias
     "INPUT_REQUIRED" -> R.string.error_input
+    "CAPTURE_SOURCE_RECONFIRM" -> R.string.t33_capture_reconfirm
     "PROMPT_UNAVAILABLE" -> R.string.error_prompt
     "CANCELLED" -> R.string.error_cancelled
     "CLEANUP_INCOMPLETE" -> R.string.error_cleanup

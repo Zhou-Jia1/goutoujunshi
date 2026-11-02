@@ -33,6 +33,14 @@ class FloatingCounselActivity : ComponentActivity() {
     private var authLockRevision: Long? = null
     private var projectionLockRevision:Long?=null // per request, RAM only; separate from credential authority
     private var tileHandoff=false
+    private var capturePreviewId:String?=null
+    private var captureTicket:Long?=null
+    private var captureReceiver:String?=null
+    private fun currentCapturePreview():com.shengjidaguai.goutoujunshi.importing.ImportPreview? {
+        val expected=captureTicket ?: return null
+        return CounselRuntime.imports(application).state.value?.takeIf {it.id==capturePreviewId && it.captureSession==expected &&
+            expected==FloatingRuntime.runtimeTicket && expected==FloatingRuntime.session.epoch() && FloatingRuntime.active.value}
+    }
     private val controller by lazy { CounselRuntime.get(application) }
     private val viewModel by lazy { androidx.lifecycle.ViewModelProvider(this)[CounselViewModel::class.java] }
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -70,6 +78,11 @@ class FloatingCounselActivity : ComponentActivity() {
         if(intent.action==FloatingRuntime.TILE_START && FloatingRuntime.session.valid(handoff)) {
             ticket=handoff;FloatingRuntime.bindWindow(this,handoff); tileHandoff=true
         }
+        if(intent.action==FloatingRuntime.CAPTURE_CONFIRM) {
+            capturePreviewId=intent.getStringExtra(FloatingRuntime.CAPTURE_PREVIEW)
+            captureTicket=intent.getLongExtra(FloatingRuntime.CAPTURE_TICKET,-1).takeIf {it>=0}
+            if(currentCapturePreview()==null) {finish();return}
+        }
         setContent {
             val state by controller.state.collectAsState()
             val active by FloatingRuntime.active.collectAsState()
@@ -77,7 +90,12 @@ class FloatingCounselActivity : ComponentActivity() {
             val capturePreview by CounselRuntime.imports(application).state.collectAsState()
             if(intent.action==FloatingRuntime.CAPTURE_CONFIRM) LaunchedEffect(active,capturePreview) {
                 if(!active) finish()
-                else if(capturePreview==null) { startActivity(Intent(this@FloatingCounselActivity,com.shengjidaguai.goutoujunshi.MainActivity::class.java));finish() }
+                else if(capturePreview==null) {
+                    val preview=capturePreviewId;val expectedTicket=captureTicket
+                    if(preview!=null && expectedTicket!=null && expectedTicket==FloatingRuntime.runtimeTicket && FloatingRuntime.session.epoch()==expectedTicket &&
+                        controller.consumeCaptureConfirmation(preview,expectedTicket,captureReceiver)) FloatingRuntime.showAnswer?.invoke()
+                    finish()
+                }
             }
             JunshiTheme {
                 Surface(Modifier.fillMaxSize()) {
@@ -129,10 +147,20 @@ class FloatingCounselActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume()
+        if(intent.action==FloatingRuntime.CAPTURE_CONFIRM) {
+            val p=currentCapturePreview()
+            if(p==null) {finish();return}
+            captureReceiver=controller.registerCaptureReceiver(p.id,checkNotNull(p.captureSession))
+            if(captureReceiver==null) {finish();return}
+        }
         if(waitingOverlay) {
             waitingOverlay=false
             if(Settings.canDrawOverlays(this)) permissionOrStart() else { cancelPending(); message=R.string.floating_permission_denied }
         }
+    }
+    override fun onPause() {
+        captureReceiver?.let(controller::unregisterCaptureReceiver);captureReceiver=null
+        super.onPause()
     }
     private fun permissionOrStart() {
         val current=ticket ?: return
@@ -164,7 +192,7 @@ class FloatingCounselActivity : ComponentActivity() {
         } catch(_:RuntimeException) { ProjectionGrantStore.clear(current);FloatingRuntime.session.cancel(current);message=R.string.floating_unavailable }
     }
     private fun cancelPending() { ticket?.let { ProjectionGrantStore.clear(it);FloatingRuntime.session.cancel(it) }; ticket=null;projectionLockRevision=null; waitingOverlay=false; tileHandoff=false; authEpoch=null; authLockRevision=null }
-    override fun onDestroy() { FloatingRuntime.windows.remove(this);if(ticket!=null || authEpoch!=null) cancelPending(); super.onDestroy() }
+    override fun onDestroy() { captureReceiver?.let(controller::unregisterCaptureReceiver);captureReceiver=null;FloatingRuntime.windows.remove(this);if(ticket!=null || authEpoch!=null) cancelPending(); super.onDestroy() }
 }
 
 @Composable

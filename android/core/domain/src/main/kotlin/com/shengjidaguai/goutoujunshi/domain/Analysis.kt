@@ -22,6 +22,7 @@ import kotlinx.serialization.Serializable
     val purpose:OutboundPurpose=OutboundPurpose.ANALYSIS,
     val redactionProfile:RedactionProfile=RedactionProfile(),
     val actualDataContext:OutboundDataContext=OutboundDataContext(),
+    val floating:Boolean=false,
 )
 interface AnalysisProvider { val kind:ProviderKind; fun analyze(request:AnalysisRequest):Flow<AnalysisChunk> }
 @Serializable sealed interface AnalysisChunk {

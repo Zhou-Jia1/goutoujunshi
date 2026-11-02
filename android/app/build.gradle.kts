@@ -53,6 +53,8 @@ dependencies {
     ksp(libs.hilt.compiler)
     debugImplementation(libs.compose.tooling)
     testImplementation(libs.junit)
+    testImplementation(libs.room.runtime)
+    testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
     testImplementation(libs.compose.test)
     testImplementation(libs.roborazzi)

@@ -32,6 +32,7 @@ interface JunshiDao {
     @Query("SELECT * FROM chat_lines WHERE contactId=:contactId AND id=:id") suspend fun line(contactId: String, id: String): ChatLineRow?
     @Upsert suspend fun put(row: ChatLineRow)
     @Query("SELECT * FROM style_samples WHERE groupName=:groupName ORDER BY rowid") suspend fun samples(groupName: String): List<StyleSampleRow>
+    @Query("SELECT * FROM style_samples WHERE contactId=:contactId ORDER BY rowid") suspend fun samplesForContact(contactId:String):List<StyleSampleRow>
     @Query("SELECT * FROM style_samples WHERE id=:id") suspend fun sample(id: String): StyleSampleRow?
     @Upsert suspend fun put(row: StyleSampleRow)
     @Query("DELETE FROM style_samples WHERE id=:id") suspend fun deleteSample(id: String)
