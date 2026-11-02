@@ -213,12 +213,14 @@ private fun OrdinaryAnswer(state: AnswerUiState, actions: AnswerActions, compact
 @Composable fun VerdictLine(text: String) { Text(text, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium) }
 
 @Composable
-fun ReplySuggestionCard(messages: List<String>, isStreaming: Boolean, calm: Boolean, styleNote: String?, onCopyOne: (Int) -> Unit, onCopyAll: () -> Unit) {
+fun ReplySuggestionCard(messages: List<String>, isStreaming: Boolean, calm: Boolean, styleNote: String?, onCopyOne: (Int) -> Unit, onCopyAll: () -> Unit, highlight: String? = null) {
     Column(verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.s)) {
         Text(stringResource(R.string.ds_reply), Modifier.semantics { heading() }, style = MaterialTheme.typography.labelLarge)
         messages.forEachIndexed { index, text ->
             Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(JunshiLayout.mediumRadius)) {
-                JunshiColumn { Text(stringResource(R.string.ds_reply_number, index + 1), style = MaterialTheme.typography.labelMedium); Text(text, style = MaterialTheme.typography.bodyLarge); TextButton({ onCopyOne(index) }, enabled = !isStreaming) { Text(stringResource(R.string.ds_copy)) } }
+                JunshiColumn { Text(stringResource(R.string.ds_reply_number, index + 1), style = MaterialTheme.typography.labelMedium); Text(if(highlight.isNullOrBlank() || !text.contains(highlight)) androidx.compose.ui.text.AnnotatedString(text) else androidx.compose.ui.text.buildAnnotatedString {
+                    val start=text.indexOf(highlight);append(text);addStyle(androidx.compose.ui.text.SpanStyle(background=MaterialTheme.colorScheme.tertiaryContainer),start,start+highlight.length)
+                }, style = MaterialTheme.typography.bodyLarge); TextButton({ onCopyOne(index) }, enabled = !isStreaming) { Text(stringResource(R.string.ds_copy)) } }
             }
         }
         if (!styleNote.isNullOrBlank()) Text(styleNote, style = MaterialTheme.typography.bodySmall)

@@ -47,8 +47,10 @@ class TipRepository(private val session: DataSession) {
     suspend fun list(): List<Tip> = session.transaction { tips().map { decode(it.payload) } }
     suspend fun save(tip: Tip): String = session.transaction {
         require(tip.id.isNotBlank() && tip.name.isNotBlank())
-        val id = tipNamed(tip.name)?.id ?: tip.id
-        put(TipRow(id, tip.name, encode(tip.copy(id = id))))
+        val previous = tipNamed(tip.name)?.let { decode<Tip>(it.payload) }
+        val merged = TeachingPolicy.merge(previous, tip)
+        val id = merged.id
+        put(TipRow(id, tip.name, encode(merged)))
         id
     }
     suspend fun delete(id: String) = session.transaction { deleteTip(id) }
