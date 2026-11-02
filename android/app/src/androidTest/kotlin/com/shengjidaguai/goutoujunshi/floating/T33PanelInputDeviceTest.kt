@@ -41,6 +41,7 @@ class T33PanelInputDeviceTest {
     }
     @Test fun panelAndSupplementPreserveAndRestoreNativeInputFocus() {
         compose.onNodeWithText("开启悬浮军师").performClick()
+        SystemProjectionConsent.continueGuide(compose)
         SystemProjectionConsent.respond(true)
         compose.waitUntil(10000) { FloatingRuntime.active.value }
         if(InstrumentationRegistry.getArguments().getString("t33AwaitFont260")=="true") {

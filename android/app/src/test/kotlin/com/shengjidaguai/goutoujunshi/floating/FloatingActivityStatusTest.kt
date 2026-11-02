@@ -23,6 +23,8 @@ class FloatingActivityStatusTest {
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         ShadowSettings.setCanDrawOverlays(true)
         compose.onNodeWithText("开启悬浮军师").performClick()
+        compose.onNodeWithText("了解并继续").performScrollTo().performClick()
+        compose.onNodeWithText("跳过，继续开启").performScrollTo().performClick()
         shadowOf(android.os.Looper.getMainLooper()).idle()
         compose.runOnIdle { deliverProjectionResult(compose.activity) }
         shadowOf(android.os.Looper.getMainLooper()).idle()

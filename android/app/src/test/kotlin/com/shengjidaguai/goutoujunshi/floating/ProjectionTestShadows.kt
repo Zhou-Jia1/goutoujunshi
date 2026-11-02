@@ -46,7 +46,7 @@ class ProjectionTestDisplay {
  @Implementation fun release() { released++ }
 }
 internal fun deliverProjectionResult(activity:FloatingCounselActivity,result:Int=Activity.RESULT_OK,data:Intent?=Intent()) {
- FloatingCounselActivity::class.java.getDeclaredMethod("onActivityResult",Int::class.javaPrimitiveType,Int::class.javaPrimitiveType,Intent::class.java).apply { isAccessible=true }.invoke(activity,3201,result,data)
+ FloatingCounselActivity::class.java.getDeclaredMethod("onActivityResult",Int::class.javaPrimitiveType,Int::class.javaPrimitiveType,Intent::class.java).apply { isAccessible=true }.invoke(activity,(FloatingCounselActivity::class.java.getDeclaredField("expectedProjectionCode").apply {isAccessible=true}.get(activity) as Int?) ?: 3201,result,data)
 }
 
 internal fun putCurrentProjectionGrant(ticket:Long,data:Intent=Intent()) {

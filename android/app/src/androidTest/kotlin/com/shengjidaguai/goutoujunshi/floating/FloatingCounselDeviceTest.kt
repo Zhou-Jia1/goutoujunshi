@@ -14,6 +14,7 @@ class FloatingCounselDeviceTest {
         Assert.assertTrue(Settings.canDrawOverlays(compose.activity))
         compose.onNodeWithText("截屏分析").assertIsNotEnabled()
         compose.onNodeWithText("开启悬浮军师").performClick()
+        SystemProjectionConsent.continueGuide(compose)
         SystemProjectionConsent.respond(true)
         val notifications=compose.activity.getSystemService(NotificationManager::class.java)
         compose.waitUntil(10_000) { FloatingRuntime.active.value && notifications.activeNotifications.any { it.id==FloatingCounselService.NOTIFICATION } }

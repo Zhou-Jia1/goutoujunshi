@@ -26,7 +26,36 @@ import com.shengjidaguai.goutoujunshi.ui.ContactsScreen
 /** Only a resumed, non-exported owner may launch consent; its current result is consumed once. */
 class FloatingCounselActivity : ComponentActivity() {
     private var ticket: Long? = null // deliberately not restored from Bundle
-    private var waitingOverlay = false
+    private var waitingOverlay: PermissionAuthority? = null
+    private val guideGate=PermissionGuideGate()
+    private var guidePage by mutableStateOf<GuidePage?>(null)
+    private var helpOnly=false
+    private var notificationAuthority:PermissionAuthority?=null
+    private var expectedProjectionCode:Int?=null
+    private val brand by lazy { GuideBrand.identify(Build.MANUFACTURER,Build.BRAND) }
+    private fun guideValid(expected:PermissionAuthority?=guideGate.authority)=guideGate.valid(expected,ticket,controller.lockRevision,
+        floatingContentAllowed(controller.state.value.lockState),FloatingRuntime.session::valid)
+    private fun showGuide(page:GuidePage) { if(guideValid()) guidePage=page else cancelPending() }
+    private fun continueGuide(expected:PermissionAuthority?) {
+        if(helpOnly) { helpOnly=false;guidePage=null;return }
+        if(expected!=guideGate.authority) return
+        if(!guideValid(expected)) { cancelPending();return }
+        when(guidePage) {
+            GuidePage.INTRO -> requestPermissions()
+            GuidePage.BACKGROUND -> permissionOrStart()
+            GuidePage.NOTIFICATION_DENIED -> { guidePage=null;window.decorView.post { if(guideValid(expected)) startIfResumed() } }
+            else -> Unit
+        }
+    }
+    private fun closeGuide() { helpOnly=false;guidePage=null;cancelPending() }
+    private fun openGuideSettings(expected:PermissionAuthority?) {
+        if(!helpOnly && !guideValid(expected)) { cancelPending();return }
+        val overlay=guidePage==GuidePage.OVERLAY
+        if(overlay) waitingOverlay=expected
+        val opened=GuideSettingsLauncher.forContext(this).open(if(overlay)
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")) else null)
+        if(!opened) { waitingOverlay=null;message=R.string.floating_unavailable }
+    }
     private var message by mutableStateOf(R.string.floating_off)
     private var contacts by mutableStateOf(false)
     private var authEpoch: Long? = null
@@ -44,7 +73,11 @@ class FloatingCounselActivity : ComponentActivity() {
     private val controller by lazy { CounselRuntime.get(application) }
     private val viewModel by lazy { androidx.lifecycle.ViewModelProvider(this)[CounselViewModel::class.java] }
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if(granted) window.decorView.post { startIfResumed() } else { cancelPending(); message=R.string.floating_permission_denied }
+        val expected=notificationAuthority;notificationAuthority=null
+        if(guideValid(expected)) {
+            if(granted) window.decorView.post { if(guideValid(expected)) startIfResumed() }
+            else showGuide(GuidePage.NOTIFICATION_DENIED)
+        }
     }
     private val credential = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val epoch=authEpoch; authEpoch=null
@@ -56,8 +89,9 @@ class FloatingCounselActivity : ComponentActivity() {
     /** Projection data never enters ActivityResultRegistry's saved pending-result Bundle. */
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
-        super.onActivityResult(requestCode,resultCode,if(requestCode==3201) null else data)
-        if(requestCode!=3201) return
+        super.onActivityResult(requestCode,resultCode,if(requestCode in 3201..65000) null else data)
+        if(requestCode!=expectedProjectionCode) return
+        expectedProjectionCode=null
         val current=ticket
         if(current==null || !FloatingRuntime.session.valid(current)) return
         val requestedRevision=projectionLockRevision
@@ -86,6 +120,9 @@ class FloatingCounselActivity : ComponentActivity() {
         setContent {
             val state by controller.state.collectAsState()
             val active by FloatingRuntime.active.collectAsState()
+            LaunchedEffect(state.lockState) {
+                if(guideGate.authority!=null && !guideValid()) cancelPending()
+            }
             val timeout by FloatingRuntime.timeout.collectAsState()
             val capturePreview by CounselRuntime.imports(application).state.collectAsState()
             if(intent.action==FloatingRuntime.CAPTURE_CONFIRM) LaunchedEffect(active,capturePreview) {
@@ -106,12 +143,17 @@ class FloatingCounselActivity : ComponentActivity() {
                         com.shengjidaguai.goutoujunshi.ui.ImportOverlay(viewModel)
                     } else if(contacts && floatingContentAllowed(state.lockState)) {
                         ContactsScreen(viewModel) { finish() }
+                    } else if(guidePage!=null && floatingContentAllowed(state.lockState)) {
+                        val expected=guideGate.authority
+                        FloatingPermissionGuide(checkNotNull(guidePage),brand,{continueGuide(expected)},
+                            {openGuideSettings(expected)},::closeGuide)
                     } else FloatingControls(active, floatingContentAllowed(state.lockState), message,
                         onStart=::begin, onStop={ cancelPending(); FloatingRuntime.stop(this); finish() },
                         onContacts={ if(floatingContentAllowed(controller.state.value.lockState)) contacts=true },
                         onUnlock=::unlock, onClose=::finish,
                         timeoutMinutes=timeout,onTimeout={ FloatingRuntime.timeoutMinutes=it },
-                        onCapture={ FloatingRuntime.captureAction?.invoke();finish() })
+                        onCapture={ FloatingRuntime.captureAction?.invoke();finish() },
+                        onHelp={ cancelPending();helpOnly=true;guidePage=GuidePage.BACKGROUND })
                 }
             }
         }
@@ -125,16 +167,16 @@ class FloatingCounselActivity : ComponentActivity() {
     private fun begin() {
         if(!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         if(!floatingContentAllowed(controller.state.value.lockState)) { message=R.string.floating_lock_hint; return }
+        if(ticket!=null || notificationAuthority!=null) return
         ticket=FloatingRuntime.session.request()
         FloatingRuntime.bindWindow(this,ticket!!)
-        requestPermissions()
+        guideGate.begin(ticket!!,controller.lockRevision)
+        showGuide(GuidePage.INTRO)
     }
     private fun requestPermissions() {
-        if(!Settings.canDrawOverlays(this)) {
-            waitingOverlay=true
-            try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName"))) }
-            catch(_:RuntimeException) { waitingOverlay=false; cancelPending(); message=R.string.floating_unavailable }
-        } else permissionOrStart()
+        if(!guideValid()) { cancelPending();return }
+        if(!Settings.canDrawOverlays(this)) showGuide(GuidePage.OVERLAY)
+        else showGuide(GuidePage.BACKGROUND)
     }
     override fun onPostResume() {
         super.onPostResume()
@@ -143,7 +185,9 @@ class FloatingCounselActivity : ComponentActivity() {
     private fun resumeTileHandoff() {
         if(!tileHandoff || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || !floatingContentAllowed(controller.state.value.lockState)) return
         tileHandoff=false
-        if(ticket?.let(FloatingRuntime.session::valid)==true) requestPermissions()
+        if(ticket?.let(FloatingRuntime.session::valid)==true) {
+            guideGate.begin(ticket!!,controller.lockRevision);showGuide(GuidePage.INTRO)
+        }
     }
     override fun onResume() {
         super.onResume()
@@ -153,9 +197,13 @@ class FloatingCounselActivity : ComponentActivity() {
             captureReceiver=controller.registerCaptureReceiver(p.id,checkNotNull(p.captureSession))
             if(captureReceiver==null) {finish();return}
         }
-        if(waitingOverlay) {
-            waitingOverlay=false
-            if(Settings.canDrawOverlays(this)) permissionOrStart() else { cancelPending(); message=R.string.floating_permission_denied }
+        val expected=waitingOverlay
+        if(expected!=null) {
+            waitingOverlay=null
+            if(guideValid(expected)) {
+                if(Settings.canDrawOverlays(this)) showGuide(GuidePage.BACKGROUND)
+                else {cancelPending();message=R.string.floating_permission_denied}
+            }
         }
     }
     override fun onPause() {
@@ -165,16 +213,20 @@ class FloatingCounselActivity : ComponentActivity() {
     private fun permissionOrStart() {
         val current=ticket ?: return
         if(!FloatingRuntime.session.valid(current)) { ticket=null; return }
-        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else window.decorView.post { startIfResumed() }
+        if(!guideValid()) { cancelPending();return }
+        guidePage=null
+        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) { notificationAuthority=guideGate.authority;notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        else { val expected=guideGate.authority;window.decorView.post { if(guideValid(expected)) startIfResumed() } }
     }
     private fun startIfResumed() {
         val current=ticket ?: return
-        if(!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || !FloatingRuntime.session.valid(current)) return
+        if(isFinishing || isDestroyed || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || !FloatingRuntime.session.valid(current)) return
         if(!Settings.canDrawOverlays(this) || !floatingContentAllowed(controller.state.value.lockState)) { FloatingRuntime.session.cancel(current); message=R.string.floating_permission_denied; return }
         projectionLockRevision=controller.lockRevision
+        expectedProjectionCode=ProjectionRequestCodes.process.allocate()
+        if(expectedProjectionCode==null) { cancelPending();message=R.string.floating_unavailable;return }
         try { @Suppress("DEPRECATION")
-            startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent(),3201) }
+            startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent(),checkNotNull(expectedProjectionCode)) }
         catch(_:RuntimeException) { cancelPending();message=R.string.floating_unavailable }
     }
     private fun launchGrantedService(current:Long,requestedRevision:Long) {
@@ -191,7 +243,7 @@ class FloatingCounselActivity : ComponentActivity() {
             message=R.string.floating_off
         } catch(_:RuntimeException) { ProjectionGrantStore.clear(current);FloatingRuntime.session.cancel(current);message=R.string.floating_unavailable }
     }
-    private fun cancelPending() { ticket?.let { ProjectionGrantStore.clear(it);FloatingRuntime.session.cancel(it) }; ticket=null;projectionLockRevision=null; waitingOverlay=false; tileHandoff=false; authEpoch=null; authLockRevision=null }
+    private fun cancelPending() { ticket?.let { ProjectionGrantStore.clear(it);FloatingRuntime.session.cancel(it) }; ticket=null;projectionLockRevision=null; waitingOverlay=null; guidePage=null;guideGate.cancel();expectedProjectionCode=null; tileHandoff=false; authEpoch=null; authLockRevision=null }
     override fun onDestroy() { captureReceiver?.let(controller::unregisterCaptureReceiver);captureReceiver=null;FloatingRuntime.windows.remove(this);if(ticket!=null || authEpoch!=null) cancelPending(); super.onDestroy() }
 }
 
@@ -207,7 +259,7 @@ internal fun FloatingLockGate(onUnlock:()->Unit,onClose:(()->Unit)?=null,message
 @Composable
 internal fun FloatingControls(active: Boolean, unlocked: Boolean, message: Int,
     onStart:()->Unit, onStop:()->Unit, onContacts:()->Unit, onUnlock:()->Unit, onClose:()->Unit,
-    timeoutMinutes:Int=10,onTimeout:(Int)->Unit={},onCapture:()->Unit={}) {
+    timeoutMinutes:Int=10,onTimeout:(Int)->Unit={},onCapture:()->Unit={},onHelp:(()->Unit)?=null) {
     JunshiColumn(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         JunshiTopBar(stringResource(R.string.floating_title),onClose)
         BodyText(stringResource(if(active) R.string.floating_started else message))
@@ -215,6 +267,7 @@ internal fun FloatingControls(active: Boolean, unlocked: Boolean, message: Int,
         else if(unlocked) PrimaryButton(stringResource(R.string.floating_start),onStart)
         ChoiceField(stringResource(R.string.capture_timeout),stringResource(R.string.capture_timeout_minutes,timeoutMinutes),
             listOf(5,10,30).map { minutes -> stringResource(R.string.capture_timeout_minutes,minutes) to { onTimeout(minutes) } })
+        onHelp?.let { SecondaryButton(stringResource(R.string.guide_help),it) }
         BodyText(stringResource(R.string.capture_usage),secondary=true)
         PrimaryButton(stringResource(R.string.floating_capture),onCapture,enabled=active)
         if(unlocked) SecondaryButton(stringResource(R.string.floating_contacts),onContacts)
