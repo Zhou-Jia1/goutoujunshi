@@ -29,15 +29,21 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val captureUiOwner=Any()
+    private var pendingFollowup by mutableStateOf<Pair<String,String>?>(null)
+    override fun onResume() {super.onResume();ViewModelProvider(this)[CounselViewModel::class.java].recheckReminderPermission()}
     override fun onStart() { super.onStart();com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.started(captureUiOwner) }
     override fun onStop() { com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.hidden(captureUiOwner);super.onStop() }
     override fun onDestroy() { com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.hidden(captureUiOwner);super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val viewModel = ViewModelProvider(this)[CounselViewModel::class.java]
+        pendingFollowup=com.shengjidaguai.goutoujunshi.followup.FollowupRouter.read(intent)
         viewModel.receiveShare(intent)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
+            LaunchedEffect(state.lockState,state.loading,pendingFollowup) {
+                if(state.lockState.canDisplaySensitiveContent && !state.loading) pendingFollowup?.let {pendingFollowup=null;viewModel.openFollowup(it.first,it.second)}
+            }
             val captureNotice by com.shengjidaguai.goutoujunshi.floating.CaptureOwnUi.notice.collectAsStateWithLifecycle()
             JunshiTheme(calm = state.safetyPresentation().calm) {
                 androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize()) {
@@ -54,7 +60,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ViewModelProvider(this)[CounselViewModel::class.java].receiveShare(intent)
+        pendingFollowup=com.shengjidaguai.goutoujunshi.followup.FollowupRouter.read(intent)
+        val vm=ViewModelProvider(this)[CounselViewModel::class.java]
+        if(vm.state.value.lockState.canDisplaySensitiveContent) pendingFollowup?.let {pendingFollowup=null;vm.openFollowup(it.first,it.second)}
+        vm.receiveShare(intent)
     }
     override fun onSaveInstanceState(outState: Bundle) {
         // The live intent has already been stripped of private share payloads.
@@ -77,6 +86,7 @@ internal fun JunshiNavigation(viewModel: CounselViewModel) {
         com.shengjidaguai.goutoujunshi.floating.FloatingLockGate({com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.unlock(context)})
         return
     }
+    LaunchedEffect(state.followupQuestion,state.followupId) {if(state.followupQuestion) nav.navigate("counsel") {launchSingleTop=true}}
     if (pendingImport != null) { ImportOverlay(viewModel); return }
     Scaffold(bottomBar = {
         NavigationBar {

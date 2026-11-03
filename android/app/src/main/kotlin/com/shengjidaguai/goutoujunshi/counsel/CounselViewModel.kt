@@ -15,6 +15,8 @@ import kotlinx.coroutines.*
 /** Application lifetime keeps temporary sessions across Activity recreation, never process death. */
 internal object CounselRuntime {
     private var importer: ImportCoordinator? = null
+    @Volatile private var encrypted:EncryptedDataStore?=null
+    fun store(application:Application):EncryptedDataStore = encrypted ?: synchronized(this) {encrypted ?: EncryptedDataStore(application).also {encrypted=it}}
     @Synchronized fun imports(application: Application): ImportCoordinator = importer ?: ImportCoordinator(get(application),
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         { application.getSharedPreferences("import-notice", 0).getBoolean("accepted", false) },
@@ -22,11 +24,12 @@ internal object CounselRuntime {
         com.shengjidaguai.goutoujunshi.data.ocr.PaddleImageReader(application)::read
     ).also { importer = it }
     internal fun localSafetyClassifier(loadVocabulary:()->String):(String)->SafetyLevel = CachedLocalSafetyClassifier(loadVocabulary)::classify
+    fun withNotificationDisplay(block:(Boolean)->Unit) {val c=controller;if(c==null) block(false) else c.withNotificationDisplay(block)}
     @Volatile private var controller: CounselController? = null
     fun get(application: Application): CounselController = controller ?: synchronized(this) {
         controller ?: run {
             val temporary = TemporarySessionStore()
-            val store = EncryptedDataStore(application)
+            val store = store(application)
             // Knowledge construction is lazy: integrity or missing asset errors become state errors.
             val builder = object : PromptAssembler {
                 private val delegate by lazy { PromptBuilder(KnowledgeLibrary(AssetKnowledgeSource(application.assets))) }
@@ -36,10 +39,10 @@ internal object CounselRuntime {
             val localSafety=CachedLocalSafetyClassifier(
                 { application.assets.open("crisis-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} },
                 { application.assets.open("calm-keywords.txt").bufferedReader(Charsets.UTF_8).use {it.readText()} })::classify
-            CounselController(EncryptedCounselPersistence(store, temporary), temporary, assembler,
+            CounselController(EncryptedCounselPersistence(store, temporary, com.shengjidaguai.goutoujunshi.followup.FollowupScheduler(application)), temporary, assembler,
                 DemoAnalysisProvider(assembler, application.assets), CoroutineScope(SupervisorJob() + Dispatchers.IO),
                 VaultModelSettingsRepository(store.vault),
-                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) },localSafety=localSafety,styleBiasPreferences=LocalStyleBiasPreferences(application.getSharedPreferences("style-bias",0)))
+                { saved -> OpenAiCompatibleProvider(saved.connection(), assembler, VaultCredentialSource(store.vault, saved)) },onPrivacyLock={com.shengjidaguai.goutoujunshi.followup.FollowupScheduler.hidePrivate(application)},localSafety=localSafety,styleBiasPreferences=LocalStyleBiasPreferences(application.getSharedPreferences("style-bias",0)))
         }.also { controller = it }
     }
 }
@@ -63,6 +66,11 @@ class CounselViewModel internal constructor(application: Application, private va
     fun exitPractice(origin:String?,id:String)=controller.exitPractice(origin,id)
     fun savePracticeSummary(origin:String?,id:String,receipt:String)=controller.savePracticeSummary(origin,id,receipt)
     fun practiceForContact(id:String)=controller.practiceForContact(id)
+    fun recheckReminderPermission()=controller.recheckReminderPermission()
+    fun notSent(origin:String?,id:String)=controller.notSent(origin,id)
+    fun scheduleFollowup(offer:FollowupOffer,due:Long,permission:Boolean)=controller.scheduleFollowup(offer,due,permission)
+    fun cancelFollowup(origin:String?,id:String)=controller.cancelFollowup(origin,id)
+    fun openFollowup(id:String,generation:String)=controller.openFollowup(id,generation)
     val state = controller.state
     val memory = controller.memory
     val stylePage=controller.stylePage
@@ -125,5 +133,5 @@ class CounselViewModel internal constructor(application: Application, private va
     fun saveModelSettings(settings: SavedModelSettings, key: String?, removeKey: Boolean = false) = controller.saveModelSettings(settings, key, removeKey)
     fun testModelConnection() = controller.testModelConnection()
     fun cancelModelTest() = controller.cancelModelTest()
-    fun clearAll() { com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.clearAll(getApplication<Application>()); imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); controller.clearAll() }
+    fun clearAll() { com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.clearAll(getApplication<Application>()); imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); getApplication<Application>().getSharedPreferences("followup-settings",0).edit().clear().apply(); controller.clearAll() }
 }

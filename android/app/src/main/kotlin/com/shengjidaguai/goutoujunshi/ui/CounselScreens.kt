@@ -37,6 +37,9 @@ import com.shengjidaguai.goutoujunshi.domain.Tone as DomainTone
 
 /** Event boundary for rendering and exercising the home screen without opening storage. */
 data class CounselUiActions(
+    val notSent:(String?,String)->Unit={_,_->},
+    val scheduleFollowup:(com.shengjidaguai.goutoujunshi.counsel.FollowupOffer,Long)->Unit={_,_->},
+    val cancelFollowup:(String?,String)->Unit={_,_->},
     val copyReply:((SafetyActionReceipt,String,(String)->Unit)->Boolean)?=null,
     val acknowledgeSafety:(SafetyActionReceipt,Boolean)->Unit={_,_->},
     val saveCoolingDraft:(SafetyActionReceipt,String)->Unit={_,_->},
@@ -101,8 +104,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val importing by viewModel.imports.state.collectAsStateWithLifecycle()
     val memory by viewModel.memory.collectAsStateWithLifecycle()
+    val requestFollowup=rememberFollowupPermission(viewModel::scheduleFollowup)
     val shownMemory=memory
     CounselContent(state, CounselUiActions(
+        scheduleFollowup=requestFollowup,
+        cancelFollowup=viewModel::cancelFollowup,notSent=viewModel::notSent,
         copyReply=viewModel::copyReply,acknowledgeSafety=viewModel::acknowledgeSafety,saveCoolingDraft=viewModel::saveCoolingDraft,
         enterPractice=viewModel::enterPractice,editPracticeInput=viewModel::editPracticeInput,practiceDifficulty=viewModel::practiceDifficulty,previewPractice=viewModel::previewPractice,sendPractice=viewModel::sendPractice,exitPractice=viewModel::exitPractice,savePracticeSummary=viewModel::savePracticeSummary,
         toggleTip=viewModel::toggleTip, saveTipScene=viewModel::saveTipScene, dismissHabit=viewModel::dismissHabit,
@@ -187,6 +193,11 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     }
     LazyColumn(Modifier.fillMaxSize().testTag("counsel-list"), contentPadding = PaddingValues(JunshiTheme.spacing.l),
         verticalArrangement = Arrangement.spacedBy(JunshiTheme.spacing.m)) {
+        if(state.followupQuestion) item {
+            val noReply=stringResource(R.string.t54_no_reply_hint);val changed=stringResource(R.string.t54_changed_hint)
+            FollowupQuestion(actions.importImages,{editDraft(noReply)},{editDraft(changed)})
+            state.followupId?.let {id->SecondaryButton(stringResource(R.string.t54_cancel),{actions.cancelFollowup(origin,id)})}
+        }
         if(memoryPaused) item { SecondaryButton(stringResource(R.string.memory_paused),resumeMemory) }
         item { JunshiTopBar(stringResource(R.string.nav_counsel)) }
         item {
@@ -278,13 +289,18 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
                 if (answer != null && hasAnswerSource) {
                     AnswerActionBar({ copy(replies.joinToString("\n")) }, { tone ->
                         actions.rewrite(origin, answer.id, DomainTone.valueOf(tone.name), state.styleBias); if (!state.demo) previewOpen = true
-                    }, { feedbackMode = 0 }, { feedbackMode = 1 }, { note = R.string.answer_not_sent_notice }, enabled = !state.streaming && state.error == null)
+                    }, { feedbackMode = 0 }, { feedbackMode = 1 }, { actions.notSent(origin,answer.id);note = R.string.answer_not_sent_notice }, enabled = !state.streaming && state.error == null)
                     var bias by remember(answer.id) { mutableStateOf(state.styleBias) }
                     StyleBalanceSlider(bias, { bias = it })
                     SecondaryButton(stringResource(R.string.answer_apply_style), {
                         actions.rewrite(origin, answer.id, state.tone, bias); if (!state.demo) previewOpen = true
                     }, enabled = !state.streaming && state.error == null)
-                    if (state.feedbackSaved) BodyText(stringResource(R.string.answer_feedback_saved))
+                    if (state.feedbackSaved) {
+                        BodyText(stringResource(R.string.answer_feedback_saved))
+                        if(state.currentContact==null) BodyText(stringResource(R.string.t54_temporary_notice))
+                    }
+                    state.followupOffer?.let {offer->FollowupPrompt(offer,{actions.scheduleFollowup(offer,it)})}
+                    state.followupId?.let {id->BodyText(stringResource(R.string.t54_scheduled));SecondaryButton(stringResource(R.string.t54_cancel),{actions.cancelFollowup(origin,id)})}
                     AnswerDetails(answer, state,{actions.enterPractice(origin)})
                     if(state.teaching.answerId==answer.id) TeachingContent(state.teaching,{actions.toggleTip(origin,state.teaching.receipt)},{actions.dismissHabit(origin,state.teaching.receipt,it)},saveScene={actions.saveTipScene(origin,state.teaching.receipt)})
                 } else if (answer != null) CollapsibleSection(stringResource(R.string.answer_details), null) {
@@ -508,6 +524,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         item { SecondaryButton(stringResource(R.string.clear_all), { if(openMemory==null || dataCounts!=null) confirmClear = true }) }
         if(openMemory!=null && dataCounts==null) item { BodyText(stringResource(R.string.memory_loading)) }
         item { SecondaryButton(stringResource(R.string.initialize_store), onInitialize) }
+        item { FollowupPrivacySetting() }
     }
     val clearText=dataCounts?.let { stringResource(R.string.memory_full_clear,it.first,it.second,it.third) }
     if (confirmClear) DangerConfirmDialog(stringResource(R.string.clear_all), clearText ?: stringResource(R.string.clear_all_consequence),
