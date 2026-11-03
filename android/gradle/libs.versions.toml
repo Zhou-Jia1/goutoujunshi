@@ -25,6 +25,8 @@ onnxruntime = "1.21.1"
 opencv = "4.14.0"
 
 [libraries]
+work-runtime = { module = "androidx.work:work-runtime-ktx", version = "2.12.0" }
+work-testing = { module = "androidx.work:work-testing", version = "2.12.0" }
 onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 opencv-android = { module = "org.opencv:opencv", version.ref = "opencv" }
 core = { module = "androidx.core:core-ktx", version.ref = "core" }

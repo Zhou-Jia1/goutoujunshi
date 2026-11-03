@@ -4,6 +4,8 @@ import androidx.room.*
 
 @Dao
 interface JunshiDao {
+    @Query("SELECT * FROM owned_records WHERE kind='FOLLOWUP'") suspend fun followups(): List<OwnedRecordRow>
+    @Query("SELECT * FROM owned_records WHERE kind='FOLLOWUP' AND id=('FOLLOWUP:' || :id)") suspend fun followup(id: String): OwnedRecordRow?
     @Query("SELECT contactId FROM conversations WHERE id=:id") suspend fun ownerOfConversation(id: String): String?
     @Query("SELECT contactId FROM messages WHERE id=:id") suspend fun ownerOfMessage(id: String): String?
     @Query("SELECT contactId FROM imports WHERE id=:id") suspend fun ownerOfImport(id: String): String?

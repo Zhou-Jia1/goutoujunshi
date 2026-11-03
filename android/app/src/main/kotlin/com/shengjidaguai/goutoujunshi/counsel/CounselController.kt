@@ -29,6 +29,11 @@ class FrozenPromptAssembler(private val delegate: PromptAssembler) : PromptAssem
 
 /** Injectable persistence boundary; temporary content must never be supplied to this adapter. */
 interface CounselPersistence {
+    suspend fun scheduleFollowup(offer:FollowupOffer,due:Long,permission:Boolean,current:()->Boolean):String?=null
+    suspend fun cancelFollowup(id:String) {}
+    suspend fun recheckReminderPermission() {}
+    suspend fun cancelAnswerReminders(owner:String,answerId:String) {}
+    suspend fun followupTarget(id:String,generation:String):Pair<Contact,StoredCounsel>?=null
     suspend fun practiceSourceSnapshot(contact:Contact,conversationId:String):StoredCounsel? = null
     suspend fun favoritePractice(lease:PracticeSummaryLease,current:()->Boolean) {error("Practice save unavailable")}
     suspend fun tips(): List<Tip> = emptyList()
@@ -83,6 +88,7 @@ interface CounselPersistence {
 class EncryptedCounselPersistence(
     private val store: EncryptedDataStore,
     private val temporary: TemporarySessionStore,
+    private val reminders:com.shengjidaguai.goutoujunshi.followup.FollowupScheduler?=null,
 ) : CounselPersistence {
     override suspend fun practiceSourceSnapshot(contact:Contact,conversationId:String):StoredCounsel? {
         if(contactsRepo().get(contact.id)?.sourceRevision!=contact.sourceRevision) return null
@@ -123,7 +129,28 @@ class EncryptedCounselPersistence(
     override suspend fun saveReviewedCaptured(contact:Contact,imported:ChatImport,lines:List<ChatLine>,frames:List<List<ChatLine>>,current:()->Boolean) = LiveCaptureRepository(checkNotNull(session)).saveReviewed(imported,lines,contact.sourceRevision,frames,current)
     override suspend fun liveCaptureProvenance(owner:String,lineage:String) = LiveCaptureRepository(checkNotNull(session)).provenance(owner,lineage)
     override suspend fun saveFloatingIdentity(binding: FloatingIdentityBinding) { FloatingIdentityRepository(checkNotNull(session)).save(binding) }
-    override suspend fun initialize() { session = store.open() }
+    override suspend fun initialize() { session = store.open(); reminders?.let { FollowupRepository(checkNotNull(session)).bind(it) } }
+    override suspend fun scheduleFollowup(offer:FollowupOffer,due:Long,permission:Boolean,current:()->Boolean):String? {
+        val scheduler=reminders ?: return null
+        if(!current()) return null
+        val repo=FollowupRepository(checkNotNull(session))
+        val r=repo.schedule(offer.owner,offer.planId,due,System.currentTimeMillis(),true,permission && scheduler.permitted()) ?: return null
+        if(!current()) {repo.cancel(r.id);return null}
+        val enqueued=repo.current(r.id,r.generation) {record,_,_->
+            if(current() && scheduler.permitted()) {scheduler.enqueue(record,com.shengjidaguai.goutoujunshi.followup.FollowupTime.eligible(due,System.currentTimeMillis(),java.time.ZoneId.systemDefault()),System.currentTimeMillis());true} else false
+        }==true
+        if(!enqueued) {repo.cancel(r.id);return null}
+        if(!current()) {repo.cancel(r.id);return null}
+        return r.id
+    }
+    override suspend fun recheckReminderPermission() {val scheduler=reminders ?: return;if(!scheduler.permitted()) session?.let {FollowupRepository(it).cancelAll()} }
+    override suspend fun cancelAnswerReminders(owner:String,answerId:String) {session?.let {FollowupRepository(it).cancelAnswer(owner,answerId)}}
+    override suspend fun cancelFollowup(id:String) {FollowupRepository(checkNotNull(session)).cancel(id)}
+    override suspend fun followupTarget(id:String,generation:String):Pair<Contact,StoredCounsel>? {
+        val target=FollowupRepository(checkNotNull(session)).current(id,generation) {_,c,p->c to p.conversationId} ?: return null
+        val snapshot=practiceSourceSnapshot(target.first,target.second) ?: return null
+        return FollowupRepository(checkNotNull(session)).current(id,generation) {_,c,_->c to snapshot}
+    }
     override suspend fun contacts() = contactsRepo().list()
     override suspend fun createContact(contact: Contact) { contactsRepo().save(contact) }
     override suspend fun editContact(next: Contact, expectedSource: Long) = contactsRepo().update(next, expectedSource)
@@ -189,6 +216,7 @@ class CounselController(
     private val memoryNoticeDelay: suspend (Long) -> Unit = { delay(it) },
     private val styleBiasPreferences:StyleBiasPreferences=MemoryStyleBiasPreferences(),
     private val localSafety:(String)->SafetyLevel = {error("Local safety vocabulary required")},
+    private val onPrivacyLock:()->Unit={},
     private val teachingZone:()->java.time.ZoneId = {java.time.ZoneId.systemDefault()},
 ) {
     private var practiceSource:PracticeSourceLease?=null
@@ -1024,18 +1052,20 @@ class CounselController(
         if (!authorityCurrent(authority)) throw RevokedOperation()
         block()
     }
+    fun withNotificationDisplay(block:(Boolean)->Unit)=synchronized(intentLock) {block(authorityLock.canDisplaySensitiveContent)}
     val lockRevision get() = synchronized(intentLock) { lockGeneration }
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
         practiceSource=null;practiceMain=null;practiceSummary=null
         revokeFloatingCaptureLocked()
         authorityLock = lock
+        if(!lock.canDisplaySensitiveContent) onPrivacyLock()
         teaching.reset()
         styleCoordinator.revoke()
         lockGeneration++
         epoch.incrementAndGet()
         // Immediate display/network revocation; actor-owned fields are cleaned in mailbox order.
         stream?.cancel(); waitingJob?.cancel(); testJob?.cancel()
-        mutableState.value = state.value.copy(practice=null,practicePreviewReceipt=null,teaching=TeachingView(),savedTips=emptyList(),tipsReceipt=null,lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
+        mutableState.value = state.value.copy(followupOffer=null,followupQuestion=false,practice=null,practicePreviewReceipt=null,teaching=TeachingView(),savedTips=emptyList(),tipsReceipt=null,lockState=lock, streaming=false, testingConnection=false,floatingPreviewRequest=null,floatingPreviewReady=false,
             partial=emptyMap(), currentRequest=null, preview=null, outboundBody=null, summaryReady=false)
         val teachingEpoch=epoch.get()
         val teachingLock=lockGeneration
@@ -1203,13 +1233,13 @@ class CounselController(
         completion(claimed)
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
-    private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null): Boolean {
+    private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null, existing:StoredCounsel?=null): Boolean {
         val teachingAuthority=synchronized(intentLock) {epoch.get() to lockGeneration}
         fun targetCurrent()=(expectedEpoch==null || epoch.get()==expectedEpoch) && (selectionToken==null || selectionEpoch.get()==selectionToken)
         clearInlineMemory()
         invalidateRun()
         recovery = Recovery.Load(contact)
-        val saved = persistence.loadOrCreate(contact)
+        val saved = existing ?: persistence.loadOrCreate(contact)
         if(!targetCurrent()) return false
         val memorySnapshot=if(saved.sourceBlocked) MemorySnapshot() else persistence.memoryContextSnapshot(contact.id)
         if(!targetCurrent()) return false
@@ -1607,11 +1637,50 @@ class CounselController(
             if (current.currentContact != null) persistence.saveFeedback(current.currentContact, plan, current.redactionProfile.revision)
             else { val lease = checkNotNull(credential); val session = checkNotNull(temporary.get(lease)); check(temporary.put(lease, session.copy(plans = session.plans.filterNot { it.id == plan.id } + plan))) }
             if (epoch.get() == operationEpoch) { recovery = null; plans = plans.filterNot { it.id == plan.id } + plan
-            set(state.value.copy(feedbackSaved = true, error = null)) }
+            set(state.value.copy(feedbackSaved = true, error = null,followupOffer=if(edited==null && plan.contactId!=null) FollowupOffer(checkNotNull(plan.contactId),plan.id,plan.conversationId,operationEpoch,lockGeneration) else null)) }
         } catch (_: Exception) {
             recovery = Recovery.Feedback(origin, answerId, edited)
             set(state.value.copy(feedbackSaved = false, error = CounselError("STORAGE_UNAVAILABLE", true)))
         }
+    }
+    private suspend fun <T> reminderResult(authority:RunAuthority,block:suspend ()->T):Result<T>? {
+        return try {val result=block();authorized(authority) {Unit};Result.success(result)}
+        catch(revoked:RevokedOperation) {throw revoked}
+        catch(cancelled:CancellationException) {throw cancelled}
+        catch(_:Exception) {authorized(authority) {set(state.value.copy(error=CounselError("STORAGE_UNAVAILABLE",true)))};null}
+    }
+    fun recheckReminderPermission()=enqueue {persistence.recheckReminderPermission()}
+    fun notSent(origin:String?,answerId:String)=enqueueFrom(origin) {token ->
+        val authority=authoritySnapshot(token);authorized(authority) {Unit}
+        val owner=state.value.currentContact?.id ?: return@enqueueFrom
+        val message=state.value.messages.lastOrNull {it.role==MessageRole.ASSISTANT && it.answerJson?.let {raw->runCatching {json.decodeFromString(StructuredAnswer.serializer(),raw).id}.getOrNull()}==answerId} ?: return@enqueueFrom
+        reminderResult(authority) {persistence.cancelAnswerReminders(owner,message.id)} ?: return@enqueueFrom
+        authorized(authority) {set(state.value.copy(followupOffer=null,followupId=null,followupQuestion=false))}
+    }
+    fun scheduleFollowup(offer:FollowupOffer,due:Long,permission:Boolean) = enqueueFrom(offer.origin) { token ->
+        val authority=authoritySnapshot(token)
+        fun current()=authorityCurrent(authority) && state.value.followupOffer==offer && offer.epoch==token && offer.lock==lockGeneration
+        if(!current()) return@enqueueFrom
+        val result=reminderResult(authority) {persistence.scheduleFollowup(offer,due,permission,::current)} ?: return@enqueueFrom
+        val id=result.getOrNull()
+        authorized(authority) { if(current()) set(state.value.copy(followupId=id,followupOffer=if(id!=null) null else offer)) }
+    }
+    fun cancelFollowup(origin:String?,id:String)=enqueueFrom(origin) { token ->
+        val authority=authoritySnapshot(token);authorized(authority) {Unit}
+        if(state.value.followupId!=id) return@enqueueFrom
+        reminderResult(authority) {persistence.cancelFollowup(id)} ?: return@enqueueFrom
+        authorized(authority) {set(state.value.copy(followupId=null,followupOffer=null,followupQuestion=false))}
+    }
+    fun openFollowup(id:String,generation:String)=enqueue {
+        val authority=authoritySnapshot();authorized(authority) {Unit}
+        if(!initialized) {reminderResult(authority) {persistence.initialize()} ?: return@enqueue;initialized=true}
+        val target=reminderResult(authority) {persistence.followupTarget(id,generation)}?.getOrNull()
+        authorized(authority) {Unit}
+        if(target==null) return@enqueue
+        val contacts=reminderResult(authority) {persistence.contacts()}?.getOrNull() ?: return@enqueue;authorized(authority) {set(state.value.copy(contacts=contacts))}
+        if(reminderResult(authority) {loadContact(target.first,expectedEpoch=authority.epoch,existing=target.second)}?.getOrNull()!=true) return@enqueue
+        val retained=reminderResult(authority) {persistence.followupTarget(id,generation)}?.getOrNull()
+        authorized(authority) {if(retained!=null) set(state.value.copy(followupQuestion=true,followupId=id)) else set(CounselState(loading=false,contacts=state.value.contacts.filterNot {it.id==target.first.id}))}
     }
     fun preparePreview() = preparePreview(state.value.conversation?.id)
     fun preparePreview(originConversationId: String?, floating: Boolean = false, onPrepared: (AnalysisRequest)->Unit = {}) = enqueueFrom(originConversationId) preview@{ operationEpoch ->

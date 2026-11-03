@@ -22,10 +22,17 @@ data class WriteStamp(val consentVersion: Long, val sourceRevision: Long, val ge
 class DataSession internal constructor(internal val database: JunshiDatabase, val generation: Long, internal val ownedFileRoot: File? = null) {
     internal val gate = Mutex()
     internal var active = true
+    internal var reminderEffects: FollowupEffects? = null
     internal val dao get() = database.dao()
     internal suspend fun <T> transaction(block: suspend JunshiDao.() -> T): T = gate.withLock {
         check(active) { "Database session was cleared; explicit initialization required" }
-        database.withTransaction { dao.block() }
+        database.withTransaction { dao.block().also { reminderEffects?.let { effects -> dao.reconcileFollowups(effects) } } }
+    }
+    /** Revocation is irrevocable even if platform cancellation or closing fails. No DAO read here. */
+    internal suspend fun closeForClear() = gate.withLock {
+        active=false
+        try {reminderEffects?.clear()}
+        finally {withContext(Dispatchers.IO) {database.close()}}
     }
     suspend fun stamp(contactId: String? = null): WriteStamp = transaction {
         val contact = contactId?.let { requireContact(it) }
@@ -61,13 +68,17 @@ class EncryptedDataStore(context: Context) {
     private val ownedFileRoot = File(this.context.filesDir, "permanent-sources").canonicalFile
     /** Permanent files registered with repositories must live below this app-private root. */
     fun permanentFileRoot(): File = ownedFileRoot
-    suspend fun open(): DataSession = mutex.withLock {
+    suspend fun existing(): DataSession? = mutex.withLock {
+        if (vault.hasPendingCleanup() || !context.getDatabasePath("junshi.db").exists()) null else openLocked()
+    }
+    suspend fun open(): DataSession = mutex.withLock { openLocked() }
+    private suspend fun openLocked(): DataSession {
         if (vault.hasPendingCleanup()) {
             // Resume a previously requested wipe after process death before initializing anew.
             check(wipeLocked().isEmpty()) { "Permanent file cleanup is incomplete" }
         }
-        current?.takeIf { it.active }?.let { return@withLock it }
-        withContext(Dispatchers.IO) {
+        current?.takeIf { it.active }?.let { return it }
+        return withContext(Dispatchers.IO) {
             System.loadLibrary("sqlcipher")
             val passphrase = vault.databasePassphrase()
             try {
@@ -103,14 +114,7 @@ class EncryptedDataStore(context: Context) {
     private suspend fun wipeLocked(): List<String> = withContext(NonCancellable) {
         generation++
         val session = current
-        if (session != null) session.gate.withLock {
-            session.active = false
-            withContext(Dispatchers.IO) {
-                // All registered permanent files must be below ownedFileRoot. Rediscover them
-                // there after closing; cleanup must not depend on a still-readable database.
-                session.database.close()
-            }
-        }
+        session?.closeForClear()
         current = null
         withContext(Dispatchers.IO) {
             context.deleteDatabase("junshi.db")

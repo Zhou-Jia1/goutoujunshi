@@ -82,7 +82,7 @@ class TimelineRepository(private val session: DataSession) {
     suspend fun deleteMapping(contactId: String, id: String) = session.transaction { deleteRecord(contactId, OwnedRecordKind.NICKNAME.name, id) }
 }
 
-private suspend fun JunshiDao.putOwned(contactId: String, id: String, kind: OwnedRecordKind, payload: String) {
+internal suspend fun JunshiDao.putOwned(contactId: String, id: String, kind: OwnedRecordKind, payload: String) {
     requireContact(contactId)
     require(id.isNotBlank())
     val storageId = "${kind.name}:$id"

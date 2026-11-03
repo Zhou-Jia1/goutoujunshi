@@ -114,6 +114,13 @@ class LongTermMemoryControllerTest {
                 throw AssertionError("Completion delivery missing: providerKind=${provider.kind}, calls=$providerCalls, loading=${current.loading}, streaming=${current.streaming}, error=${current.error}, currentRequest=${current.currentRequest?.purpose}, hasOwner=${current.currentContact!=null}",timeout)
             }
         }
+        suspend fun awaitActor() {
+            val barrier=CompletableDeferred<Unit>()
+            @Suppress("UNCHECKED_CAST")
+            val mailbox=CounselController::class.java.getDeclaredField("mailbox").apply {isAccessible=true}.get(controller) as Channel<suspend () -> Unit>
+            mailbox.send {barrier.complete(Unit)}
+            barrier.await()
+        }
         fun close()=scope.cancel()
     }
     @Test fun automaticAppendAtBudgetRevisionBoundaryKeepsCopyReloadRewriteFeedbackAndHistory()=runBlocking {
@@ -260,16 +267,16 @@ class LongTermMemoryControllerTest {
                 f.controller.editDraft("虚构问题");f.controller.analyze();f.complete()
                 val receipt=f.controller.memory.value.receipt!!
                 // Browse the same owner so refresh also exercises contactDetails, not only snapshot.
-                f.controller.openMemory(owner)
+                f.controller.openMemory(owner);f.awaitActor()
                 if(detailsFailure) f.persistence.committedDetailsFailures=1 else f.persistence.committedSnapshotFailures=1
-                f.controller.acceptMemory(receipt)
+                f.controller.acceptMemory(receipt);f.awaitActor()
                 assertTrue(f.persistence.consent.enabled);assertEquals(1,f.persistence.writes)
                 assertTrue(f.controller.memory.value.approvalFinishing);assertTrue(f.controller.memory.value.failed)
                 assertFalse(f.controller.memory.value.pendingOperation);assertNull(f.controller.memory.value.consentProposal)
                 assertEquals(receipt,f.controller.memory.value.receipt);assertNull(f.controller.memory.value.notice)
                 val version=f.persistence.consent.consentVersion
                 val calls=f.providerCalls
-                f.controller.acceptMemory(receipt) // same callback now means read-only finish, not approve
+                f.controller.acceptMemory(receipt);f.awaitActor() // same callback now means read-only finish, not approve
                 assertEquals(1,f.persistence.approvalCalls);assertEquals(1,f.persistence.writes)
                 assertEquals(version,f.persistence.consent.consentVersion);assertEquals(calls,f.providerCalls)
                 assertFalse(f.controller.memory.value.approvalFinishing);assertFalse(f.controller.memory.value.pendingOperation)

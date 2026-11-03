@@ -12,7 +12,10 @@ data class CounselError(val code: String, val retryable: Boolean = false)
 data class DraftEditStamp(val editorId: String, val sequence: Long, val originConversationId: String)
 
 /** Never put this state into SavedStateHandle: it can contain temporary private data. */
+data class FollowupOffer(val owner:String,val planId:String,val origin:String,val epoch:Long,val lock:Long)
+
 data class CounselState(
+    val followupOffer:FollowupOffer?=null,val followupId:String?=null,val followupQuestion:Boolean=false,
     val actionEpoch:Long=0, val actionLock:Long=0, val safetyCollapsed:Boolean=false,
     val practice:PracticeView?=null,
     val teaching: TeachingView = TeachingView(),

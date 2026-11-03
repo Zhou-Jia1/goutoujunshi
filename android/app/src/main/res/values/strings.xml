@@ -440,4 +440,26 @@
     <string name="t53_open_full">在 App 中打开</string>
     <string name="t53_stream_empathy">可以先给自己一点时间，缓一缓。</string>
     <string name="t53_stream_next">先把手机放下一会儿，喝口水。</string>
+    <string name="t54_channel">跟进提醒</string>
+    <string name="t54_notification_title">到了你选的跟进时间</string>
+    <string name="t54_notification_body">有空时，来看看下一步。</string>
+    <string name="t54_offer">要我到时候提醒你看看后续吗？</string>
+    <string name="t54_optin">提醒我（默认关闭）</string>
+    <string name="t54_hour">一小时后</string>
+    <string name="t54_tomorrow">明天早上八点</string>
+    <string name="t54_time">最早提醒时间：%1$s</string>
+    <string name="t54_schedule">确认提醒时间</string>
+    <string name="t54_delay">23:00–08:00 免打扰，会顺延到早上；系统可能稍晚送达。通知默认不显示联系人或聊天内容。</string>
+    <string name="t54_denied">没有通知权限，未安排提醒。可以继续使用军师。</string>
+    <string name="t54_scheduled">已安排提醒</string>
+    <string name="t54_cancel">取消提醒／我没发</string>
+    <string name="t54_question">上次你发了那条消息，对方回了吗？</string>
+    <string name="t54_upload">上传新截图</string>
+    <string name="t54_no_reply">还没回</string>
+    <string name="t54_changed">情况变了</string>
+    <string name="t54_no_reply_hint">还没回。先不用急着追问。</string>
+    <string name="t54_changed_hint">情况变了：</string>
+    <string name="t54_alias_setting">提醒显示联系人代号（锁定时仍隐藏）</string>
+    <string name="t54_notification_alias">%1$s 的跟进时间到了</string>
+    <string name="t54_temporary_notice">临时会话不会后台提醒。如需提醒，请先明确保存你选定的内容到正式联系人，再点“我发了”选择时间。</string>
 </resources>

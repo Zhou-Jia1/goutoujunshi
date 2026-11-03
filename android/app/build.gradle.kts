@@ -38,6 +38,10 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+    implementation(libs.work.runtime)
+    testImplementation(libs.work.testing)
+    androidTestImplementation(libs.work.testing)
+    androidTestImplementation(libs.room.runtime)
     implementation(project(":core:domain"))
     implementation(project(":core:data"))
     implementation(project(":core:knowledge"))
