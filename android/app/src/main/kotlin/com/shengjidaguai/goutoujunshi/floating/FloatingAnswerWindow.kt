@@ -54,7 +54,8 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
     private val screenHeight get()=service.resources.displayMetrics.heightPixels
     private val params=WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT,
         FloatingPanelGeometry.height(screenHeight,screenHeight),WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            (if(controller.state.value.lockState.enabled) WindowManager.LayoutParams.FLAG_SECURE else 0),
         PixelFormat.TRANSLUCENT).apply { gravity=Gravity.BOTTOM }
     init {
         view.setViewTreeLifecycleOwner(owner);view.setViewTreeViewModelStoreOwner(owner);view.setViewTreeSavedStateRegistryOwner(owner)
@@ -64,16 +65,13 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
                 FloatingPanelContent(state, onTip={id->controller.toggleTip(origin,id)},onTipScene={id->controller.toggleTip(origin,id,true)},onHabit={id,never->controller.dismissHabit(origin,id,never)}, onInteraction=copyCollapse::newInteraction,onClose={ close() },onAuthorizedCopy={ receipt,text -> copy(text,receipt) },onSaveDraft=controller::saveCoolingDraft,onSafetyCollapse=controller::acknowledgeSafety,
                     onPreview={ controller.preparePreview(origin,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },onSendSnapshot={ expected -> controller.analyzeFloating(origin,expected) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } },
                     onTone={ tone -> state.answer?.let { controller.rewrite(origin,it.id,com.shengjidaguai.goutoujunshi.domain.Tone.valueOf(tone.name),state.styleBias,true) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } } },
-                    onMore={
-                        val capture=state.floatingCapture
-                        val continuation=capture!=null && ticket!=null && CounselRuntime.imports(service.application).prepareCaptureMore(origin,capture.id,ticket)
-                        close(cancel=!continuation,preserveMore=continuation);FloatingRuntime.captureAction?.invoke()
-                    },onFull=::openFull,
+                    onMore=::captureMore,onFull=::openFull,
                     onSide={ state.floatingCapture?.let { receipt -> controller.switchFloatingSide(origin,receipt.id) { request -> ownedRequest=request;if(closed) controller.stopFloating(origin,request) } } },
                     onFocus=::focus,onSupplement={ text -> focus(false);val capture=state.floatingCapture;if(capture!=null) controller.editFloatingDraft(origin,capture.id,text) else controller.editDraft(text) },
                     onDrag={ amount -> params.height=FloatingPanelGeometry.height(screenHeight,params.height-amount.toInt());update() })
             }
         }
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.watchPrivatePanel(view)
         wm.addView(view,params)
         ownUiWatcher=scope.launch { CaptureOwnUi.changes.collect { if(!CaptureOwnUi.snapshot().clear) close() } }
         watcher=scope.launch {
@@ -104,10 +102,26 @@ internal class FloatingAnswerWindow(private val service: Service, private val sc
         copyCollapse.copied({ !closed && controller.importAuthority==copiedEpoch && controller.state.value.answer?.id==copiedAnswer }) { close() }
     }
     private fun openFull() {
-        if(closed) return
+        if(!currentPanel()) return
+        val handoff=com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.captureHandoff(service.application,this)
         // Main reads the exact same controller state. Close before its Activity becomes visible.
         close()
-        service.startActivity(Intent(service,com.shengjidaguai.goutoujunshi.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        try { service.startActivity(Intent(service,com.shengjidaguai.goutoujunshi.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).apply {
+            handoff?.let {putExtra(com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.HANDOFF_EXTRA,it.id)}
+        }) }
+        catch(_:RuntimeException) {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(service.application,this,handoff)}
+    }
+    private fun currentPanel()=!closed && origin==controller.state.value.conversation?.id && lock==controller.lockRevision &&
+        controller.state.value.lockState.canDisplaySensitiveContent && ticket!=null && ticket==FloatingRuntime.runtimeTicket &&
+        FloatingRuntime.active.value && FloatingRuntime.session.epoch()==ticket
+    private fun captureMore() {
+        if(!currentPanel()) return
+        val action=FloatingRuntime.captureAction ?: return
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.captureHandoff(service.application,this)
+        val capture=controller.state.value.floatingCapture
+        val continuation=capture!=null && ticket!=null && CounselRuntime.imports(service.application).prepareCaptureMore(origin,capture.id,ticket)
+        close(cancel=!continuation,preserveMore=continuation)
+        try {action()} catch(_:RuntimeException) {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(service.application,this)}
     }
     fun close(cancel:Boolean=true,preserveMore:Boolean=false) {
         if(closed) return

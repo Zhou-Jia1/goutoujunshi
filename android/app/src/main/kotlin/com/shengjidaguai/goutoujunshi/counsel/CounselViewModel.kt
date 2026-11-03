@@ -16,7 +16,7 @@ import kotlinx.coroutines.*
 internal object CounselRuntime {
     private var importer: ImportCoordinator? = null
     @Volatile private var encrypted:EncryptedDataStore?=null
-    fun store(application:Application):EncryptedDataStore = encrypted ?: synchronized(this) {encrypted ?: EncryptedDataStore(application).also {encrypted=it}}
+    fun store(application:Application):EncryptedDataStore = encrypted ?: synchronized(this) {encrypted ?: EncryptedDataStore(application,{com.shengjidaguai.goutoujunshi.privacy.PrivacyCleanup.stop(application)},{com.shengjidaguai.goutoujunshi.privacy.PrivacyCleanup.finish(application)}).also {encrypted=it}}
     @Synchronized fun imports(application: Application): ImportCoordinator = importer ?: ImportCoordinator(get(application),
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         { application.getSharedPreferences("import-notice", 0).getBoolean("accepted", false) },
@@ -25,6 +25,9 @@ internal object CounselRuntime {
     ).also { importer = it }
     internal fun localSafetyClassifier(loadVocabulary:()->String):(String)->SafetyLevel = CachedLocalSafetyClassifier(loadVocabulary)::classify
     fun withNotificationDisplay(block:(Boolean)->Unit) {val c=controller;if(c==null) block(false) else c.withNotificationDisplay(block)}
+    fun withNotificationDelivery(block:(Boolean)->Unit) {val c=controller;if(c==null) block(false) else c.withNotificationDelivery(block)}
+    fun cancelExistingImports() {importer?.cancel()}
+    fun applicationLockEnabled():Boolean?=controller?.state?.value?.lockState?.enabled
     @Volatile private var controller: CounselController? = null
     fun get(application: Application): CounselController = controller ?: synchronized(this) {
         controller ?: run {
@@ -50,6 +53,13 @@ internal object CounselRuntime {
 class CounselViewModel internal constructor(application: Application, private val controller: CounselController, val imports: ImportCoordinator) : AndroidViewModel(application) {
     constructor(application: Application):this(application,CounselRuntime.get(application),CounselRuntime.imports(application))
     private val pickerSelection=ImportSelectionSession(imports)
+    /** Same single in-flight picker slot; survives rotation in RAM, never saved/restored. */
+    private var pickerHandoff:Pair<PickerKind,CounselController.PrivateUiHandoff?>?=null
+    internal fun rememberPickerHandoff(kind:PickerKind,token:CounselController.PrivateUiHandoff?) {pickerHandoff=kind to token}
+    internal fun takePickerHandoff(kind:PickerKind):CounselController.PrivateUiHandoff? {
+        val pending=pickerHandoff?.takeIf {it.first==kind} ?: return null
+        pickerHandoff=null;return pending.second
+    }
     fun copyReply(receipt:SafetyActionReceipt,text:String,write:(String)->Unit)=controller.copyReply(receipt,text,write)
     fun acknowledgeSafety(receipt:SafetyActionReceipt,collapsed:Boolean)=controller.acknowledgeSafety(receipt,collapsed)
     fun saveCoolingDraft(receipt:SafetyActionReceipt,text:String)=controller.saveCoolingDraft(receipt,text)
@@ -105,7 +115,7 @@ class CounselViewModel internal constructor(application: Application, private va
     fun importImages(uris: List<Uri>) { if(pickerSelection.consume(PickerKind.IMAGE) && uris.isNotEmpty()) imports.images(uris) }
     fun importFile(uri: Uri?) { if(pickerSelection.consume(PickerKind.FILE) && uri!=null) imports.file(getApplication<Application>().contentResolver,uri) }
     fun importPaste(text: String) = imports.text(text)
-    init { initialize() }
+    init {controller.initializeOnEntry()}
     fun initialize() = controller.initialize()
     fun editDraft(text: String) = controller.editDraft(text)
     fun editDraft(text: String, stamp: DraftEditStamp) = controller.editDraft(text, stamp)
@@ -133,5 +143,5 @@ class CounselViewModel internal constructor(application: Application, private va
     fun saveModelSettings(settings: SavedModelSettings, key: String?, removeKey: Boolean = false) = controller.saveModelSettings(settings, key, removeKey)
     fun testModelConnection() = controller.testModelConnection()
     fun cancelModelTest() = controller.cancelModelTest()
-    fun clearAll() { com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.clearAll(getApplication<Application>()); imports.cancel(); getApplication<Application>().getSharedPreferences("import-notice", 0).edit().clear().apply(); getApplication<Application>().getSharedPreferences("followup-settings",0).edit().clear().apply(); controller.clearAll() }
+    fun clearAll() {controller.clearAll {imports.cancel();com.shengjidaguai.goutoujunshi.floating.FloatingRuntime.clearAll(getApplication<Application>());com.shengjidaguai.goutoujunshi.followup.FollowupScheduler.hidePrivate(getApplication<Application>())}}
 }

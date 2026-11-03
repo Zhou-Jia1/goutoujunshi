@@ -7,7 +7,7 @@ import com.shengjidaguai.goutoujunshi.R
 import com.shengjidaguai.goutoujunshi.data.*
 import java.util.concurrent.TimeUnit
 
-class FollowupScheduler(private val context:Context,workManager:WorkManager?=null,private val displayAuthority:(((Boolean)->Unit)->Unit)=com.shengjidaguai.goutoujunshi.counsel.CounselRuntime::withNotificationDisplay):FollowupEffects {
+class FollowupScheduler(private val context:Context,workManager:WorkManager?=null,private val displayAuthority:(((Boolean)->Unit)->Unit)=com.shengjidaguai.goutoujunshi.counsel.CounselRuntime::withNotificationDelivery):FollowupEffects {
     private val work:WorkManager by lazy {workManager ?: WorkManager.getInstance(context)}
     private val known=mutableSetOf<String>()
     fun permitted()=NotificationManagerCompat.from(context).areNotificationsEnabled()

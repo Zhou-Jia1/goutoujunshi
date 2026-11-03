@@ -52,9 +52,10 @@ class FloatingCounselActivity : ComponentActivity() {
         if(!helpOnly && !guideValid(expected)) { cancelPending();return }
         val overlay=guidePage==GuidePage.OVERLAY
         if(overlay) waitingOverlay=expected
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemTrip(this)
         val opened=GuideSettingsLauncher.forContext(this).open(if(overlay)
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")) else null)
-        if(!opened) { waitingOverlay=null;message=R.string.floating_unavailable }
+        if(!opened) {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this);com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(application,this);waitingOverlay=null;message=R.string.floating_unavailable }
     }
     private var message by mutableStateOf(R.string.floating_off)
     private var contacts by mutableStateOf(false)
@@ -73,22 +74,21 @@ class FloatingCounselActivity : ComponentActivity() {
     private val controller by lazy { CounselRuntime.get(application) }
     private val viewModel by lazy { androidx.lifecycle.ViewModelProvider(this)[CounselViewModel::class.java] }
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this)
         val expected=notificationAuthority;notificationAuthority=null
         if(guideValid(expected)) {
             if(granted) window.decorView.post { if(guideValid(expected)) startIfResumed() }
-            else showGuide(GuidePage.NOTIFICATION_DENIED)
+            else {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(application,this);showGuide(GuidePage.NOTIFICATION_DENIED)}
         }
     }
-    private val credential = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val epoch=authEpoch; authEpoch=null
-        if(result.resultCode==RESULT_OK && epoch!=null && epoch==FloatingRuntime.session.epoch() && authLockRevision==controller.lockRevision && controller.state.value.lockState.enabled) {
-            controller.updateLockState(controller.state.value.lockState.copy(unlocked=true))
-            window.decorView.post { resumeTileHandoff() }
-        }
-    }
+    private val authentication by lazy {com.shengjidaguai.goutoujunshi.privacy.SystemAuthentication(this,controller) {success ->
+        if(success) {window.decorView.post {resumeTileHandoff()};if(intent.action=="privacy-enable") finish()}
+        else message=R.string.floating_lock_unavailable
+    }}
     /** Projection data never enters ActivityResultRegistry's saved pending-result Bundle. */
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this)
         super.onActivityResult(requestCode,resultCode,if(requestCode in 3201..65000) null else data)
         if(requestCode!=expectedProjectionCode) return
         expectedProjectionCode=null
@@ -106,6 +106,9 @@ class FloatingCounselActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this)
+        authentication
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.secure(this)
         FloatingRuntime.bindWindow(this)
         FloatingRuntime.watchScreen(application)
         val handoff=intent.getLongExtra(FloatingCounselService.TICKET,-1)
@@ -116,6 +119,7 @@ class FloatingCounselActivity : ComponentActivity() {
             capturePreviewId=intent.getStringExtra(FloatingRuntime.CAPTURE_PREVIEW)
             captureTicket=intent.getLongExtra(FloatingRuntime.CAPTURE_TICKET,-1).takeIf {it>=0}
             if(currentCapturePreview()==null) {finish();return}
+            com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.capturePrivateUiReturned(this)
         }
         setContent {
             val state by controller.state.collectAsState()
@@ -130,15 +134,18 @@ class FloatingCounselActivity : ComponentActivity() {
                 else if(capturePreview==null) {
                     val preview=capturePreviewId;val expectedTicket=captureTicket
                     if(preview!=null && expectedTicket!=null && expectedTicket==FloatingRuntime.runtimeTicket && FloatingRuntime.session.epoch()==expectedTicket &&
-                        controller.consumeCaptureConfirmation(preview,expectedTicket,captureReceiver)) FloatingRuntime.showAnswer?.invoke()
+                        controller.consumeCaptureConfirmation(preview,expectedTicket,captureReceiver)) {
+                        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.captureHandoff(application,this@FloatingCounselActivity)
+                        FloatingRuntime.showAnswer?.invoke()
+                    }
                     finish()
                 }
             }
             JunshiTheme {
                 Surface(Modifier.fillMaxSize()) {
-                    if(intent.action==FloatingRuntime.UNLOCK) {
-                        if(floatingContentAllowed(state.lockState)) LaunchedEffect(Unit) { finish() }
-                        else FloatingLockGate(::unlock,::finish,if(message==R.string.floating_lock_unavailable) message else R.string.floating_lock_hint)
+                    if(intent.action==FloatingRuntime.UNLOCK || intent.action=="privacy-enable") {
+                        if(intent.action!= "privacy-enable" && floatingContentAllowed(state.lockState)) LaunchedEffect(Unit) { finish() }
+                        else FloatingLockGate(::unlock,::finish,if(message==R.string.floating_lock_unavailable) message else R.string.floating_lock_hint,if(Build.VERSION.SDK_INT>=29) ({authentication.authenticate(enable=intent.action=="privacy-enable",biometric=true)}) else null)
                     } else if(intent.action==FloatingRuntime.CAPTURE_CONFIRM && capturePreview!=null && floatingContentAllowed(state.lockState)) {
                         com.shengjidaguai.goutoujunshi.ui.ImportOverlay(viewModel)
                     } else if(contacts && floatingContentAllowed(state.lockState)) {
@@ -158,12 +165,7 @@ class FloatingCounselActivity : ComponentActivity() {
             }
         }
     }
-    private fun unlock() {
-        val keyguard=getSystemService(KeyguardManager::class.java)
-        if(!keyguard.isDeviceSecure) { message=R.string.floating_lock_unavailable; return }
-        @Suppress("DEPRECATION") val intent=keyguard.createConfirmDeviceCredentialIntent(getString(R.string.floating_unlock),getString(R.string.floating_lock_hint))
-        if(intent!=null) { authEpoch=FloatingRuntime.session.epoch(); authLockRevision=controller.lockRevision; credential.launch(intent) }
-    }
+    private fun unlock() {authentication.authenticate(enable=intent.action=="privacy-enable")}
     private fun begin() {
         if(!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         if(!floatingContentAllowed(controller.state.value.lockState)) { message=R.string.floating_lock_hint; return }
@@ -191,6 +193,7 @@ class FloatingCounselActivity : ComponentActivity() {
     }
     override fun onResume() {
         super.onResume()
+        com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this)
         if(intent.action==FloatingRuntime.CAPTURE_CONFIRM) {
             val p=currentCapturePreview()
             if(p==null) {finish();return}
@@ -215,7 +218,7 @@ class FloatingCounselActivity : ComponentActivity() {
         if(!FloatingRuntime.session.valid(current)) { ticket=null; return }
         if(!guideValid()) { cancelPending();return }
         guidePage=null
-        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) { notificationAuthority=guideGate.authority;notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) { notificationAuthority=guideGate.authority;com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemTrip(this);notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
         else { val expected=guideGate.authority;window.decorView.post { if(guideValid(expected)) startIfResumed() } }
     }
     private fun startIfResumed() {
@@ -226,8 +229,9 @@ class FloatingCounselActivity : ComponentActivity() {
         expectedProjectionCode=ProjectionRequestCodes.process.allocate()
         if(expectedProjectionCode==null) { cancelPending();message=R.string.floating_unavailable;return }
         try { @Suppress("DEPRECATION")
+            com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemTrip(this)
             startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent(),checkNotNull(expectedProjectionCode)) }
-        catch(_:RuntimeException) { cancelPending();message=R.string.floating_unavailable }
+        catch(_:RuntimeException) {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.systemReturn(this);cancelPending();message=R.string.floating_unavailable }
     }
     private fun launchGrantedService(current:Long,requestedRevision:Long) {
         if(ticket!=current || !FloatingRuntime.session.valid(current) || isFinishing || isDestroyed ||
@@ -243,16 +247,17 @@ class FloatingCounselActivity : ComponentActivity() {
             message=R.string.floating_off
         } catch(_:RuntimeException) { ProjectionGrantStore.clear(current);FloatingRuntime.session.cancel(current);message=R.string.floating_unavailable }
     }
-    private fun cancelPending() { ticket?.let { ProjectionGrantStore.clear(it);FloatingRuntime.session.cancel(it) }; ticket=null;projectionLockRevision=null; waitingOverlay=null; guidePage=null;guideGate.cancel();expectedProjectionCode=null; tileHandoff=false; authEpoch=null; authLockRevision=null }
-    override fun onDestroy() { captureReceiver?.let(controller::unregisterCaptureReceiver);captureReceiver=null;FloatingRuntime.windows.remove(this);if(ticket!=null || authEpoch!=null) cancelPending(); super.onDestroy() }
+    private fun cancelPending() { ticket?.let { ProjectionGrantStore.clear(it);FloatingRuntime.session.cancel(it) }; ticket=null;projectionLockRevision=null; waitingOverlay=null; guidePage=null;guideGate.cancel();expectedProjectionCode=null; tileHandoff=false; authEpoch=null; authLockRevision=null;com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(application,this) }
+    override fun onDestroy() { authentication.cancel();captureReceiver?.let(controller::unregisterCaptureReceiver);captureReceiver=null;FloatingRuntime.windows.remove(this);if(ticket!=null || authEpoch!=null) cancelPending(); super.onDestroy() }
 }
 
 @Composable
-internal fun FloatingLockGate(onUnlock:()->Unit,onClose:(()->Unit)?=null,message:Int=R.string.floating_lock_hint) {
+internal fun FloatingLockGate(onUnlock:()->Unit,onClose:(()->Unit)?=null,message:Int=R.string.floating_lock_hint,onBiometric:(()->Unit)?=null) {
     JunshiColumn(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         JunshiTopBar(stringResource(R.string.floating_locked),onClose)
         BodyText(stringResource(message))
         PrimaryButton(stringResource(R.string.floating_unlock),onUnlock)
+        if(onBiometric!=null) SecondaryButton(stringResource(R.string.t55_biometric),onBiometric)
     }
 }
 

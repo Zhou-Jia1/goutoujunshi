@@ -209,11 +209,13 @@ class FloatingCounselService : Service() {
     }
     private fun capture() {
         if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureCalls++
+        CounselRuntime.get(application).checkBackgroundLock(SystemClock.elapsedRealtime(),com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.delayMillis)
         if(!floatingContentAllowed(CounselRuntime.get(application).state.value.lockState)) { FloatingRuntime.unlock(this);return }
         if(CounselRuntime.get(application).reuseFloatingRequest()) { FloatingRuntime.showAnswer?.invoke();return }
         val ownUi=CaptureOwnUi.snapshot()
         if(!ownUi.clear) { sessionTicket?.let { CounselRuntime.imports(application).discardPreparedCaptureMore(it) };ownUiBlocked();return }
         if(!captureState.advance(captureEpoch,CaptureState.Phase.CAPTURING)) { sessionTicket?.let { CounselRuntime.imports(application).discardPreparedCaptureMore(it) };return }
+        val finishPrivacyHandoff=beginCapturePrivacyHandoff()
         if(com.shengjidaguai.goutoujunshi.BuildConfig.DEBUG) debugCaptureAccepted++
         ownUiStamp=ownUi
         touchSession()
@@ -221,6 +223,7 @@ class FloatingCounselService : Service() {
         val imports=CounselRuntime.imports(application)
         val previousPreview=imports.state.value?.id
         var previewOwner:String?=null
+            var privateConfirmationLaunched=false
         captureJob=scope.launch {
             var bitmap:android.graphics.Bitmap?=null
             try {
@@ -244,6 +247,7 @@ class FloatingCounselService : Service() {
                 if(captureState.revision!=epoch || !CaptureOwnUi.valid(ownUi) || !imports.captured(owner,lines)) return@launch
                 captureState.advance(epoch,CaptureState.Phase.ANALYZING)
                 FloatingRuntime.showCapture(this@FloatingCounselService)
+                privateConfirmationLaunched=true
             } catch(e:CancellationException) { throw e }
             catch(_:Exception) { if(captureState.revision==epoch) android.widget.Toast.makeText(this@FloatingCounselService,R.string.capture_no_frame,android.widget.Toast.LENGTH_LONG).show() }
             finally {
@@ -257,8 +261,16 @@ class FloatingCounselService : Service() {
                     captureState.advance(epoch,CaptureState.Phase.READY);window?.visibility=View.VISIBLE
                 }
                 if(ownUiStamp==ownUi) ownUiStamp=null
+                if(!privateConfirmationLaunched) finishPrivacyHandoff()
             }
         }
+    }
+    private fun beginCapturePrivacyHandoff():()->Unit {
+        // Each accepted operation owns this closure; a canceled older job can finish late
+        // after this same Service has accepted another capture.
+        val owner=Any()
+        val token=com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.captureHandoff(application,owner)
+        return {com.shengjidaguai.goutoujunshi.privacy.PrivacyRuntime.finishHandoff(application,owner,token)}
     }
     private fun ownUiBlocked() {
         CaptureOwnUi.warn()

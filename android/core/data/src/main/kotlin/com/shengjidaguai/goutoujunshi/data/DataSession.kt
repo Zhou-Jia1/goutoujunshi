@@ -29,10 +29,10 @@ class DataSession internal constructor(internal val database: JunshiDatabase, va
         database.withTransaction { dao.block().also { reminderEffects?.let { effects -> dao.reconcileFollowups(effects) } } }
     }
     /** Revocation is irrevocable even if platform cancellation or closing fails. No DAO read here. */
-    internal suspend fun closeForClear() = gate.withLock {
+    internal suspend fun closeForClear(beforeClose:suspend ()->Unit = {}) = gate.withLock {
         active=false
         try {reminderEffects?.clear()}
-        finally {withContext(Dispatchers.IO) {database.close()}}
+        finally {try {beforeClose()} finally {withContext(Dispatchers.IO) {database.close()}}}
     }
     suspend fun stamp(contactId: String? = null): WriteStamp = transaction {
         val contact = contactId?.let { requireContact(it) }
@@ -58,7 +58,7 @@ internal suspend fun JunshiDao.checkStamp(session: DataSession, stamp: WriteStam
 }
 
 /** Own one instance per application. open() is explicit; repositories never recreate a cleared DB. */
-class EncryptedDataStore(context: Context) {
+class EncryptedDataStore(context: Context, private val beforeWipe:suspend ()->Unit = {}, private val afterWipe:suspend ()->Unit = {}) {
     private val context = context.applicationContext
     val vault = SecretVault(this.context)
     private val mutex = Mutex()
@@ -114,7 +114,7 @@ class EncryptedDataStore(context: Context) {
     private suspend fun wipeLocked(): List<String> = withContext(NonCancellable) {
         generation++
         val session = current
-        session?.closeForClear()
+        if(session!=null) session.closeForClear(beforeWipe) else beforeWipe()
         current = null
         withContext(Dispatchers.IO) {
             context.deleteDatabase("junshi.db")
@@ -133,7 +133,7 @@ class EncryptedDataStore(context: Context) {
             failedCleanup.removeAll { path -> runCatching { !File(path).exists() || File(path).delete() }.getOrDefault(false) }
             failedCleanup.toList()
         }
-        if (failures.isEmpty()) vault.markCleanupPending(false)
+        if (failures.isEmpty()) {afterWipe();vault.markCleanupPending(false)}
         failures
     }
 }

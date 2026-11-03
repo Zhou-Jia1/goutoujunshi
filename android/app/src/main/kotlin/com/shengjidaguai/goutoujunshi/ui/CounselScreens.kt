@@ -459,6 +459,8 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
 
 @Composable fun SettingsScreen(viewModel: CounselViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var privacy by remember {mutableStateOf(false)}
+    if(privacy) {androidx.activity.compose.BackHandler {privacy=false};com.shengjidaguai.goutoujunshi.privacy.PrivacyScreen({privacy=false},{viewModel.clearAll();privacy=false});return}
     var memories by remember { mutableStateOf(false) }
     var styles by remember { mutableStateOf(false) }
     var tips by remember {mutableStateOf(false)}
@@ -472,12 +474,12 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
     LaunchedEffect(Unit) { viewModel.openMemory(null) }
     ModelSettingsContent(state, viewModel::saveModelSettings, viewModel::testModelConnection,
         viewModel::cancelModelTest, viewModel::clearAll, viewModel::initialize,
-        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null,openStyle={styles=true},openTips={tips=true})
+        { memories=true }, if(memory.ownerId==null && !memory.loading && !memory.failed && memory.snapshot.stamp!=null) Triple(state.contacts.size,memory.totalMemories,memory.totalImports) else null,openStyle={styles=true},openTips={tips=true},openPrivacy={privacy=true})
 }
 
 @Composable fun ModelSettingsContent(state: CounselState,
     onSave: (SavedModelSettings, String?, Boolean) -> Unit, onTest: () -> Unit,
-    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null,openStyle:(()->Unit)?=null,openTips:(()->Unit)?=null) {
+    onCancel: () -> Unit, onClear: () -> Unit, onInitialize: () -> Unit = {}, openMemory: (() -> Unit)? = null, dataCounts: Triple<Int,Int,Int>? = null,openStyle:(()->Unit)?=null,openTips:(()->Unit)?=null,openPrivacy:(()->Unit)?=null) {
     var confirmClear by remember { mutableStateOf(false) }
     val snapshot = state.modelSettings
     val defaults = snapshot.saved.takeIf { it.baseUrl.isNotBlank() } ?: ModelPresets.openAi.let { SavedModelSettings(false, it.baseUrl, it.model, it.providerLabel) }
@@ -525,6 +527,7 @@ val LocalCounselClipboard = staticCompositionLocalOf<CounselClipboard?> { null }
         if(openMemory!=null && dataCounts==null) item { BodyText(stringResource(R.string.memory_loading)) }
         item { SecondaryButton(stringResource(R.string.initialize_store), onInitialize) }
         item { FollowupPrivacySetting() }
+        if(openPrivacy!=null) item {SecondaryButton(stringResource(R.string.t55_title),openPrivacy)}
     }
     val clearText=dataCounts?.let { stringResource(R.string.memory_full_clear,it.first,it.second,it.third) }
     if (confirmClear) DangerConfirmDialog(stringResource(R.string.clear_all), clearText ?: stringResource(R.string.clear_all_consequence),

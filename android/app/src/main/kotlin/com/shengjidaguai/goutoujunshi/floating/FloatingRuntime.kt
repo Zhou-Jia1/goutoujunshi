@@ -61,7 +61,7 @@ object FloatingRuntime {
     }
     fun clearAll(context: Context) {
         stop(context)
-        context.getSharedPreferences(FloatingCounselService.POSITIONS,0).edit().clear().apply()
+        check(context.getSharedPreferences(FloatingCounselService.POSITIONS,0).edit().clear().commit())
     }
     fun open(context: Context, contacts: Boolean = false) {
         context.startActivity(Intent(context, FloatingCounselActivity::class.java)
@@ -71,7 +71,12 @@ object FloatingRuntime {
         val preview=CounselRuntime.imports(context.applicationContext as Application).state.value ?: return
         val ticket=preview.captureSession?.takeIf {it==runtimeTicket} ?: return
         context.startActivity(Intent(context,FloatingCounselActivity::class.java).setAction(CAPTURE_CONFIRM)
-            .putExtra(CAPTURE_PREVIEW,preview.id).putExtra(CAPTURE_TICKET,ticket).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            .putExtra(CAPTURE_PREVIEW,preview.id).putExtra(CAPTURE_TICKET,ticket)
+            // This RAM-only review returns to the external captured app when it finishes.
+            // Joining Main's existing task would expose Main and correctly close the panel
+            // through CaptureOwnUi. Keep that safety guard; isolate only this review task.
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
+                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS))
     }
     fun unlock(context: Context) {
         context.startActivity(Intent(context,FloatingCounselActivity::class.java).setAction(UNLOCK).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
