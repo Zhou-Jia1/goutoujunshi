@@ -462,4 +462,24 @@
     <string name="t54_alias_setting">提醒显示联系人代号（锁定时仍隐藏）</string>
     <string name="t54_notification_alias">%1$s 的跟进时间到了</string>
     <string name="t54_temporary_notice">临时会话不会后台提醒。如需提醒，请先明确保存你选定的内容到正式联系人，再点“我发了”选择时间。</string>
+    <string name="t55_title">应用锁与隐私</string>
+    <string name="t55_secure_notice">开启应用锁后，使用手机的生物识别或系统设备凭据解锁。最近任务会隐藏内容，同时无法截取本应用的画面。请先在系统设置中设置锁屏凭据。</string>
+    <string name="t55_enable">开启应用锁</string>
+    <string name="t55_disable">关闭应用锁</string>
+    <string name="t55_delay">离开应用后锁定</string>
+    <string name="t55_system_trip_notice">选择立即锁定时，你主动打开系统选图、文档、认证或权限与投屏后，最多保留30秒完成当前操作，超时需重新解锁。1分钟和5分钟仍按原离开时间计时。悬浮球不算私密界面；关闭最后一个私密面板后按设置锁定。</string>
+    <string name="t55_immediate">立即</string>
+    <string name="t55_one_minute">1 分钟</string>
+    <string name="t55_five_minutes">5 分钟</string>
+    <string name="t55_selected">已选：%1$s</string>
+    <string name="t55_choice">%1$s</string>
+    <string name="t55_icon_title">切换桌面入口</string>
+    <string name="t55_icon_notice">切换后桌面图标和名称可能短暂消失或重复。仍可从系统分享或应用设置打开本应用。清除所有数据后会恢复默认入口。</string>
+    <string name="t55_switch">切换</string>
+    <string name="t55_notes">便签</string>
+    <string name="t55_calculator">计算记录</string>
+    <string name="t55_biometric">使用生物识别或设备凭据</string>
+    <string name="t55_cleared">本机资料已清除</string>
+    <string name="t55_restart_notice">准备好再聊时，可以从这里重新开始。</string>
+    <string name="t55_restart">重新开始</string>
 </resources>

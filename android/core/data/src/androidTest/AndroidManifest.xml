@@ -1,4 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- A network-capable test host proves that isolatedProcess removes its permissions. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <application>
+        <!-- Only this separately installed test host exposes fixed synthetic chat pixels. -->
+        <activity android:name="com.shengjidaguai.goutoujunshi.data.T55ExternalSyntheticChatActivity"
+            android:exported="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+    </application>
 </manifest>

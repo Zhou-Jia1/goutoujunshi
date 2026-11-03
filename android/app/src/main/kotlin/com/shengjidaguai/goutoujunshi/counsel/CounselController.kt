@@ -406,6 +406,13 @@ class CounselController(
     }
     private val teaching=TeachingCoordinator(wallClockMillis, teachingZone)
     fun openTips()=enqueue {
+        synchronized(intentLock) {
+            if(clearing) {
+                // A cleared read-only page may acknowledge its empty result without reopening storage.
+                set(state.value.copy(savedTips=emptyList(),tipsReceipt=UUID.randomUUID().toString()),duringClear=true)
+                return@enqueue
+            }
+        }
         val authority=authoritySnapshot()
         if(!state.value.lockState.canDisplaySensitiveContent) return@enqueue
         try { val tips=persistence.tips();authorized(authority) {set(state.value.copy(savedTips=tips,tipsReceipt=UUID.randomUUID().toString()))} }
@@ -890,7 +897,7 @@ class CounselController(
             val currentOwner = state.value.currentContact?.id == next.id
             if (currentOwner) {
                 try { flushDraft() }
-                catch (cancelled: CancellationException) { throw cancelled }
+                catch (cancelled: CancellationException) {throw cancelled}
                 catch (_: Exception) {
                     // No contact edit has been attempted. Preserve the only dirty draft,
                     // its owner/CAS version and Recovery.SaveDraft; retry saves that draft
@@ -988,8 +995,12 @@ class CounselController(
             for (action in mailbox) {
                 try { action() }
                 catch (_: RevokedOperation) { /* Revocation is final, not a recoverable model error. */ }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { set(state.value.copy(loading = false, streaming = false, error = CounselError("STORAGE_UNAVAILABLE", recovery != null))) }
+                catch (cancelled: CancellationException) {
+                    // A canceled old port must not kill the active actor ahead of its wipe.
+                    if(!currentCoroutineContext().isActive || !synchronized(intentLock) {clearing}) throw cancelled
+                    if(recovery==Recovery.Clear) set(state.value.copy(loading=false,streaming=false,error=CounselError("CLEANUP_INCOMPLETE",true)),duringClear=true)
+                }
+                catch (_: Exception) { set(state.value.copy(loading = false, streaming = false, error = CounselError("STORAGE_UNAVAILABLE", recovery != null)),duringClear=clearing && recovery==Recovery.Clear) }
             }
         }
     }
@@ -1016,6 +1027,58 @@ class CounselController(
     }
     private var lockGeneration = 0L
     private var authorityLock = LockState()
+    internal data class AuthenticationAttempt(val id:Long,val revision:Long,val clear:Long)
+    private var authenticationId=0L
+    private var clearRevision=0L
+    private var clearing=false
+    private var backgroundAt:Long?=null
+    internal data class PrivateUiHandoff(val id:String,val lock:Long,val clear:Long,val started:Long)
+    private var privateUiHandoff:PrivateUiHandoff?=null
+    /** A user-launched system transaction may bridge immediate locking for at most 30s.
+     * Normal import/capture epochs still own their operations; this lease never restores them. */
+    internal fun beginPrivateUiHandoff(now:Long):PrivateUiHandoff? = synchronized(intentLock) {
+        if(clearing || !authorityLock.enabled || !authorityLock.unlocked) return@synchronized null
+        privateUiHandoff?.takeIf {it.lock==lockGeneration && it.clear==clearRevision}?.let {return@synchronized it}
+        PrivateUiHandoff(java.util.UUID.randomUUID().toString(),lockGeneration,clearRevision,now).also {privateUiHandoff=it}
+    }
+    internal fun currentPrivateUiHandoff():PrivateUiHandoff? = synchronized(intentLock) {privateUiHandoff}
+    internal fun endPrivateUiHandoff(token:PrivateUiHandoff?,now:Long,delayMillis:Long):Boolean = synchronized(intentLock) {
+        if(token==null || token!=privateUiHandoff) return@synchronized false
+        privateUiHandoff=null;checkBackgroundLock(now,delayMillis)
+        true
+    }
+    private fun backgroundRemaining(now:Long,delayMillis:Long):Long {
+        val left=backgroundAt ?: return 0L
+        if(now<left) return 0L
+        val handoff=privateUiHandoff?.takeIf {it.lock==lockGeneration && it.clear==clearRevision}
+        return if(delayMillis==0L && handoff!=null) {
+            if(now<handoff.started) 0L else (30_000L-(now-handoff.started)).coerceAtLeast(0L)
+        } else (delayMillis-(now-left)).coerceAtLeast(0L)
+    }
+    internal fun beginAuthentication():AuthenticationAttempt = synchronized(intentLock) {
+        AuthenticationAttempt(++authenticationId,lockGeneration,clearRevision)
+    }
+    internal fun finishAuthentication(attempt:AuthenticationAttempt,success:Boolean,enable:Boolean=false,onAccepted:()->Boolean={true}):Boolean = synchronized(intentLock) {
+        if(attempt.id!=authenticationId || attempt.revision!=lockGeneration || attempt.clear!=clearRevision) return@synchronized false
+        authenticationId++
+        if(!success) return@synchronized false
+        if(!onAccepted()) return@synchronized false
+        backgroundAt=null
+        updateLockState(LockState(enabled=enable || authorityLock.enabled,unlocked=true))
+        true
+    }
+    internal fun leftPrivateUi(now:Long,delayMillis:Long):Long = synchronized(intentLock) {
+        if(backgroundAt==null) backgroundAt=now
+        checkBackgroundLock(now,delayMillis)
+        backgroundRemaining(now,delayMillis)
+    }
+    internal fun checkBackgroundLock(now:Long,delayMillis:Long) = synchronized(intentLock) {
+        if(backgroundAt==null) return@synchronized
+        if(authorityLock.enabled && authorityLock.unlocked && backgroundRemaining(now,delayMillis)==0L) updateLockState(authorityLock.copy(unlocked=false))
+    }
+    internal fun enteredPrivateUi(now:Long,delayMillis:Long) = synchronized(intentLock) {
+        checkBackgroundLock(now,delayMillis);backgroundAt=null
+    }
     private var runLockGeneration = -1L
     private var activeRunAuthority:RunAuthority?=null
     private var previewAuthority:RunAuthority?=null
@@ -1046,15 +1109,17 @@ class CounselController(
         RunAuthority(expectedEpoch ?: epoch.get(), lockGeneration)
     }
     private fun authorityCurrent(authority: RunAuthority) = synchronized(intentLock) {
-        authority.epoch == epoch.get() && authority.lockGeneration == lockGeneration && authorityLock.canDisplaySensitiveContent
+        authority.epoch == epoch.get() && authority.lockGeneration == lockGeneration && authorityLock.canDisplaySensitiveContent && !clearing
     }
     private inline fun <T> authorized(authority: RunAuthority, block: () -> T): T = synchronized(intentLock) {
         if (!authorityCurrent(authority)) throw RevokedOperation()
         block()
     }
-    fun withNotificationDisplay(block:(Boolean)->Unit)=synchronized(intentLock) {block(authorityLock.canDisplaySensitiveContent)}
+    fun withNotificationDisplay(block:(Boolean)->Unit)=synchronized(intentLock) {block(authorityLock.canDisplaySensitiveContent && !clearing)}
+    fun withNotificationDelivery(block:(Boolean)->Unit)=synchronized(intentLock) {if(!clearing) block(authorityLock.canDisplaySensitiveContent)}
     val lockRevision get() = synchronized(intentLock) { lockGeneration }
     fun updateLockState(lock: LockState): Unit = synchronized(intentLock) {
+        privateUiHandoff=null
         practiceSource=null;practiceMain=null;practiceSummary=null
         revokeFloatingCaptureLocked()
         authorityLock = lock
@@ -1074,7 +1139,9 @@ class CounselController(
             if(lock.canDisplaySensitiveContent) restoreTeaching(teachingEpoch,teachingLock)
         }
     }
-    private fun set(next: CounselState) = synchronized(intentLock) {
+    private fun set(next:CounselState)=set(next,false)
+    private fun set(next: CounselState,duringClear:Boolean) = synchronized(intentLock) {
+        if(clearing && !duringClear) return@synchronized
         if(next.conversation?.id!=state.value.conversation?.id || (state.value.practice!=null && next.practice==null)) {practiceSource=null;practiceMain=null;practiceSummary=null}
         // Ordinary state snapshots never own the lock, including freshly constructed sessions.
         val floatingPreview=previewRequest?.takeIf { it.floating && previewAuthority?.let(::authorityCurrent)==true }
@@ -1164,18 +1231,30 @@ class CounselController(
         set(state.value.copy(testingConnection = false, connectionResult = "CANCELLED"))
     }
 
-    fun initialize() = enqueue { initializeNow() }
+    fun initializeOnEntry() = synchronized(intentLock) {if(!clearing) initialize()}
+    fun initialize() {
+        val requestedClear=synchronized(intentLock) {clearRevision}
+        enqueue {if(synchronized(intentLock) {clearRevision==requestedClear}) initializeNow()}
+    }
     private suspend fun initializeNow(forCapture:Boolean=false) {
+        val startupClear=synchronized(intentLock) {clearRevision}
+        fun currentClear()=synchronized(intentLock) {startupClear==clearRevision}
         if (!initialized) {
             recovery = Recovery.Initialize
-            set(state.value.copy(loading = true, error = null))
+            set(state.value.copy(loading = true, error = null),duringClear=true)
             persistence.initialize()
-            modelSettings?.let { settings = it.load(); applyModelSettings() }
+            synchronized(intentLock) {if(!currentClear()) return;clearing=false}
+            modelSettings?.let {val loaded=it.load();synchronized(intentLock) {if(!currentClear()) return;settings=loaded;applyModelSettings()}}
             val contacts = persistence.contacts()
+            if(!currentClear()) return
             refreshMemory(null)
-            initialized = true
-            set(state.value.copy(contacts = contacts, loading = false))
+            synchronized(intentLock) {
+                if(!currentClear()) return
+                initialized = true
+                set(state.value.copy(contacts = contacts, loading = false))
+            }
         }
+        if(!currentClear()) return
         if(!forCapture && state.value.conversation==null) {
             state.value.contacts.firstOrNull { it.archivedAt==null }?.let { loadContact(it) } ?: beginTemporary()
         }
@@ -1192,7 +1271,8 @@ class CounselController(
             completion(null)
         }
     }
-    private fun beginTemporaryState(next:TemporarySessionCredential) {
+    private fun beginTemporaryState(next:TemporarySessionCredential) = synchronized(intentLock) {
+        if(clearing) return@synchronized
         clearInlineMemory()
         invalidateRun()
         credential = next
@@ -1234,8 +1314,9 @@ class CounselController(
     }
     fun newTemporary() = enqueue(true) { flushDraft(); beginTemporary() }
     private suspend fun loadContact(contact: Contact, expectedEpoch: Long? = null, selectionToken: Long? = null, existing:StoredCounsel?=null): Boolean {
+        val sourceClear=synchronized(intentLock) {clearRevision}
         val teachingAuthority=synchronized(intentLock) {epoch.get() to lockGeneration}
-        fun targetCurrent()=(expectedEpoch==null || epoch.get()==expectedEpoch) && (selectionToken==null || selectionEpoch.get()==selectionToken)
+        fun targetCurrent()=synchronized(intentLock) {sourceClear==clearRevision && !clearing && (expectedEpoch==null || epoch.get()==expectedEpoch) && (selectionToken==null || selectionEpoch.get()==selectionToken)}
         clearInlineMemory()
         invalidateRun()
         recovery = Recovery.Load(contact)
@@ -1284,6 +1365,7 @@ class CounselController(
         val completedSafety=if(completedCurrentAnswer) saved.runs.lastOrNull {it.requestId==answerMessage?.requestId}?.highestSafety ?: SafetyLevel.NONE else SafetyLevel.NONE
         val restoredSafety=local.level.upgrade(summarySafety).upgrade(resumable?.highestSafety ?: SafetyLevel.NONE).upgrade(completedSafety)
         val oldCredential = synchronized(intentLock) {
+            if(!targetCurrent()) return false
             // Target publication and its private actor state form one atomic token decision.
             if (expectedEpoch != null && epoch.get() != expectedEpoch) return false
             if (selectionToken != null && selectionEpoch.get() != selectionToken) return false
@@ -2396,7 +2478,15 @@ class CounselController(
         recovery = frozen?.let { Recovery.Analysis(it) }
         set(state.value.copy(streaming = false, error = CounselError("CANCELLED", true)))
     }
-    fun clearAll() {
+    fun clearAll(afterRevocation:()->Unit = {}) {
+        synchronized(intentLock) {
+            clearing=true
+            clearRevision++;authenticationId++;backgroundAt=null
+            updateLockState(authorityLock.copy(unlocked=false))
+            set(CounselState(loading=true),duringClear=true)
+            // Best-effort immediate stop never bypasses the durable cleanup actor below.
+            runCatching {afterRevocation()}
+        }
         clearInlineMemory()
         closeContactDetails()
         selectionEpoch.incrementAndGet()
@@ -2410,14 +2500,14 @@ class CounselController(
         dirtyDraft = false
         recovery = Recovery.Clear
         // Clear UI before suspending so a failed physical cleanup cannot expose old content.
-        set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings))
+        set(CounselState(loading = true, modelStatus = provider.kind, demo = provider.kind == ProviderKind.DEMO, modelSettings = settings),duringClear=true)
         val cleared = persistence.clearAll()
         styleBiasPreferences.clear()
         if (cleared) { pendingSummaryCleanup.clear(); blockedSummaryRequests.clear(); summaries = emptyList() }
         // The application store records durable wipe intent before destroying the shared
         // vault. Do not let a separate settings remove failure prevent that privacy boundary.
         modelSettings?.clear()
-        set(state.value.copy(loading = false, error = if (cleared) null else CounselError("CLEANUP_INCOMPLETE", true)))
+        set(state.value.copy(loading = false, error = if (cleared) null else CounselError("CLEANUP_INCOMPLETE", true)),duringClear=true)
         if (cleared) recovery = null
     }
     }
